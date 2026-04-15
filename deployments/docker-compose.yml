@@ -1,0 +1,46 @@
+version: "3.8"
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgresql://elibri:${PG_PASSWORD:-elibri}@postgres:5432/elibri?sslmode=disable
+      - REDIS_URL=redis://redis:6379/0
+      - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
+      - CORS_ORIGINS=https://prostwp.github.io,http://localhost:5173
+      - PORT=8080
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=elibri
+      - POSTGRES_USER=elibri
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-elibri}
+    ports:
+      - "127.0.0.1:5432:5432"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redisdata:/data
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
