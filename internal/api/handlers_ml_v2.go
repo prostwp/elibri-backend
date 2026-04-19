@@ -1,17 +1,46 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/prostwp/elibri-backend/internal/market"
 	"github.com/prostwp/elibri-backend/internal/ml"
 	"github.com/prostwp/elibri-backend/pkg/types"
 )
+
+// Only 1 concurrent Python-backed training/backtest job at a time.
+// Protects against /ml/train spam DoS (each run spawns XGBoost that eats all
+// cores + 600MB RAM for 30+ minutes).
+var mlJobSlot = make(chan struct{}, 1)
+
+// Whitelist symbol/interval so user-supplied values can't escape exec args
+// (path traversal, flag injection via train.py --eval).
+var (
+	symbolPattern   = regexp.MustCompile(`^[A-Z0-9]{2,20}$`)
+	intervalPattern = regexp.MustCompile(`^(5m|15m|1h|4h|1d)$`)
+)
+
+func validateSymbol(s string) error {
+	if !symbolPattern.MatchString(s) {
+		return fmt.Errorf("invalid symbol %q (must match %s)", s, symbolPattern)
+	}
+	return nil
+}
+
+func validateInterval(s string) error {
+	if !intervalPattern.MatchString(s) {
+		return fmt.Errorf("invalid interval %q (allowed: 5m, 15m, 1h, 4h, 1d)", s)
+	}
+	return nil
+}
 
 // mlPredictV2Request is the enriched V2 predict payload.
 // Backwards-compatible: if v2 fields missing, falls back to legacy behaviour.
@@ -266,11 +295,20 @@ func handleMLPaperTrades(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
-// handleMLRunBacktest triggers backtest.py in background.
+// handleMLRunBacktest triggers backtest.py in background (guarded by slot).
 func handleMLRunBacktest(w http.ResponseWriter, r *http.Request) {
+	select {
+	case mlJobSlot <- struct{}{}:
+	default:
+		http.Error(w, `{"error":"ML job already in progress"}`, http.StatusTooManyRequests)
+		return
+	}
 	go func() {
+		defer func() { <-mlJobSlot }()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
 		trainingDir, _ := filepath.Abs("ml-training")
-		cmd := exec.Command("./.venv/bin/python", "-u", "backtest.py")
+		cmd := exec.CommandContext(ctx, "./.venv/bin/python", "-u", "backtest.py")
 		cmd.Dir = trainingDir
 		_ = cmd.Run()
 	}()
@@ -280,11 +318,20 @@ func handleMLRunBacktest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleMLRunPaperTrades triggers paper_trade.py in background.
+// handleMLRunPaperTrades triggers paper_trade.py in background (guarded).
 func handleMLRunPaperTrades(w http.ResponseWriter, r *http.Request) {
+	select {
+	case mlJobSlot <- struct{}{}:
+	default:
+		http.Error(w, `{"error":"ML job already in progress"}`, http.StatusTooManyRequests)
+		return
+	}
 	go func() {
+		defer func() { <-mlJobSlot }()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
 		trainingDir, _ := filepath.Abs("ml-training")
-		cmd := exec.Command("./.venv/bin/python", "-u", "paper_trade.py")
+		cmd := exec.CommandContext(ctx, "./.venv/bin/python", "-u", "paper_trade.py")
 		cmd.Dir = trainingDir
 		_ = cmd.Run()
 	}()
@@ -329,14 +376,31 @@ func handleMLTrain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
-	if req.Symbol == "" || req.Interval == "" {
-		http.Error(w, `{"error":"symbol and interval required"}`, http.StatusBadRequest)
+	if err := validateSymbol(req.Symbol); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+	if err := validateInterval(req.Interval); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Reserve the single training slot. If busy, reject — avoid spawning
+	// multiple XGBoost processes that would saturate CPU + RAM.
+	select {
+	case mlJobSlot <- struct{}{}:
+	default:
+		http.Error(w, `{"error":"training already in progress; retry in a few minutes"}`, http.StatusTooManyRequests)
 		return
 	}
 
 	taskID := time.Now().Format("20060102-150405")
 
 	go func(symbol, interval string, quick bool) {
+		defer func() { <-mlJobSlot }() // release slot when done
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
+		defer cancel()
+
 		trainingDir, _ := filepath.Abs("ml-training")
 		args := []string{
 			"train.py",
@@ -346,10 +410,9 @@ func handleMLTrain(w http.ResponseWriter, r *http.Request) {
 		if quick {
 			args = append(args, "--quick")
 		}
-		cmd := exec.Command("./.venv/bin/python", args...)
+		cmd := exec.CommandContext(ctx, "./.venv/bin/python", args...)
 		cmd.Dir = trainingDir
-		_ = cmd.Run() // errors logged to stdout by training script
-		// Re-load models after training completes.
+		_ = cmd.Run()
 		_, _ = ml.LoadModelsV2()
 		ml.MarkLoaded()
 	}(req.Symbol, req.Interval, req.Quick)

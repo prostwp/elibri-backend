@@ -63,7 +63,19 @@ func PredictV2(
 	candles []types.OHLCVCandle,
 	takerBuyVolumes, btcCloses []float64,
 ) PredictionV2 {
-	horizon := TradingStyleHorizon[tradingStyle]
+	// Horizon resolution priority:
+	//  1. Loaded model's own trained horizon (authoritative — HC precision
+	//     was measured against THIS horizon, so using a different one makes
+	//     the reported metrics meaningless).
+	//  2. Map from trading_style preset.
+	//  3. Swing default.
+	horizon := 0
+	if m, ok := GetModelV2(symbol, interval); ok && m.Horizon > 0 {
+		horizon = m.Horizon
+	}
+	if horizon == 0 {
+		horizon = TradingStyleHorizon[tradingStyle]
+	}
 	if horizon == 0 {
 		horizon = TradingStyleHorizon["swing"]
 	}
@@ -121,12 +133,23 @@ func PredictV2(
 	// Per-model adaptive threshold (from analyze_thresholds.py).
 	thr := GetThreshold(symbol, interval)
 
-	// Direction + confidence, with softer default thresholds (0.55/0.45).
+	// Direction gated by the SAME adaptive threshold as HC precision.
+	// Previously direction used a fixed 0.55/0.45 band which was looser
+	// than thr.ThresholdHigh — users saw direction=buy + high_confidence=false
+	// simultaneously, confusing. Now direction is 'buy' only when prob
+	// crosses the level where HC precision was measured.
+	// Fallback band (0.55/0.45) applied when no per-model threshold loaded.
+	buyThr := thr.ThresholdHigh
+	sellThr := thr.ThresholdLow
+	if buyThr <= 0.5 || sellThr >= 0.5 {
+		buyThr, sellThr = 0.55, 0.45 // sane default
+	}
+
 	switch {
-	case prob > 0.55:
+	case prob > buyThr:
 		out.Direction = "buy"
 		out.Confidence = prob * 100
-	case prob < 0.45:
+	case prob < sellThr:
 		out.Direction = "sell"
 		out.Confidence = (1 - prob) * 100
 	default:

@@ -145,7 +145,11 @@ func ExtractFeaturesV2(candles []types.OHLCVCandle, takerBuyVolumes []float64, b
 	}
 
 	// Cross-asset: rolling 30-bar beta + correlation vs BTC.
-	btcCorr, btcBeta := 1.0, 1.0
+	// Default 0.0 (uncorrelated) when BTC context unavailable — signals to
+	// the model that cross-asset feature is missing. Previous default 1.0
+	// implied "perfect correlation", which could bias BTC-era patterns onto
+	// non-BTC predictions.
+	btcCorr, btcBeta := 0.0, 0.0
 	if len(btcCloses) >= n && last >= 30 {
 		corr, beta := rollingCorrBeta(closes, btcCloses, last, 30)
 		btcCorr = corr

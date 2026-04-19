@@ -120,16 +120,27 @@ def compute_hc_table(y_true: np.ndarray, y_pred_proba: np.ndarray) -> dict:
     return out
 
 
-def compute_sharpe(y_true: np.ndarray, y_pred_proba: np.ndarray, returns: np.ndarray) -> float:
+def compute_sharpe(y_true: np.ndarray, y_pred_proba: np.ndarray,
+                   returns: np.ndarray, interval: str = "1d") -> float:
     """
     Trading Sharpe: position = sign(pred - 0.5) × (|pred - 0.5| > 0.1 ? 1 : 0).
-    Daily returns × position, annualized assuming 252 periods.
+    Returns × position, annualized using TF-specific bars-per-year factor.
+    Previously used sqrt(252) for all TFs which massively under-annualized 4h/1h
+    and over-annualized 1d+. Now matches actual TF.
     """
     position = np.where(y_pred_proba > 0.6, 1.0, np.where(y_pred_proba < 0.4, -1.0, 0.0))
     strategy_ret = position * returns
     if strategy_ret.std() < 1e-9:
         return 0.0
-    return float(np.sqrt(252) * strategy_ret.mean() / strategy_ret.std())
+    # Bars per calendar year per interval.
+    bars_per_year = {
+        "5m":  365 * 24 * 12,   # 105,120
+        "15m": 365 * 24 * 4,    # 35,040
+        "1h":  365 * 24,        # 8,760
+        "4h":  365 * 6,         # 2,190
+        "1d":  252,             # trading days
+    }.get(interval, 252)
+    return float(np.sqrt(bars_per_year) * strategy_ret.mean() / strategy_ret.std())
 
 
 def walk_forward_split(dates: np.ndarray, train_months: int = 12, test_months: int = 1):
@@ -389,7 +400,7 @@ def train_one(symbol: str, interval: str, years: float, quick: bool, btc_close: 
             precision=float(precision_score(y_te, y_pred, zero_division=0)),
             recall=float(recall_score(y_te, y_pred, zero_division=0)),
             f1=float(f1_score(y_te, y_pred, zero_division=0)),
-            sharpe=compute_sharpe(y_te, y_proba, returns_te),
+            sharpe=compute_sharpe(y_te, y_proba, returns_te, interval=interval),
             hc_precision=hc_prec,
             hc_count=hc_n,
             hc_win_rate=hc_win,

@@ -276,11 +276,20 @@ def simulate_trades(
         dd = (peak - v) / peak
         max_dd = max(max_dd, dd)
 
-    # Sharpe: per-trade PnL%.
+    # Sharpe: per-trade PnL%. Annualization factor = trades per calendar year
+    # (approximated from TF + average trade duration). Previously used 252
+    # for all TFs which over-annualizes high-freq and under-annualizes 1d.
+    trades_per_year = {
+        "5m":  12 * 24 * 365 / max(1, sum(t.bars_held for t in trades) / max(1, len(trades))),
+        "15m": 4 * 24 * 365 / max(1, sum(t.bars_held for t in trades) / max(1, len(trades))),
+        "1h":  24 * 365 / max(1, sum(t.bars_held for t in trades) / max(1, len(trades))),
+        "4h":  6 * 365 / max(1, sum(t.bars_held for t in trades) / max(1, len(trades))),
+        "1d":  252,
+    }.get(interval, 252)
     returns = np.array([t.pnl_pct for t in trades])
-    sharpe = float(returns.mean() / returns.std() * np.sqrt(252)) if returns.std() > 0 else 0.0
+    sharpe = float(returns.mean() / returns.std() * np.sqrt(trades_per_year)) if returns.std() > 0 else 0.0
     neg_returns = returns[returns < 0]
-    sortino = float(returns.mean() / neg_returns.std() * np.sqrt(252)) if len(neg_returns) > 1 and neg_returns.std() > 0 else 0.0
+    sortino = float(returns.mean() / neg_returns.std() * np.sqrt(trades_per_year)) if len(neg_returns) > 1 and neg_returns.std() > 0 else 0.0
 
     # Per-regime stats.
     regime_stats = {}
@@ -350,8 +359,8 @@ def backtest_one(symbol: str, interval: str, years: float, btc_close: np.ndarray
     y_train = target[:split]
     X_test = feat[FEATURE_NAMES].iloc[split:].to_numpy()
     # Align high/low from original df using the same mask (target != sentinel).
-    # `mask` is a numpy bool array — use directly with DataFrame .loc.
-    df_masked = df.loc[mask].reset_index(drop=True) if hasattr(mask, 'index') else df[mask].reset_index(drop=True)
+    # `mask` is always a numpy bool array (from `target >= 0`).
+    df_masked = df[mask].reset_index(drop=True)
     test_df = pd.DataFrame({
         "close": feat["close"].iloc[split:].to_numpy(),
         "high":  df_masked["high"].iloc[split:].to_numpy(),
