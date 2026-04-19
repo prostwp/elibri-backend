@@ -1,0 +1,23 @@
+{
+  "BTCUSDT_1h": {
+    "model": "BTCUSDT_1h_v1776569887.json",
+    "patterns": "BTCUSDT_1h_patterns.json",
+    "horizon": 24,
+    "accuracy": 0.5217661364398474,
+    "sharpe": -0.23373364872777397
+  },
+  "BTCUSDT_4h": {
+    "model": "BTCUSDT_4h_v1776570024.json",
+    "patterns": "BTCUSDT_4h_patterns.json",
+    "horizon": 18,
+    "accuracy": 0.5185802417844007,
+    "sharpe": 0.11871848685318258
+  },
+  "BTCUSDT_1d": {
+    "model": "BTCUSDT_1d_v1776570135.json",
+    "patterns": "BTCUSDT_1d_patterns.json",
+    "horizon": 10,
+    "accuracy": 0.509201248237165,
+    "sharpe": -0.12003910971910386
+  }
+}

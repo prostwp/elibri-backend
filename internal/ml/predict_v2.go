@@ -146,14 +146,26 @@ func PredictV2(
 	// Feature importance + metrics.
 	if hasModel {
 		out.FeatureImportance = model.TopFeatures(10)
+
+		// Prefer threshold-derived HC metrics (from analyze_thresholds.py) over
+		// the training-time values (which used static 0.80 filter and may be 0).
+		hcPrecision := model.Metrics.HCPrecision
+		hcSignalRate := model.Metrics.HCSignalRate
+		hcSignalsTotal := model.Metrics.HCSignalsTotal
+		if thr.Precision > 0 {
+			hcPrecision = thr.Precision
+			hcSignalRate = thr.Fraction
+			hcSignalsTotal = thr.NSignals
+		}
+
 		out.Metrics = SimplePredictMetrics{
 			Accuracy:       model.Metrics.AvgAccuracy,
 			Sharpe:         model.Metrics.AvgSharpe,
 			F1:             model.Metrics.AvgF1,
 			NFolds:         model.Metrics.NFolds,
-			HCPrecision:    model.Metrics.HCPrecision,
-			HCSignalRate:   model.Metrics.HCSignalRate,
-			HCSignalsTotal: model.Metrics.HCSignalsTotal,
+			HCPrecision:    hcPrecision,
+			HCSignalRate:   hcSignalRate,
+			HCSignalsTotal: hcSignalsTotal,
 			NTestTotal:     model.Metrics.NTestTotal,
 			HighConfidence: prob > thr.ThresholdHigh || prob < thr.ThresholdLow,
 		}
