@@ -1,26 +1,43 @@
 # News Aggregator
 
-6 parallel sources feed the Fundamental analysis node:
+7 parallel sources feed the Fundamental analysis node. Each source gracefully
+skips (returns empty) when its credential is missing or its access fails —
+aggregator never errors out on a single source.
 
-| Source | API key | Coverage | Category |
-|--------|---------|----------|----------|
-| Finnhub `/general` | `FINNHUB_API_KEY` | Macro, geopolitics, general | macro · geopolitics · regulation |
-| Finnhub `/crypto` | same | Crypto-specific news | crypto |
-| CoinDesk RSS | — (free) | Crypto news | crypto |
-| Cointelegraph RSS | — (free) | Crypto news | crypto |
-| Alpha Vantage `NEWS_SENTIMENT` | `ALPHA_VANTAGE_API_KEY` | Pre-labeled sentiment, macro + crypto | macro · crypto |
-| **LunarCrush `/coins/:symbol/posts`** | `LUNARCRUSH_API_KEY` | **Verified KOL Twitter/Reddit posts** | **social** |
+| Source | API key | Status | Coverage | Category |
+|--------|---------|--------|----------|----------|
+| Finnhub `/general` | `FINNHUB_API_KEY` | ✅ works | Macro, geopolitics | macro · geopolitics · regulation |
+| Finnhub `/crypto` | same | ✅ works | Crypto-specific news | crypto |
+| CoinDesk RSS | — | ✅ free | Crypto news | crypto |
+| Cointelegraph RSS | — | ✅ free | Crypto news | crypto |
+| Alpha Vantage `NEWS_SENTIMENT` | `ALPHA_VANTAGE_API_KEY` | ✅ free key | Pre-labeled sentiment | macro · crypto |
+| **LunarCrush posts** | `LUNARCRUSH_API_KEY` | ⚠ paid since Nov 2025 | KOL Twitter/Reddit | social |
+| **Reddit hot** | — | ⚠ 403 without OAuth since Jul 2023 | Reddit r/{coin} | social |
 
-## LunarCrush setup
+## Social sources — the reality in 2026
 
-1. Sign up at https://lunarcrush.com/developers
-2. Free tier: 200 req/min, 10k/day (sufficient for our cache-backed aggregator)
-3. Copy API key and set `LUNARCRUSH_API_KEY` env var before starting backend
-4. Posts appear in `CryptoFundamental` node under the **Social** filter chip
-5. Posts from accounts with ≥10k followers AND ≥100 interactions are flagged
-   as **KOL** (key opinion leader) in the UI with ⚡ badge
+The "crypto Twitter insider" feature ran into 2026 API tightening:
 
-Without the key, the aggregator silently skips LunarCrush — no errors.
+- **LunarCrush** removed free tier in November 2025. Their `posts` endpoints
+  now require **Individual subscription ($29/mo)**. Scaffold is in place —
+  subscribe and set `LUNARCRUSH_API_KEY` to enable.
+- **Reddit** blocks unauthenticated JSON requests from server IPs with HTTP 403
+  (since July 2023). To use Reddit, add OAuth2 client-credentials flow
+  (register app at reddit.com/prefs/apps, free). Scaffold is in place in
+  `reddit.go` — TODO add `GetAccessToken()` helper.
+- **CryptoPanic** free tier discontinued April 2026.
+
+Without paid/OAuth social sources, the aggregator still provides ~50 news
+items per request from CoinDesk + Cointelegraph + Finnhub, which covers the
+main macro/crypto/regulation sentiment signal. The **social** category will
+just be empty until one of the social sources is enabled.
+
+## Sentiment mapping
+
+- CoinDesk/Cointelegraph/Finnhub: keyword-based heuristic (bullish/bearish word lists)
+- Alpha Vantage: pre-labeled sentiment score from their ML
+- LunarCrush: 1..5 → [-1, +1] via `(score - 3) / 2`
+- Reddit: keyword-based on title + body
 
 ## Sentiment mapping (LunarCrush → our scale)
 

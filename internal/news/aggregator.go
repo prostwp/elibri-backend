@@ -132,12 +132,13 @@ func pruneExpired() {
 
 // ─── Main aggregator ──────────────────────────────────────
 
-// Fetch combines 6 sources in parallel:
+// Fetch combines 7 sources in parallel:
 // - Finnhub /general (macro + geopolitics)
 // - Finnhub /crypto (crypto-specific via same API key)
 // - CoinDesk RSS + Cointelegraph RSS (crypto)
 // - Alpha Vantage NEWS_SENTIMENT (macro + crypto with pre-labeled sentiment) — only if AV key set
-// - LunarCrush social (verified Twitter/Reddit KOL posts per coin) — only if LC key set
+// - LunarCrush social (paid tier only — falls through when no key / no subscription)
+// - Reddit hot posts per coin's subs (free, no key needed) — verified KOL + high-engagement
 func Fetch(ctx context.Context, finnhubKey, alphaVantageKey, lunarCrushKey, symbol string, hours int) (Aggregate, error) {
 	cacheKey := symbol + "|" + strconv.Itoa(hours)
 	cacheMu.Lock()
@@ -148,9 +149,9 @@ func Fetch(ctx context.Context, finnhubKey, alphaVantageKey, lunarCrushKey, symb
 	cacheMu.Unlock()
 
 	var wg sync.WaitGroup
-	var fhGeneral, fhCrypto, cdItems, ctItems, avItems, lcItems []Item
+	var fhGeneral, fhCrypto, cdItems, ctItems, avItems, lcItems, rdItems []Item
 
-	wg.Add(6)
+	wg.Add(7)
 	go func() {
 		defer wg.Done()
 		if finnhubKey != "" {
@@ -179,15 +180,20 @@ func Fetch(ctx context.Context, finnhubKey, alphaVantageKey, lunarCrushKey, symb
 		defer wg.Done()
 		lcItems, _ = FetchLunarCrush(ctx, lunarCrushKey, symbol, hours)
 	}()
+	go func() {
+		defer wg.Done()
+		rdItems, _ = FetchReddit(ctx, symbol, hours)
+	}()
 	wg.Wait()
 
 	// Order matters: dedupeByURL keeps first-seen. We want primary sources
-	// (CoinDesk/Cointelegraph/AlphaVantage/LunarCrush) attributed directly
+	// (CoinDesk/Cointelegraph/AlphaVantage/LunarCrush/Reddit) attributed directly
 	// rather than Finnhub's syndicated copies.
 	all := cdItems
 	all = append(all, ctItems...)
 	all = append(all, avItems...)
 	all = append(all, lcItems...)
+	all = append(all, rdItems...)
 	all = append(all, fhGeneral...)
 	all = append(all, fhCrypto...)
 
