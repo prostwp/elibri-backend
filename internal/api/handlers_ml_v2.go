@@ -87,6 +87,118 @@ func handleMLPredictV2(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, prediction)
 }
 
+// mlPredictMultiResponse bundles predictions for the same symbol across
+// several intervals. The MTF "verdict" is the alignment of direction/confidence
+// — when all intervals agree we flag it as high-quality.
+type mlPredictMultiResponse struct {
+	Symbol     string                      `json:"symbol"`
+	Primary    string                      `json:"primary_interval"`
+	Predictions map[string]*ml.PredictionV2 `json:"predictions"` // interval → prediction
+	Consensus  struct {
+		Direction    string  `json:"direction"`      // aligned direction or "mixed"
+		Alignment    float64 `json:"alignment"`      // 0..1, fraction of TFs agreeing with majority
+		HighQuality  bool    `json:"high_quality"`   // true if 100% aligned AND majority has HC
+		AvgConfidence float64 `json:"avg_confidence"`
+	} `json:"consensus"`
+}
+
+type mlPredictMultiRequest struct {
+	Symbol       string   `json:"symbol"`
+	Intervals    []string `json:"intervals"` // ["1h","4h","1d"]
+	TradingStyle string   `json:"trading_style"`
+	Source       string   `json:"source"`
+}
+
+func handleMLPredictMulti(w http.ResponseWriter, r *http.Request) {
+	var req mlPredictMultiRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Symbol == "" {
+		http.Error(w, `{"error":"symbol required"}`, http.StatusBadRequest)
+		return
+	}
+	if len(req.Intervals) == 0 {
+		req.Intervals = []string{"1h", "4h", "1d"}
+	}
+	if req.TradingStyle == "" {
+		req.TradingStyle = "swing"
+	}
+	if req.Source == "" {
+		req.Source = "binance"
+	}
+
+	// Fetch candles for each requested interval, pass to PredictV2 per-TF.
+	// BTC cross-asset context reused across TFs when symbol != BTC.
+	predictions := make(map[string]*ml.PredictionV2)
+	for _, iv := range req.Intervals {
+		candles, err := market.FetchCryptoCandles(req.Symbol, iv, 500)
+		if err != nil || len(candles) < 30 {
+			predictions[iv] = nil
+			continue
+		}
+		var btcCloses []float64
+		if req.Symbol != "BTCUSDT" {
+			btc, err := market.FetchCryptoCandles("BTCUSDT", iv, len(candles))
+			if err == nil && len(btc) == len(candles) {
+				btcCloses = make([]float64, len(btc))
+				for i, c := range btc {
+					btcCloses[i] = c.Close
+				}
+			}
+		}
+		p := ml.PredictV2(req.Symbol, iv, req.TradingStyle, candles, nil, btcCloses)
+		predictions[iv] = &p
+	}
+
+	// Compute consensus: count directions, check HC alignment.
+	dirCount := map[string]int{"buy": 0, "sell": 0, "neutral": 0}
+	var sumConf float64
+	nValid := 0
+	hcAligned := 0
+	for _, p := range predictions {
+		if p == nil {
+			continue
+		}
+		dirCount[p.Direction]++
+		sumConf += p.Confidence
+		nValid++
+		if p.Metrics.HighConfidence {
+			hcAligned++
+		}
+	}
+
+	resp := mlPredictMultiResponse{
+		Symbol:      req.Symbol,
+		Primary:     req.Intervals[len(req.Intervals)-1], // highest TF is primary (trend)
+		Predictions: predictions,
+	}
+
+	if nValid > 0 {
+		// Majority direction.
+		majority := "neutral"
+		maxCount := 0
+		for dir, c := range dirCount {
+			if c > maxCount {
+				maxCount = c
+				majority = dir
+			}
+		}
+		alignment := float64(maxCount) / float64(nValid)
+		resp.Consensus.Direction = majority
+		if alignment < 1.0 && dirCount["buy"] > 0 && dirCount["sell"] > 0 {
+			resp.Consensus.Direction = "mixed" // explicit conflict
+		}
+		resp.Consensus.Alignment = alignment
+		resp.Consensus.AvgConfidence = sumConf / float64(nValid)
+		// High-quality signal: ALL intervals agree + at least one HC on any TF.
+		resp.Consensus.HighQuality = alignment == 1.0 && hcAligned > 0 && majority != "neutral"
+	}
+
+	writeJSON(w, resp)
+}
+
 // handleMLModels returns metadata about loaded V2 models.
 func handleMLModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{

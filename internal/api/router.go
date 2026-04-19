@@ -47,6 +47,7 @@ func NewRouter(cfg *config.Config) http.Handler {
 
 	// ML (real)
 	mux.HandleFunc("POST /api/v1/ml/predict", handleMLPredictV2)
+	mux.HandleFunc("POST /api/v1/ml/predict/multi", handleMLPredictMulti)
 	mux.HandleFunc("POST /api/v1/ml/predict/legacy", handleMLPredictReal)
 	mux.HandleFunc("GET /api/v1/ml/models", handleMLModels)
 	mux.HandleFunc("POST /api/v1/ml/train", handleMLTrain)
