@@ -138,5 +138,12 @@
     "horizon": 16,
     "accuracy": 0.5098830671714988,
     "sharpe": -1.2933822145745768
+  },
+  "BTCUSDT_5m": {
+    "model": "BTCUSDT_5m_v1776621235.json",
+    "patterns": "BTCUSDT_5m_patterns.json",
+    "horizon": 12,
+    "accuracy": 0.5169450060490146,
+    "sharpe": -1.39933117008003
   }
 }

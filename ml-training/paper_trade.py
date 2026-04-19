@@ -93,19 +93,26 @@ def simulate_last_n_days(symbol: str, interval: str, days: int, initial_equity: 
     i = 0
     while i < n_test:
         p = proba[i]
-        # Use 0.55/0.45 threshold for 90-day paper-trading visibility.
-        # (Backtest uses 0.60 for longer-horizon OOS; lower here so recent
-        #  90 days have enough signals to show meaningful activity.)
-        if p <= 0.55 and p >= 0.45:
+        # Use per-TF adaptive threshold / risk (same as backtest.py TF_TRADE_PARAMS).
+        # Prevents 5m/15m over-trading with tight stops on 5% risk → ruin curve.
+        from backtest import TF_TRADE_PARAMS
+        tf_params = TF_TRADE_PARAMS.get(interval, TF_TRADE_PARAMS["4h"])
+        thr = tf_params["threshold"]
+        low_thr = 1.0 - thr
+        sl_atr = tf_params["sl_atr"]
+        tp_atr = tf_params["tp_atr"]
+        risk_pct = tf_params["risk"]
+
+        if p <= thr and p >= low_thr:
             i += 1
             continue
-        direction = "long" if p > 0.55 else "short"
+        direction = "long" if p > thr else "short"
         entry = test_closes[i]
         atr = test_atr[i] if test_atr[i] > 0 else entry * 0.01
         if direction == "long":
-            sl, tp = entry - 1.5 * atr, entry + 2.5 * atr
+            sl, tp = entry - sl_atr * atr, entry + tp_atr * atr
         else:
-            sl, tp = entry + 1.5 * atr, entry - 2.5 * atr
+            sl, tp = entry + sl_atr * atr, entry - tp_atr * atr
 
         exit_idx, exit_price = None, None
         for j in range(i + 1, min(n_test, i + 100)):
@@ -121,7 +128,7 @@ def simulate_last_n_days(symbol: str, interval: str, days: int, initial_equity: 
 
         pnl_pct = (exit_price - entry) / entry if direction == "long" else (entry - exit_price) / entry
         sl_dist = abs(entry - sl) / entry
-        size = (equity * 0.05) / max(sl_dist, 1e-6)
+        size = (equity * risk_pct) / max(sl_dist, 1e-6)
         pnl_dollars = size * pnl_pct
         equity += pnl_dollars
 

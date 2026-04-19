@@ -361,13 +361,19 @@ func handleMLTrain(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleMLReload forces re-scan of the models directory (for dev hot-reload).
+// handleMLReload forces re-scan of the models directory + threshold file.
+// Call after train.py + analyze_thresholds.py produce fresh artifacts.
 func handleMLReload(w http.ResponseWriter, r *http.Request) {
 	n, err := ml.LoadModelsV2()
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	ml.MarkLoaded()
-	writeJSON(w, map[string]any{"loaded": n})
+	// Also hot-reload thresholds (previously main.go did this once at startup,
+	// meaning fresh analyze_thresholds output was stale until restart).
+	nThr, _ := ml.LoadThresholds("ml-training")
+	writeJSON(w, map[string]any{"models_loaded": n, "thresholds_loaded": nThr})
 }

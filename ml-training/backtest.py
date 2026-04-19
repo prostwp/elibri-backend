@@ -101,22 +101,45 @@ def classify_regime(btc_df: pd.DataFrame) -> pd.Series:
     return regime
 
 
+# Per-TF trading params. Lower-freq TFs (4h/1d) have wider price swings so
+# 5% risk works. Intraday 5m/15m need MUCH tighter settings to not over-trade.
+# Previous results: BTC 15m -99.7% with 0.60/5% — classic ruin curve.
+TF_TRADE_PARAMS: dict = {
+    "5m":  {"threshold": 0.75, "risk": 0.005, "sl_atr": 1.5, "tp_atr": 2.0},
+    "15m": {"threshold": 0.72, "risk": 0.01,  "sl_atr": 1.5, "tp_atr": 2.5},
+    "1h":  {"threshold": 0.65, "risk": 0.02,  "sl_atr": 1.5, "tp_atr": 2.5},
+    "4h":  {"threshold": 0.60, "risk": 0.05,  "sl_atr": 1.5, "tp_atr": 2.5},
+    "1d":  {"threshold": 0.55, "risk": 0.05,  "sl_atr": 1.5, "tp_atr": 2.5},
+}
+
+
 def simulate_trades(
     symbol: str,
     interval: str,
     test_proba: np.ndarray,
     test_df: pd.DataFrame,
     regimes: pd.Series,
-    # Default 0.60 matches observed meta-learner spread (probs concentrate
-    # in [0.40, 0.67]); analyze_thresholds.py may pick a better per-model
-    # value and downstream threshold files override.
-    hc_threshold: float = 0.60,
-    sl_atr_mult: float = 1.5,
-    tp_atr_mult: float = 2.5,
-    risk_per_trade: float = 0.05,
+    hc_threshold: float | None = None,
+    sl_atr_mult: float | None = None,
+    tp_atr_mult: float | None = None,
+    risk_per_trade: float | None = None,
     initial_equity: float = 10000.0,
 ) -> BacktestResult:
-    """Walk through test bars, open trades on HC signals, track PnL."""
+    """Walk through test bars, open trades on HC signals, track PnL.
+
+    When called with None for threshold/SL/TP/risk, looks up TF_TRADE_PARAMS
+    for adaptive defaults per interval.
+    """
+    # Adaptive defaults per interval when caller doesn't override.
+    params = TF_TRADE_PARAMS.get(interval, TF_TRADE_PARAMS["4h"])
+    if hc_threshold is None:
+        hc_threshold = params["threshold"]
+    if sl_atr_mult is None:
+        sl_atr_mult = params["sl_atr"]
+    if tp_atr_mult is None:
+        tp_atr_mult = params["tp_atr"]
+    if risk_per_trade is None:
+        risk_per_trade = params["risk"]
     closes = test_df["close"].to_numpy()
     highs = test_df["high"].to_numpy()
     lows = test_df["low"].to_numpy()
