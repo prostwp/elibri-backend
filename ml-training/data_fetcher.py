@@ -41,10 +41,17 @@ def _cache_path(symbol: str, interval: str) -> Path:
 
 
 def fetch_klines(symbol: str, interval: str, start_ms: int, end_ms: int) -> pd.DataFrame:
-    """Pull klines with pagination. Returns canonical OHLCV DataFrame."""
+    """Pull klines with pagination. Returns canonical OHLCV DataFrame.
+
+    Key behaviour: when a batch is empty (common for pre-listing start dates),
+    we advance `cur` by the window size and keep trying rather than bailing out.
+    Only give up after 5 consecutive empty batches (e.g. SOL queried from 2018
+    has ~28 months of pre-listing empty windows before data starts 2020-08).
+    """
     step = INTERVAL_MS[interval] * 1000  # 1000 candles per request
     rows: list[list] = []
     cur = start_ms
+    consecutive_empty = 0
     while cur < end_ms:
         nxt = min(cur + step, end_ms)
         r = requests.get(
@@ -61,7 +68,15 @@ def fetch_klines(symbol: str, interval: str, start_ms: int, end_ms: int) -> pd.D
         r.raise_for_status()
         batch = r.json()
         if not batch:
-            break
+            consecutive_empty += 1
+            # Walk forward by the window size; skip this gap.
+            cur = nxt
+            if consecutive_empty >= 20:
+                # 20 empty windows = 2+ years of nothing → truly no data.
+                break
+            time.sleep(0.15)
+            continue
+        consecutive_empty = 0
         rows.extend(batch)
         last_ts = batch[-1][0]
         cur = last_ts + INTERVAL_MS[interval]

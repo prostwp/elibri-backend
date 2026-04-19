@@ -225,12 +225,16 @@ def build_features(df: pd.DataFrame, btc_close: np.ndarray | None = None) -> pd.
     vol20 = vol / (vol_s.rolling(20, min_periods=1).mean().to_numpy() + 1e-12)
     taker_ratio = taker_buy / (vol + 1e-12)
 
-    # Returns
+    # Returns. Clip to ±100% to prevent outlier altcoin pumps from overflowing
+    # downstream LogReg / matmul operations (observed 50x spikes in SOL/SHIB).
     ret1 = np.diff(close, prepend=close[0]) / (np.roll(close, 1) + 1e-12)
     ret1[0] = 0
     close_s = pd.Series(close)
     ret5 = close_s.pct_change(5, fill_method=None).fillna(0).to_numpy()
     ret20 = close_s.pct_change(20, fill_method=None).fillna(0).to_numpy()
+    ret1 = np.clip(ret1, -1.0, 1.0)
+    ret5 = np.clip(ret5, -1.0, 1.0)
+    ret20 = np.clip(ret20, -1.0, 1.0)
 
     # Higher highs / lower lows in last 10 bars
     high_s = pd.Series(high)
@@ -261,10 +265,11 @@ def build_features(df: pd.DataFrame, btc_close: np.ndarray | None = None) -> pd.
         btc_corr = np.concatenate([np.zeros(len(close) - min_len), corr30])
         btc_beta = np.concatenate([np.ones(len(close) - min_len), beta30])
 
-    # Volatility regime: ATR/price ratio percentile (0-1)
+    # Volatility regime: ATR/price ratio percentile (0-1). Shift by 1 so bar t
+    # doesn't rank itself (that would be label leakage via its own ATR value).
     atr_norm = atr14 / (close + 1e-12)
     atr_s = pd.Series(atr_norm)
-    vol_regime = atr_s.rolling(100, min_periods=20).rank(pct=True).fillna(0.5).to_numpy()
+    vol_regime = atr_s.rolling(100, min_periods=20).rank(pct=True).shift(1).fillna(0.5).to_numpy()
 
     # Lagged (4 bars back)
     rsi14_lag4 = np.roll(rsi14, 4)

@@ -50,38 +50,42 @@ def simulate_last_n_days(symbol: str, interval: str, days: int, initial_equity: 
 
     horizon = HORIZON_MAP[interval]
     feat = build_features(df, btc_close=btc_close)
-    from feature_engine import make_target
+    from feature_engine import make_target, _atr
     target = make_target(df["close"].to_numpy(), horizon=horizon, threshold=0.0)
     mask = target >= 0
+    # Keep aligned: feat, target, and reindexed high/low arrays.
+    df_aligned = df.loc[mask].reset_index(drop=True)
     feat = feat.loc[mask].reset_index(drop=True)
     target = target[mask]
+    all_highs = df_aligned["high"].to_numpy()
+    all_lows = df_aligned["low"].to_numpy()
 
     # Split: last N days = test, earlier = train.
     cutoff = pd.Timestamp.now(tz="UTC") - timedelta(days=days)
-    test_mask = pd.to_datetime(feat["open_time"]).dt.tz_convert("UTC") > cutoff
+    feat_times = pd.to_datetime(feat["open_time"])
+    if feat_times.dt.tz is None:
+        feat_times = feat_times.dt.tz_localize("UTC")
+    else:
+        feat_times = feat_times.dt.tz_convert("UTC")
+    test_mask = (feat_times > cutoff).to_numpy()
     n_test = int(test_mask.sum())
     if n_test < 10:
         return {"symbol": symbol, "interval": interval, "error": f"only {n_test} test bars"}
 
-    X_train = feat.loc[~test_mask, FEATURE_NAMES].to_numpy()
+    X_train = feat[FEATURE_NAMES].to_numpy()[~test_mask]
     y_train = target[~test_mask]
-    X_test = feat.loc[test_mask, FEATURE_NAMES].to_numpy()
-    test_closes = feat.loc[test_mask, "close"].to_numpy()
-    test_dates = feat.loc[test_mask, "open_time"].values
-    test_highs = df.loc[mask, "high"].to_numpy()[~test_mask.to_numpy(dtype=bool).__invert__()[:len(df.loc[mask])]] if False else np.zeros(n_test)
-    # Simpler: take high/low from original df by index
-    full_mask_idx = mask.to_numpy().nonzero()[0]
-    test_start_idx = full_mask_idx[(~test_mask).sum()]
-    orig_highs = df["high"].to_numpy()[full_mask_idx[test_mask.to_numpy().nonzero()[0]]]
-    orig_lows = df["low"].to_numpy()[full_mask_idx[test_mask.to_numpy().nonzero()[0]]]
+    X_test = feat[FEATURE_NAMES].to_numpy()[test_mask]
+    test_closes = feat["close"].to_numpy()[test_mask]
+    test_dates = feat["open_time"].to_numpy()[test_mask]
+    orig_highs = all_highs[test_mask]
+    orig_lows = all_lows[test_mask]
 
     xgb, lgbm, rf, meta = train_ensemble(X_train, y_train, quick=False)
     proba, _ = ensemble_predict(xgb, lgbm, rf, meta, X_test)
 
-    # Now simulate with HC filter.
-    from feature_engine import _atr
-    atr_all = _atr(df["high"].to_numpy()[mask.to_numpy()], df["low"].to_numpy()[mask.to_numpy()], feat["close"].to_numpy(), 14)
-    test_atr = atr_all[-n_test:]
+    # ATR aligned to test subset.
+    atr_all = _atr(all_highs, all_lows, feat["close"].to_numpy(), 14)
+    test_atr = atr_all[test_mask]
 
     equity = initial_equity
     trades = []
@@ -89,11 +93,13 @@ def simulate_last_n_days(symbol: str, interval: str, days: int, initial_equity: 
     i = 0
     while i < n_test:
         p = proba[i]
-        # Use 0.60/0.40 threshold (matches meta-learner spread).
-        if p <= 0.60 and p >= 0.40:
+        # Use 0.55/0.45 threshold for 90-day paper-trading visibility.
+        # (Backtest uses 0.60 for longer-horizon OOS; lower here so recent
+        #  90 days have enough signals to show meaningful activity.)
+        if p <= 0.55 and p >= 0.45:
             i += 1
             continue
-        direction = "long" if p > 0.60 else "short"
+        direction = "long" if p > 0.55 else "short"
         entry = test_closes[i]
         atr = test_atr[i] if test_atr[i] > 0 else entry * 0.01
         if direction == "long":

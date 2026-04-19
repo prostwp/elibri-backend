@@ -45,7 +45,12 @@ func readPatternsFile(path string) (*Patterns, error) {
 // Query returns top-k most similar historical samples.
 // rawFeatures are in original feature space — we z-score them with stored scaler.
 func (p *Patterns) Query(rawFeatures []float64, k int) []SimilarSituation {
-	if len(p.Samples) == 0 || len(rawFeatures) != len(p.FeatureCols) {
+	// Strict validation to prevent index-out-of-bounds panic when
+	// model and scaler arrays have mismatched lengths (corrupted JSON).
+	if len(p.Samples) == 0 ||
+		len(rawFeatures) != len(p.FeatureCols) ||
+		len(p.ScalerMean) != len(rawFeatures) ||
+		len(p.ScalerScale) != len(rawFeatures) {
 		return nil
 	}
 	// Scale.

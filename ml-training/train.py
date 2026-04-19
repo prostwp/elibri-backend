@@ -148,9 +148,21 @@ def walk_forward_split(dates: np.ndarray, train_months: int = 12, test_months: i
 
 
 def train_ensemble(X_train: np.ndarray, y_train: np.ndarray, quick: bool = False):
-    """Train XGB + LGBM + RF + meta LogReg via stacking with OOF predictions."""
-    # Full mode uses 200 estimators for robust generalization across regimes.
-    # Quick mode (50) is only for pipeline validation, not deployed models.
+    """
+    Train XGB + LGBM + RF + F1-weighted average meta.
+
+    Previous implementation used a 3-way temporal "OOF" split that fed LogReg
+    lookahead data: part B trained on [:split1]∪[split2:n] and predicted the
+    middle — the model saw FUTURE data when predicting past segments. This
+    caused the meta-learner to collapse toward 0.5 because the base probs
+    were artificially confident on training data.
+
+    Fix: proper forward-only OOF via TimeSeriesSplit, then weight base models
+    by their individual OOF F1 (not a LogReg meta that L2-regularizes to mean).
+    This preserves probability dynamic range so HC signals actually trigger.
+    """
+    from sklearn.model_selection import TimeSeriesSplit
+
     n_est = 50 if quick else 200
 
     xgb = XGBClassifier(
@@ -169,52 +181,56 @@ def train_ensemble(X_train: np.ndarray, y_train: np.ndarray, quick: bool = False
         n_jobs=-1, random_state=42,
     )
 
-    # Simple OOF via 3-way split within train set for meta-learner.
-    n = len(X_train)
-    split1 = n // 3
-    split2 = 2 * n // 3
+    # Proper forward-only time-series OOF.
+    tss = TimeSeriesSplit(n_splits=3)
+    oof_xgb = np.zeros(len(X_train))
+    oof_lgbm = np.zeros(len(X_train))
+    oof_rf = np.zeros(len(X_train))
+    mask_oof = np.zeros(len(X_train), dtype=bool)
 
-    # Part A: train base on [split1:], predict on [:split1]
-    xgb.fit(X_train[split1:], y_train[split1:])
-    lgbm.fit(X_train[split1:], y_train[split1:])
-    rf.fit(X_train[split1:], y_train[split1:])
-    p_a = np.stack([
-        xgb.predict_proba(X_train[:split1])[:, 1],
-        lgbm.predict_proba(X_train[:split1])[:, 1],
-        rf.predict_proba(X_train[:split1])[:, 1],
-    ], axis=1)
+    for tr_idx, te_idx in tss.split(X_train):
+        xgb.fit(X_train[tr_idx], y_train[tr_idx])
+        lgbm.fit(X_train[tr_idx], y_train[tr_idx])
+        rf.fit(X_train[tr_idx], y_train[tr_idx])
+        oof_xgb[te_idx] = xgb.predict_proba(X_train[te_idx])[:, 1]
+        oof_lgbm[te_idx] = lgbm.predict_proba(X_train[te_idx])[:, 1]
+        oof_rf[te_idx] = rf.predict_proba(X_train[te_idx])[:, 1]
+        mask_oof[te_idx] = True
 
-    # Part B: train on flipped, predict on middle.
-    idx_ab = np.concatenate([np.arange(split1), np.arange(split2, n)])
-    xgb.fit(X_train[idx_ab], y_train[idx_ab])
-    lgbm.fit(X_train[idx_ab], y_train[idx_ab])
-    rf.fit(X_train[idx_ab], y_train[idx_ab])
-    p_b = np.stack([
-        xgb.predict_proba(X_train[split1:split2])[:, 1],
-        lgbm.predict_proba(X_train[split1:split2])[:, 1],
-        rf.predict_proba(X_train[split1:split2])[:, 1],
-    ], axis=1)
-
-    # Part C.
-    xgb.fit(X_train[:split2], y_train[:split2])
-    lgbm.fit(X_train[:split2], y_train[:split2])
-    rf.fit(X_train[:split2], y_train[:split2])
-    p_c = np.stack([
-        xgb.predict_proba(X_train[split2:])[:, 1],
-        lgbm.predict_proba(X_train[split2:])[:, 1],
-        rf.predict_proba(X_train[split2:])[:, 1],
-    ], axis=1)
-
-    P_oof = np.vstack([p_a, p_b, p_c])
+    # Weights = per-model F1 on OOF subset (masked to skip first fold).
+    from sklearn.metrics import f1_score as _f1
+    if mask_oof.sum() > 10:
+        f1_xgb = _f1(y_train[mask_oof], (oof_xgb[mask_oof] > 0.5).astype(int), zero_division=0)
+        f1_lgbm = _f1(y_train[mask_oof], (oof_lgbm[mask_oof] > 0.5).astype(int), zero_division=0)
+        f1_rf = _f1(y_train[mask_oof], (oof_rf[mask_oof] > 0.5).astype(int), zero_division=0)
+        total = max(f1_xgb + f1_lgbm + f1_rf, 1e-6)
+        weights = np.array([f1_xgb / total, f1_lgbm / total, f1_rf / total])
+    else:
+        weights = np.array([1 / 3, 1 / 3, 1 / 3])
 
     # Final base models: train on full data.
     xgb.fit(X_train, y_train)
     lgbm.fit(X_train, y_train)
     rf.fit(X_train, y_train)
 
-    # Meta-learner on OOF.
-    meta = LogisticRegression(max_iter=1000, C=1.0)
-    meta.fit(P_oof, y_train)
+    # "Meta" is now a tiny LogReg wrapper that stores these weights as
+    # coefficients so the Go inference path stays unchanged (predicts via
+    # meta.coef_ × base_probs + intercept).
+    meta = LogisticRegression(max_iter=1000, C=100.0)  # near-zero regularization
+    # Seed it with our computed weights using a lightweight fit.
+    # Input: synthetic points near corners of prob space to anchor weights.
+    X_seed = np.array([
+        [0.1, 0.1, 0.1],   # all-bearish → label 0
+        [0.9, 0.9, 0.9],   # all-bullish → label 1
+        [0.2, 0.3, 0.2],
+        [0.8, 0.7, 0.8],
+    ])
+    y_seed = np.array([0, 1, 0, 1])
+    meta.fit(X_seed, y_seed)
+    # Overwrite with f1-proportional weights (keeps Go deserialization happy).
+    # Scale by 4 so probs don't flatten through sigmoid.
+    meta.coef_ = (weights.reshape(1, -1) * 4.0).astype(np.float64)
+    meta.intercept_ = np.array([-2.0], dtype=np.float64)
 
     return xgb, lgbm, rf, meta
 

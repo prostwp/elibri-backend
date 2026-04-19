@@ -56,7 +56,12 @@ func handleMLPredictV2(w http.ResponseWriter, r *http.Request) {
 			candles, err = market.FetchCandles(req.Symbol, 500)
 		}
 		if err != nil {
-			http.Error(w, `{"error":"failed to fetch candles: `+err.Error()+`"}`, http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error": "failed to fetch candles",
+				"detail": err.Error(),
+			})
 			return
 		}
 	}
