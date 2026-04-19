@@ -9,12 +9,14 @@ import (
 
 // TradingStyleHorizon maps trading-style preset to bars ahead.
 // Frontend TradingStyleNode values: "scalp", "day", "swing", "position".
-// Aligned with Python HORIZON_MAP per interval.
+// Aligned with Python HORIZON_MAP per interval. Frontend picks interval
+// separately; these horizon overrides only apply when different from the
+// interval's default training horizon.
 var TradingStyleHorizon = map[string]int{
-	"scalp":    6,
-	"day":      12,
-	"swing":    18,
-	"position": 30,
+	"scalp":    12,  // 5m × 12 = 1 hour ahead
+	"day":      16,  // 15m × 16 = 4 hours ahead
+	"swing":    18,  // 4h × 18 = 3 days ahead
+	"position": 10,  // 1d × 10 = 10 days ahead
 }
 
 // PredictionV2 is the richer response for /api/v1/ml/predict.

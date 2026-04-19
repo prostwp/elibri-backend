@@ -44,10 +44,13 @@ LOGS_DIR.mkdir(exist_ok=True)
 
 
 # Horizon in bars per interval — matches TradingStyle node ranges.
+# Lower TFs predict shorter horizons (high-freq); higher TFs look further out.
 HORIZON_MAP = {
-    "1h": 24,    # ~1 day ahead (scalp/day trade)
-    "4h": 18,    # ~3 days ahead (swing short)
-    "1d": 10,    # ~10 days ahead (swing / position)
+    "5m":  12,   # ~1 hour ahead (scalping)
+    "15m": 16,   # ~4 hours ahead (day trading early)
+    "1h":  24,   # ~1 day ahead (day trading / short swing)
+    "4h":  18,   # ~3 days ahead (swing short)
+    "1d":  10,   # ~10 days ahead (swing / position)
 }
 
 
