@@ -126,6 +126,34 @@ func handleMLPaperTrades(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
+// handleMLRunBacktest triggers backtest.py in background.
+func handleMLRunBacktest(w http.ResponseWriter, r *http.Request) {
+	go func() {
+		trainingDir, _ := filepath.Abs("ml-training")
+		cmd := exec.Command("./.venv/bin/python", "-u", "backtest.py")
+		cmd.Dir = trainingDir
+		_ = cmd.Run()
+	}()
+	writeJSON(w, map[string]any{
+		"status":  "started",
+		"message": "Backtest running — poll /ml/backtest in ~2-5 min",
+	})
+}
+
+// handleMLRunPaperTrades triggers paper_trade.py in background.
+func handleMLRunPaperTrades(w http.ResponseWriter, r *http.Request) {
+	go func() {
+		trainingDir, _ := filepath.Abs("ml-training")
+		cmd := exec.Command("./.venv/bin/python", "-u", "paper_trade.py")
+		cmd.Dir = trainingDir
+		_ = cmd.Run()
+	}()
+	writeJSON(w, map[string]any{
+		"status":  "started",
+		"message": "Paper trading running — poll /ml/paper-trades in ~2-5 min",
+	})
+}
+
 // handleMLStrategyBacktest returns one strategy's detailed backtest (trades + equity curve).
 func handleMLStrategyBacktest(w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")

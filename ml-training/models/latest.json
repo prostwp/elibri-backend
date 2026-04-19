@@ -19,5 +19,12 @@
     "horizon": 10,
     "accuracy": 0.509201248237165,
     "sharpe": -0.12003910971910386
+  },
+  "ETHUSDT_1h": {
+    "model": "ETHUSDT_1h_v1776570500.json",
+    "patterns": "ETHUSDT_1h_patterns.json",
+    "horizon": 24,
+    "accuracy": 0.5186646436629156,
+    "sharpe": -0.2715586645845916
   }
 }
