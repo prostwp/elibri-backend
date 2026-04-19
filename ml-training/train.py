@@ -163,25 +163,32 @@ def train_ensemble(X_train: np.ndarray, y_train: np.ndarray, quick: bool = False
     Fix: proper forward-only OOF via TimeSeriesSplit, then weight base models
     by their individual OOF F1 (not a LogReg meta that L2-regularizes to mean).
     This preserves probability dynamic range so HC signals actually trigger.
+
+    CPU: n_jobs capped at 4 to stay cool on passively-cooled MacBook Air
+    (n_jobs=-1 spawns 10+ workers which triggers thermal throttling after
+    ~5 min of sustained compute, dropping effective speed by 50%).
+    Override via ML_N_JOBS env var for desktops with active cooling.
     """
+    import os
     from sklearn.model_selection import TimeSeriesSplit
 
     n_est = 50 if quick else 200
+    n_jobs = int(os.getenv("ML_N_JOBS", "4"))
 
     xgb = XGBClassifier(
         n_estimators=n_est, max_depth=5, learning_rate=0.05,
         subsample=0.8, colsample_bytree=0.8,
-        eval_metric="logloss", n_jobs=-1, random_state=42,
+        eval_metric="logloss", n_jobs=n_jobs, random_state=42,
         tree_method="hist", verbosity=0,
     )
     lgbm = LGBMClassifier(
         n_estimators=n_est, max_depth=6, learning_rate=0.05,
         subsample=0.8, colsample_bytree=0.8,
-        n_jobs=-1, random_state=42, verbose=-1,
+        n_jobs=n_jobs, random_state=42, verbose=-1,
     )
     rf = RandomForestClassifier(
         n_estimators=n_est, max_depth=10,
-        n_jobs=-1, random_state=42,
+        n_jobs=n_jobs, random_state=42,
     )
 
     # Proper forward-only time-series OOF.
@@ -344,11 +351,15 @@ def train_one(symbol: str, interval: str, years: float, quick: bool, btc_close: 
     closes = feat["close"].to_numpy()
 
     # 3. Walk-forward CV.
-    # Reduced from monthly (84 folds for 8y) to quarterly (24 folds) — cuts
-    # training time 3.5× while keeping robust regime coverage (bull/bear/range
-    # each get multiple folds).
-    train_months = 4 if quick else 24
-    test_months = 1 if quick else 3
+    # TF-specific training window: high-freq data needs shorter train_months
+    # or we get 0 folds (e.g. 5m with 2 years and train_months=24 → data
+    # ends before first fold can start). Quick mode always uses 4mo/1mo.
+    if quick:
+        train_months, test_months = 4, 1
+    elif interval in ("5m", "15m"):
+        train_months, test_months = 6, 1   # 5m/15m: short windows = more folds
+    else:
+        train_months, test_months = 24, 3  # 1h/4h/1d: quarterly windows
     metrics: List[FoldMetrics] = []
     all_test_proba = []
     all_test_y = []

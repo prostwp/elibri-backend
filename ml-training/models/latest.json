@@ -103,5 +103,40 @@
     "horizon": 24,
     "accuracy": 0.5180173465305155,
     "sharpe": -0.9580986829699943
+  },
+  "BTCUSDT_15m": {
+    "model": "BTCUSDT_15m_v1776618790.json",
+    "patterns": "BTCUSDT_15m_patterns.json",
+    "horizon": 16,
+    "accuracy": 0.5245848824944322,
+    "sharpe": -1.8817847847560591
+  },
+  "ETHUSDT_15m": {
+    "model": "ETHUSDT_15m_v1776618970.json",
+    "patterns": "ETHUSDT_15m_patterns.json",
+    "horizon": 16,
+    "accuracy": 0.5188283823376991,
+    "sharpe": -1.3289850243206895
+  },
+  "SOLUSDT_15m": {
+    "model": "SOLUSDT_15m_v1776619176.json",
+    "patterns": "SOLUSDT_15m_patterns.json",
+    "horizon": 16,
+    "accuracy": 0.5044070117827881,
+    "sharpe": -1.3091554266888203
+  },
+  "XRPUSDT_15m": {
+    "model": "XRPUSDT_15m_v1776619387.json",
+    "patterns": "XRPUSDT_15m_patterns.json",
+    "horizon": 16,
+    "accuracy": 0.517590127838575,
+    "sharpe": -1.5708261830681998
+  },
+  "BNBUSDT_15m": {
+    "model": "BNBUSDT_15m_v1776619575.json",
+    "patterns": "BNBUSDT_15m_patterns.json",
+    "horizon": 16,
+    "accuracy": 0.5098830671714988,
+    "sharpe": -1.2933822145745768
   }
 }
