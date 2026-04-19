@@ -42,19 +42,37 @@ var (
 )
 
 // InitExecution reads env vars and picks the safest mode. Called from main.
+//
+// Prod mode requires BOTH:
+//   BINANCE_PROD=1
+//   BINANCE_PROD_ACK="I understand real money will trade"
+// Missing either → refuses prod and falls back to testnet or paper. This
+// is defense-in-depth against accidentally leaking BINANCE_PROD into a
+// dev/test env via copied config.
 func InitExecution() {
 	execMu.Lock()
 	defer execMu.Unlock()
 	apiKey = os.Getenv("BINANCE_API_KEY")
 	apiSecret = os.Getenv("BINANCE_API_SECRET")
-	prod := os.Getenv("BINANCE_PROD") == "1"
 	if apiKey == "" || apiSecret == "" {
 		currentMode = ModePaper
 		return
 	}
-	if prod {
+	prod := os.Getenv("BINANCE_PROD") == "1"
+	ack := os.Getenv("BINANCE_PROD_ACK") == "I understand real money will trade"
+	if prod && ack {
 		currentMode = ModeProd
+		// Never log the full key; first 4 chars are fine for audit.
+		safeKey := apiKey
+		if len(safeKey) > 4 {
+			safeKey = safeKey[:4] + "..."
+		}
+		fmt.Printf("⚠ LIVE TRADING ENABLED — key=%s\n", safeKey)
 		return
+	}
+	if prod && !ack {
+		// Mis-configured: prod flag without ack. Refuse, log, fall back.
+		fmt.Println("WARN: BINANCE_PROD=1 set but BINANCE_PROD_ACK missing — refusing to enable live trading, falling back to testnet")
 	}
 	currentMode = ModeTestnet
 }

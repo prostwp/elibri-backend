@@ -86,12 +86,18 @@ func FetchLunarCrush(ctx context.Context, apiKey, symbol string, hours int) ([]I
 		}
 		// LC sentiment is 1..5 — map to [-1, +1].
 		// 1 = strong bear → -1.0, 3 = neutral → 0, 5 = strong bull → +1.0
-		sent := (p.Sentiment - 3.0) / 2.0
-		if sent > 1 {
-			sent = 1
-		}
-		if sent < -1 {
-			sent = -1
+		// Guard: when LC omits the field it arrives as 0 (Go zero-value),
+		// which would collapse to -1.5 → clamped to -1.0 (false "strong bear").
+		// Treat [0, 1) as "missing" → neutral 0.
+		var sent float64
+		if p.Sentiment >= 1 {
+			sent = (p.Sentiment - 3.0) / 2.0
+			if sent > 1 {
+				sent = 1
+			}
+			if sent < -1 {
+				sent = -1
+			}
 		}
 
 		headline := p.PostTitle

@@ -472,7 +472,7 @@ def train_one(symbol: str, interval: str, years: float, quick: bool, btc_close: 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", nargs="*", default=None, help="Defaults to top-20")
-    ap.add_argument("--intervals", nargs="*", default=["4h"], choices=["1h", "4h", "1d"])
+    ap.add_argument("--intervals", nargs="*", default=["4h"], choices=["5m", "15m", "1h", "4h", "1d"])
     ap.add_argument("--years", type=float, default=2.0)
     ap.add_argument("--quick", action="store_true", help="50 estimators, 3 folds, for iteration")
     args = ap.parse_args()

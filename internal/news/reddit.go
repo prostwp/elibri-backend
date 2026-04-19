@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,6 +28,23 @@ import (
 // ≥200 comments → flagged as high-signal ("KOL" in UI).
 
 const redditUserAgent = "ElibriFX/0.2 (https://github.com/prostwp/elibri-backend)"
+
+// Debounce Reddit error logging: print once per status code per run.
+var (
+	redditLogOnce sync.Map
+)
+
+func logRedditOnce(status int, sub string) {
+	key := fmt.Sprintf("%d", status)
+	if _, loaded := redditLogOnce.LoadOrStore(key, true); loaded {
+		return
+	}
+	if status == 403 {
+		log.Printf("reddit: HTTP 403 (first seen on r/%s) — server IP blocked by Reddit since 2023. OAuth2 flow needed to enable social category.", sub)
+	} else {
+		log.Printf("reddit: HTTP %d on r/%s — skipping", status, sub)
+	}
+}
 
 // coinSubreddits maps a coin ticker to the most active subs for its ecosystem.
 // Covers top-20 we train on + general crypto subs as fallback.
@@ -103,6 +122,7 @@ func FetchReddit(ctx context.Context, symbol string, hours int) ([]Item, error) 
 			continue
 		}
 		if res.StatusCode != http.StatusOK {
+			logRedditOnce(res.StatusCode, sub)
 			res.Body.Close()
 			continue
 		}

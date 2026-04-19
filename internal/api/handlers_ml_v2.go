@@ -109,6 +109,27 @@ type mlPredictMultiRequest struct {
 	Source       string   `json:"source"`
 }
 
+// intervalRank sorts interval strings by actual duration (regardless of
+// request order). Used to pick the highest TF as trend anchor.
+var intervalRank = map[string]int{
+	"1m": 1, "5m": 2, "15m": 3, "30m": 4, "1h": 5, "4h": 6, "1d": 7, "1w": 8,
+}
+
+func pickHighestInterval(intervals []string) string {
+	best := ""
+	bestRank := -1
+	for _, iv := range intervals {
+		if r, ok := intervalRank[iv]; ok && r > bestRank {
+			bestRank = r
+			best = iv
+		}
+	}
+	if best == "" && len(intervals) > 0 {
+		return intervals[0] // fallback
+	}
+	return best
+}
+
 func handleMLPredictMulti(w http.ResponseWriter, r *http.Request) {
 	var req mlPredictMultiRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -169,9 +190,11 @@ func handleMLPredictMulti(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Pick primary = highest-TF (trend anchor), regardless of request order.
+	primary := pickHighestInterval(req.Intervals)
 	resp := mlPredictMultiResponse{
 		Symbol:      req.Symbol,
-		Primary:     req.Intervals[len(req.Intervals)-1], // highest TF is primary (trend)
+		Primary:     primary,
 		Predictions: predictions,
 	}
 
