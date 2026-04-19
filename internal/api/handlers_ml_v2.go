@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -97,6 +98,51 @@ func handleMLPaperStatus(w http.ResponseWriter, r *http.Request) {
 		"balance":   10000.0,
 		"positions": []any{},
 	})
+}
+
+// handleMLBacktest reads backtest_summary.json + per-strategy files.
+func handleMLBacktest(w http.ResponseWriter, r *http.Request) {
+	summaryPath := filepath.Join("ml-training", "logs", "backtest_summary.json")
+	data, err := os.ReadFile(summaryPath)
+	if err != nil {
+		writeJSON(w, map[string]any{"error": "no backtest data yet", "hint": "run backtest.py"})
+		return
+	}
+	var summary any
+	_ = json.Unmarshal(data, &summary)
+	writeJSON(w, summary)
+}
+
+// handleMLPaperTrades reads logs/paper_trades.json.
+func handleMLPaperTrades(w http.ResponseWriter, r *http.Request) {
+	path := filepath.Join("ml-training", "logs", "paper_trades.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		writeJSON(w, map[string]any{"error": "no paper-trade data yet", "hint": "run paper_trade.py"})
+		return
+	}
+	var result any
+	_ = json.Unmarshal(data, &result)
+	writeJSON(w, result)
+}
+
+// handleMLStrategyBacktest returns one strategy's detailed backtest (trades + equity curve).
+func handleMLStrategyBacktest(w http.ResponseWriter, r *http.Request) {
+	symbol := r.URL.Query().Get("symbol")
+	interval := r.URL.Query().Get("interval")
+	if symbol == "" || interval == "" {
+		http.Error(w, `{"error":"symbol and interval required"}`, http.StatusBadRequest)
+		return
+	}
+	path := filepath.Join("ml-training", "logs", "backtest_"+symbol+"_"+interval+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		writeJSON(w, map[string]any{"error": "no backtest for this strategy"})
+		return
+	}
+	var result any
+	_ = json.Unmarshal(data, &result)
+	writeJSON(w, result)
 }
 
 // handleMLTrain triggers a Python training run in-process (admin-only).

@@ -51,6 +51,10 @@ func NewRouter(cfg *config.Config) http.Handler {
 	mux.HandleFunc("GET /api/v1/ml/models", handleMLModels)
 	mux.HandleFunc("POST /api/v1/ml/train", handleMLTrain)
 	mux.HandleFunc("POST /api/v1/ml/reload", handleMLReload)
+	mux.HandleFunc("GET /api/v1/ml/backtest", handleMLBacktest)
+	mux.HandleFunc("GET /api/v1/ml/backtest/strategy", handleMLStrategyBacktest)
+	mux.HandleFunc("GET /api/v1/ml/paper-trades", handleMLPaperTrades)
+	mux.HandleFunc("GET /api/v1/ml/paper/status", handleMLPaperStatus)
 
 	// Crypto (real)
 	mux.HandleFunc("GET /api/v1/crypto/scan", handleCryptoScanReal)
