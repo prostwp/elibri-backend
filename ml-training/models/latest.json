@@ -152,5 +152,26 @@
     "horizon": 12,
     "accuracy": 0.5162700922662972,
     "sharpe": -1.283725351670259
+  },
+  "SOLUSDT_5m": {
+    "model": "SOLUSDT_5m_v1776623303.json",
+    "patterns": "SOLUSDT_5m_patterns.json",
+    "horizon": 12,
+    "accuracy": 0.5126148465658664,
+    "sharpe": -1.3629589498604433
+  },
+  "XRPUSDT_5m": {
+    "model": "XRPUSDT_5m_v1776624216.json",
+    "patterns": "XRPUSDT_5m_patterns.json",
+    "horizon": 12,
+    "accuracy": 0.5182359278836983,
+    "sharpe": -1.2978439366248957
+  },
+  "BNBUSDT_5m": {
+    "model": "BNBUSDT_5m_v1776625159.json",
+    "patterns": "BNBUSDT_5m_patterns.json",
+    "horizon": 12,
+    "accuracy": 0.5185979745840988,
+    "sharpe": -0.7141781523338087
   }
 }
