@@ -16,6 +16,7 @@ type Config struct {
 	BinanceAPIKey     string
 	FinnhubAPIKey     string
 	AlphaVantageAPIKey string
+	LunarCrushAPIKey  string // crypto social (Twitter/Reddit KOL posts)
 	CORSOrigins       string
 	Env               string
 }
@@ -30,6 +31,7 @@ func Load() *Config {
 		BinanceAPIKey:     getEnv("BINANCE_API_KEY", ""),
 		FinnhubAPIKey:     getEnv("FINNHUB_API_KEY", ""),
 		AlphaVantageAPIKey: getEnv("ALPHA_VANTAGE_API_KEY", ""),
+		LunarCrushAPIKey:  getEnv("LUNARCRUSH_API_KEY", ""),
 		CORSOrigins:       getEnv("CORS_ORIGINS", "https://prostwp.github.io,http://localhost:5173"),
 		Env:           getEnv("GO_ENV", "development"),
 	}

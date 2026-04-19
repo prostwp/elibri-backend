@@ -42,14 +42,14 @@ func dedupeByURL(items []Item) []Item {
 
 // Item is the unified news entry returned to frontend.
 type Item struct {
-	Source       string    `json:"source"`       // finnhub | coindesk | cointelegraph | alphavantage
-	Category     string    `json:"category"`     // macro | geopolitics | regulation | adoption | crypto
+	Source       string    `json:"source"`       // finnhub | coindesk | cointelegraph | alphavantage | lunarcrush-tweet
+	Category     string    `json:"category"`     // macro | geopolitics | regulation | adoption | crypto | social
 	Headline     string    `json:"headline"`
 	Summary      string    `json:"summary,omitempty"`
 	URL          string    `json:"url"`
 	PublishedAt  time.Time `json:"published_at"`
 	Sentiment    float64   `json:"sentiment"`     // -1..+1 (bearish..bullish)
-	MentionsCoin bool      `json:"mentions_coin"` // true if headline/summary mentions the queried symbol
+	MentionsCoin bool      `json:"mentions_coin"` // true if headline mentions queried symbol OR verified KOL (social)
 }
 
 type Aggregate struct {
@@ -132,12 +132,13 @@ func pruneExpired() {
 
 // ─── Main aggregator ──────────────────────────────────────
 
-// Fetch combines 5 sources in parallel:
+// Fetch combines 6 sources in parallel:
 // - Finnhub /general (macro + geopolitics)
 // - Finnhub /crypto (crypto-specific via same API key)
 // - CoinDesk RSS + Cointelegraph RSS (crypto)
 // - Alpha Vantage NEWS_SENTIMENT (macro + crypto with pre-labeled sentiment) — only if AV key set
-func Fetch(ctx context.Context, finnhubKey, alphaVantageKey, symbol string, hours int) (Aggregate, error) {
+// - LunarCrush social (verified Twitter/Reddit KOL posts per coin) — only if LC key set
+func Fetch(ctx context.Context, finnhubKey, alphaVantageKey, lunarCrushKey, symbol string, hours int) (Aggregate, error) {
 	cacheKey := symbol + "|" + strconv.Itoa(hours)
 	cacheMu.Lock()
 	if entry, ok := cacheMap[cacheKey]; ok && time.Now().Before(entry.expiresAt) {
@@ -147,9 +148,9 @@ func Fetch(ctx context.Context, finnhubKey, alphaVantageKey, symbol string, hour
 	cacheMu.Unlock()
 
 	var wg sync.WaitGroup
-	var fhGeneral, fhCrypto, cdItems, ctItems, avItems []Item
+	var fhGeneral, fhCrypto, cdItems, ctItems, avItems, lcItems []Item
 
-	wg.Add(5)
+	wg.Add(6)
 	go func() {
 		defer wg.Done()
 		if finnhubKey != "" {
@@ -174,14 +175,19 @@ func Fetch(ctx context.Context, finnhubKey, alphaVantageKey, symbol string, hour
 		defer wg.Done()
 		avItems, _ = FetchAlphaVantage(ctx, alphaVantageKey, hours)
 	}()
+	go func() {
+		defer wg.Done()
+		lcItems, _ = FetchLunarCrush(ctx, lunarCrushKey, symbol, hours)
+	}()
 	wg.Wait()
 
 	// Order matters: dedupeByURL keeps first-seen. We want primary sources
-	// (CoinDesk/Cointelegraph/AlphaVantage) attributed directly rather than
-	// Finnhub's syndicated copies of the same article.
+	// (CoinDesk/Cointelegraph/AlphaVantage/LunarCrush) attributed directly
+	// rather than Finnhub's syndicated copies.
 	all := cdItems
 	all = append(all, ctItems...)
 	all = append(all, avItems...)
+	all = append(all, lcItems...)
 	all = append(all, fhGeneral...)
 	all = append(all, fhCrypto...)
 

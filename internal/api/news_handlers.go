@@ -8,7 +8,7 @@ import (
 	"github.com/prostwp/elibri-backend/internal/news"
 )
 
-// handleFundamentalNews aggregates news from Finnhub + RSS + Alpha Vantage.
+// handleFundamentalNews aggregates news from Finnhub + RSS + Alpha Vantage + LunarCrush social.
 func handleFundamentalNews(cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		symbol := r.URL.Query().Get("symbol")
@@ -18,7 +18,14 @@ func handleFundamentalNews(cfg *config.Config) http.HandlerFunc {
 			hours = v
 		}
 
-		agg, err := news.Fetch(r.Context(), cfg.FinnhubAPIKey, cfg.AlphaVantageAPIKey, symbol, hours)
+		agg, err := news.Fetch(
+			r.Context(),
+			cfg.FinnhubAPIKey,
+			cfg.AlphaVantageAPIKey,
+			cfg.LunarCrushAPIKey,
+			symbol,
+			hours,
+		)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to fetch news")
 			return
