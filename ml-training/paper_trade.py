@@ -89,10 +89,11 @@ def simulate_last_n_days(symbol: str, interval: str, days: int, initial_equity: 
     i = 0
     while i < n_test:
         p = proba[i]
-        if p <= 0.8 and p >= 0.2:
+        # Use 0.60/0.40 threshold (matches meta-learner spread).
+        if p <= 0.60 and p >= 0.40:
             i += 1
             continue
-        direction = "long" if p > 0.8 else "short"
+        direction = "long" if p > 0.60 else "short"
         entry = test_closes[i]
         atr = test_atr[i] if test_atr[i] > 0 else entry * 0.01
         if direction == "long":

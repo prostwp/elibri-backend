@@ -107,7 +107,10 @@ def simulate_trades(
     test_proba: np.ndarray,
     test_df: pd.DataFrame,
     regimes: pd.Series,
-    hc_threshold: float = 0.80,
+    # Default 0.60 matches observed meta-learner spread (probs concentrate
+    # in [0.40, 0.67]); analyze_thresholds.py may pick a better per-model
+    # value and downstream threshold files override.
+    hc_threshold: float = 0.60,
     sl_atr_mult: float = 1.5,
     tp_atr_mult: float = 2.5,
     risk_per_trade: float = 0.05,
@@ -323,14 +326,19 @@ def backtest_one(symbol: str, interval: str, years: float, btc_close: np.ndarray
     X_train = feat[FEATURE_NAMES].iloc[:split].to_numpy()
     y_train = target[:split]
     X_test = feat[FEATURE_NAMES].iloc[split:].to_numpy()
+    # Align high/low from original df using the same mask (target != sentinel).
+    # `mask` is a numpy bool array — use directly with DataFrame .loc.
+    df_masked = df.loc[mask].reset_index(drop=True) if hasattr(mask, 'index') else df[mask].reset_index(drop=True)
     test_df = pd.DataFrame({
         "close": feat["close"].iloc[split:].to_numpy(),
-        "high":  df["high"].iloc[mask.nonzero()[0]].reset_index(drop=True).iloc[split:].to_numpy(),
-        "low":   df["low"].iloc[mask.nonzero()[0]].reset_index(drop=True).iloc[split:].to_numpy(),
+        "high":  df_masked["high"].iloc[split:].to_numpy(),
+        "low":   df_masked["low"].iloc[split:].to_numpy(),
         "open_time": feat["open_time"].iloc[split:].values,
     })
 
-    print(f"  train={split} test={len(feat) - split} ({str(feat['open_time'].iloc[split].astype(str))[:10]} → {str(feat['open_time'].iloc[-1].astype(str))[:10]})")
+    train_start = pd.Timestamp(feat['open_time'].iloc[split])
+    train_end = pd.Timestamp(feat['open_time'].iloc[-1])
+    print(f"  train={split} test={len(feat) - split} ({str(train_start)[:10]} → {str(train_end)[:10]})")
     print("  training…")
     xgb, lgbm, rf, meta = train_ensemble(X_train, y_train, quick=False)
     y_proba, _ = ensemble_predict(xgb, lgbm, rf, meta, X_test)
