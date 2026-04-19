@@ -25,56 +25,55 @@ func NewRouter(cfg *config.Config) http.Handler {
 	// WebSocket
 	mux.HandleFunc("/ws", WsHub.HandleWS)
 
+	// Auth (public: register/login, protected: me)
+	mux.HandleFunc("POST /api/v1/auth/register", handleRegister(cfg))
+	mux.HandleFunc("POST /api/v1/auth/login", handleLogin(cfg))
+	mux.HandleFunc("GET /api/v1/auth/me", handleMe)
+	mux.HandleFunc("PATCH /api/v1/auth/me", handleUpdateMe)
+
+	// Strategies (protected)
+	mux.HandleFunc("GET /api/v1/strategies", handleStrategiesList)
+	mux.HandleFunc("POST /api/v1/strategies", handleStrategiesCreate)
+	mux.HandleFunc("/api/v1/strategies/", handleStrategyByID)
+
+	// Admin (protected + role check inside handler)
+	mux.HandleFunc("GET /api/v1/admin/users", handleAdminListUsers)
+	mux.HandleFunc("POST /api/v1/admin/users/{id}/reset-password", handleAdminResetPassword)
+
 	// Market data (real)
 	mux.HandleFunc("GET /api/v1/market/candles", handleMarketCandlesReal)
 	mux.HandleFunc("GET /api/v1/market/quotes", handleMarketQuotesReal)
 	mux.HandleFunc("GET /api/v1/market/fundamentals", handleMarketFundamentals)
 
 	// ML (real)
-	mux.HandleFunc("POST /api/v1/ml/predict", handleMLPredictReal)
+	mux.HandleFunc("POST /api/v1/ml/predict", handleMLPredictV2)
+	mux.HandleFunc("POST /api/v1/ml/predict/legacy", handleMLPredictReal)
+	mux.HandleFunc("GET /api/v1/ml/models", handleMLModels)
+	mux.HandleFunc("POST /api/v1/ml/train", handleMLTrain)
+	mux.HandleFunc("POST /api/v1/ml/reload", handleMLReload)
 
 	// Crypto (real)
 	mux.HandleFunc("GET /api/v1/crypto/scan", handleCryptoScanReal)
 	mux.HandleFunc("GET /api/v1/crypto/listings", handleCryptoListingsReal)
 
-	// Wrap with middleware chain: CORS → Auth
+	// News / Fundamental (Finnhub general+crypto, CoinDesk RSS, Cointelegraph RSS, Alpha Vantage)
+	mux.HandleFunc("GET /api/v1/news/fundamental", handleFundamentalNews(cfg))
+
+	// Middleware chain: CORS → Auth (JWT)
 	var handler http.Handler = mux
-	if cfg.SupabaseJWTSecret != "" {
-		handler = auth.Middleware(cfg.SupabaseJWTSecret)(handler)
-	}
+	handler = auth.Middleware(cfg.JWTSecret)(handler)
 	return corsMiddleware(cfg.CORSOrigins, handler)
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{
 		"status":  "ok",
-		"version": "0.1.0",
+		"version": "0.2.0",
 		"service": "elibri-backend",
 	})
 }
 
-// Placeholder handlers — will be implemented in subsequent phases
-func handleMarketCandles(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"status": "not_implemented"})
-}
-
-func handleMarketQuotes(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"status": "not_implemented"})
-}
-
 func handleMarketFundamentals(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"status": "not_implemented"})
-}
-
-func handleMLPredict(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"status": "not_implemented"})
-}
-
-func handleCryptoScan(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"status": "not_implemented"})
-}
-
-func handleCryptoListings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "not_implemented"})
 }
 

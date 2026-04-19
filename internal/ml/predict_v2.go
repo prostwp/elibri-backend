@@ -1,0 +1,181 @@
+package ml
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/prostwp/elibri-backend/pkg/types"
+)
+
+// TradingStyleHorizon maps trading-style preset to bars ahead.
+// Frontend TradingStyleNode values: "scalp", "day", "swing", "position".
+// Aligned with Python HORIZON_MAP per interval.
+var TradingStyleHorizon = map[string]int{
+	"scalp":    6,
+	"day":      12,
+	"swing":    18,
+	"position": 30,
+}
+
+// PredictionV2 is the richer response for /api/v1/ml/predict.
+type PredictionV2 struct {
+	Symbol            string              `json:"symbol"`
+	Interval          string              `json:"interval"`
+	Direction         string              `json:"direction"`           // buy/sell/neutral
+	Confidence        float64             `json:"confidence"`          // 0-100
+	Probability       float64             `json:"probability"`         // 0-1 (raw P(up))
+	PriceTarget       float64             `json:"price_target"`
+	Timeframe         string              `json:"timeframe"`
+	HorizonBars       int                 `json:"horizon_bars"`
+	ModelVersion      string              `json:"model_version"`
+	PredictedAt       int64               `json:"predicted_at"`
+	FeatureImportance []FeatureImp        `json:"feature_importance"` // top-10
+	SimilarSituations []SimilarSituation  `json:"similar_situations"` // top-5
+	Metrics           SimplePredictMetrics `json:"metrics"`
+	Features          map[string]float64  `json:"features,omitempty"` // for debug
+	FallbackReason    string              `json:"fallback_reason,omitempty"`
+}
+
+type SimplePredictMetrics struct {
+	Accuracy       float64 `json:"accuracy"`
+	Sharpe         float64 `json:"sharpe"`
+	F1             float64 `json:"f1"`
+	NFolds         int     `json:"n_folds"`
+	HCPrecision    float64 `json:"hc_precision"`    // precision when model is >80% confident
+	HCSignalRate   float64 `json:"hc_signal_rate"`  // fraction of bars that pass filter
+	HCSignalsTotal int     `json:"hc_signals_total"`
+	NTestTotal     int     `json:"n_test_total"`
+	AvgOutcome5    float64 `json:"avg_outcome_5"`
+	AvgOutcome10   float64 `json:"avg_outcome_10"`
+	AvgOutcome20   float64 `json:"avg_outcome_20"`
+	// HighConfidence flag: true if THIS prediction passes the 0.80/0.20 filter.
+	HighConfidence bool `json:"high_confidence"`
+}
+
+// PredictV2 runs the ensemble + pattern matcher for a symbol/interval.
+// candles: raw OHLCV; takerBuyVolumes optional (same length as candles);
+// btcCloses optional (use for cross-asset features; len must equal candles or be empty).
+// tradingStyle: scalp/day/swing/position — used to pick the right interval's model.
+func PredictV2(
+	symbol, interval, tradingStyle string,
+	candles []types.OHLCVCandle,
+	takerBuyVolumes, btcCloses []float64,
+) PredictionV2 {
+	horizon := TradingStyleHorizon[tradingStyle]
+	if horizon == 0 {
+		horizon = TradingStyleHorizon["swing"]
+	}
+
+	out := PredictionV2{
+		Symbol:      symbol,
+		Interval:    interval,
+		PredictedAt: time.Now().Unix(),
+		HorizonBars: horizon,
+		Timeframe:   fmt.Sprintf("%d bars (%s)", horizon, tradingStyle),
+	}
+	if len(candles) < 30 {
+		out.Direction = "neutral"
+		out.Confidence = 0
+		out.FallbackReason = "not enough candles (need 30+)"
+		return out
+	}
+
+	lastPrice := candles[len(candles)-1].Close
+
+	// Try V2 ensemble first.
+	model, hasModel := GetModelV2(symbol, interval)
+	feats := ExtractFeaturesV2(candles, takerBuyVolumes, btcCloses)
+
+	var prob float64
+	if hasModel {
+		p, _ := model.Predict(feats)
+		prob = p
+		out.ModelVersion = fmt.Sprintf("ensemble_v2_%s_%s", symbol, interval)
+	} else {
+		// Fallback: use legacy V1 model on 6-feature subset.
+		legacyFeat := Features{
+			RSINorm:      feats[1] / 100.0,   // rsi_14
+			MACDNorm:     (feats[3] + 1) / 2, // tanh-normalized already
+			VolRatio:     feats[16] / 5,      // vol_ratio_20 clipped
+			ATRNorm:      feats[12] * 20,     // atr_norm
+			MomentumNorm: (feats[19] + 1) / 2, // return_5
+			BBPosition:   feats[5],            // bb_position
+		}
+		// clamp 0-1
+		legacyFeat.RSINorm = clampV2(legacyFeat.RSINorm, 0, 1)
+		legacyFeat.MACDNorm = clampV2(legacyFeat.MACDNorm, 0, 1)
+		legacyFeat.VolRatio = clampV2(legacyFeat.VolRatio, 0, 1)
+		legacyFeat.ATRNorm = clampV2(legacyFeat.ATRNorm, 0, 1)
+		legacyFeat.MomentumNorm = clampV2(legacyFeat.MomentumNorm, 0, 1)
+
+		p := defaultModel().Predict(legacyFeat)
+		prob = p
+		out.ModelVersion = "fallback_v1"
+		out.FallbackReason = "no v2 model for " + symbol + "/" + interval
+	}
+
+	out.Probability = prob
+
+	// Per-model adaptive threshold (from analyze_thresholds.py).
+	thr := GetThreshold(symbol, interval)
+
+	// Direction + confidence, with softer default thresholds (0.55/0.45).
+	switch {
+	case prob > 0.55:
+		out.Direction = "buy"
+		out.Confidence = prob * 100
+	case prob < 0.45:
+		out.Direction = "sell"
+		out.Confidence = (1 - prob) * 100
+	default:
+		out.Direction = "neutral"
+		out.Confidence = 50
+	}
+
+	// Price target: ATR-based.
+	atr := calcATR(candles, 14)
+	switch out.Direction {
+	case "buy":
+		out.PriceTarget = lastPrice + atr*2.5
+	case "sell":
+		out.PriceTarget = lastPrice - atr*2.5
+	default:
+		out.PriceTarget = lastPrice
+	}
+
+	// Feature importance + metrics.
+	if hasModel {
+		out.FeatureImportance = model.TopFeatures(10)
+		out.Metrics = SimplePredictMetrics{
+			Accuracy:       model.Metrics.AvgAccuracy,
+			Sharpe:         model.Metrics.AvgSharpe,
+			F1:             model.Metrics.AvgF1,
+			NFolds:         model.Metrics.NFolds,
+			HCPrecision:    model.Metrics.HCPrecision,
+			HCSignalRate:   model.Metrics.HCSignalRate,
+			HCSignalsTotal: model.Metrics.HCSignalsTotal,
+			NTestTotal:     model.Metrics.NTestTotal,
+			HighConfidence: prob > thr.ThresholdHigh || prob < thr.ThresholdLow,
+		}
+	}
+
+	// Similar situations.
+	if pat, hasPat := GetPatternsV2(symbol, interval); hasPat {
+		sims := pat.Query(feats, 5)
+		out.SimilarSituations = sims
+		a5, a10, a20 := AggregateOutcome(sims)
+		out.Metrics.AvgOutcome5 = a5
+		out.Metrics.AvgOutcome10 = a10
+		out.Metrics.AvgOutcome20 = a20
+	}
+
+	// Feature debug map (small, for UI transparency).
+	out.Features = make(map[string]float64, len(FeatureNamesV2))
+	for i, name := range FeatureNamesV2 {
+		if i < len(feats) {
+			out.Features[name] = feats[i]
+		}
+	}
+
+	return out
+}

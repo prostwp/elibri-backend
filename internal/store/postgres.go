@@ -38,6 +38,7 @@ func runMigrations() {
 	files := []string{
 		"internal/store/migrations/001_market_data.sql",
 		"internal/store/migrations/002_ml_signals.sql",
+		"internal/store/migrations/003_users_and_strategies.sql",
 	}
 
 	for _, f := range files {

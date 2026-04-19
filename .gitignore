@@ -2,3 +2,35 @@ bin/
 *.exe
 .env
 
+# Binaries & build artifacts
+*.dll
+*.so
+*.dylib
+elibri-backend
+/tmp/
+
+# Tests & coverage
+*.test
+*.out
+coverage.html
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# ML training artifacts — don't commit models/data (too big, regeneratable)
+ml-training/.venv/
+ml-training/data/*.parquet
+ml-training/models/*_v*.json
+ml-training/models/*_patterns.json
+ml-training/logs/
+ml-training/__pycache__/
+ml-training/**/__pycache__/
+
+# Keep "latest.json" pointer for reference
+!ml-training/models/latest.json
+
+# Claude Flow metadata
+.claude-flow/
