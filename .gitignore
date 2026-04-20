@@ -7,6 +7,7 @@ bin/
 *.so
 *.dylib
 elibri-backend
+server
 /tmp/
 
 # Tests & coverage
@@ -31,6 +32,11 @@ ml-training/**/__pycache__/
 
 # Keep "latest.json" pointer for reference
 !ml-training/models/latest.json
+
+# Local model backups (safety copies, regeneratable from vast.ai)
+ml-training/models.backup_*/
+ml-training/models/*.bak.*
+ml-training/models/*.patch*.bak.*
 
 # Claude Flow metadata
 .claude-flow/
