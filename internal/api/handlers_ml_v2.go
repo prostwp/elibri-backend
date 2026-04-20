@@ -9,10 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"time"
 
+	"github.com/prostwp/elibri-backend/internal/auth"
 	"github.com/prostwp/elibri-backend/internal/market"
 	"github.com/prostwp/elibri-backend/internal/ml"
+	"github.com/prostwp/elibri-backend/internal/store"
 	"github.com/prostwp/elibri-backend/pkg/types"
 )
 
@@ -49,7 +52,27 @@ type mlPredictV2Request struct {
 	Interval     string              `json:"interval"`      // 1h|4h|1d
 	Source       string              `json:"source"`        // binance|moex
 	TradingStyle string              `json:"trading_style"` // scalp|day|swing|position
-	Candles      []types.OHLCVCandle `json:"candles,omitempty"`
+	// RiskTier (Patch 2C): optional override. Empty → inherit user's
+	// saved tier from JWT context; if that's also empty → "balanced".
+	RiskTier string              `json:"risk_tier,omitempty"`
+	Candles  []types.OHLCVCandle `json:"candles,omitempty"`
+}
+
+// resolveRiskTier picks the effective tier from (request → user row → default).
+// Called per /predict request. Keeps DB lookup out of the ml package.
+func resolveRiskTier(r *http.Request, explicit string) string {
+	if explicit != "" && ml.IsValidTier(explicit) {
+		return explicit
+	}
+	// Lazy-load user's stored tier from DB using the JWT-injected user_id.
+	if store.Pool != nil {
+		if userID := auth.GetUserID(r); userID != "" {
+			if u, err := auth.GetUserByID(r.Context(), store.Pool, userID); err == nil && ml.IsValidTier(u.RiskTier) {
+				return u.RiskTier
+			}
+		}
+	}
+	return string(ml.TierBalanced)
 }
 
 // handleMLPredictV2 handles POST /api/v1/ml/predict with richer output.
@@ -112,22 +135,40 @@ func handleMLPredictV2(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Taker-buy volumes: not yet wired through market layer → pass nil.
-	prediction := ml.PredictV2(req.Symbol, req.Interval, req.TradingStyle, candles, nil, btcCloses)
+	// Risk tier resolution: explicit request > user's saved tier > balanced.
+	tier := resolveRiskTier(r, req.RiskTier)
+	prediction := ml.PredictV2WithTier(req.Symbol, req.Interval, req.TradingStyle, tier, candles, nil, btcCloses)
 	writeJSON(w, prediction)
 }
 
 // mlPredictMultiResponse bundles predictions for the same symbol across
 // several intervals. The MTF "verdict" is the alignment of direction/confidence
 // — when all intervals agree we flag it as high-quality.
+//
+// Patch 2C adds Consensus.Label/LabelReason/Blocked so the frontend can
+// show trend_aligned / mean_reversion / random badges and know when a
+// tier gate downgraded the signal.
 type mlPredictMultiResponse struct {
-	Symbol     string                      `json:"symbol"`
-	Primary    string                      `json:"primary_interval"`
+	Symbol      string                      `json:"symbol"`
+	Primary     string                      `json:"primary_interval"`
 	Predictions map[string]*ml.PredictionV2 `json:"predictions"` // interval → prediction
-	Consensus  struct {
-		Direction    string  `json:"direction"`      // aligned direction or "mixed"
-		Alignment    float64 `json:"alignment"`      // 0..1, fraction of TFs agreeing with majority
-		HighQuality  bool    `json:"high_quality"`   // true if 100% aligned AND majority has HC
+	Consensus   struct {
+		Direction     string  `json:"direction"`     // aligned direction or "mixed"
+		Alignment     float64 `json:"alignment"`     // 0..1, fraction of TFs agreeing with majority
+		HighQuality   bool    `json:"high_quality"`  // true if 100% aligned AND majority has HC
 		AvgConfidence float64 `json:"avg_confidence"`
+		// Label is the risk-tier classification applied to the consensus
+		// direction: "trend_aligned" | "mean_reversion" | "random".
+		Label string `json:"label,omitempty"`
+		// LabelReason is a short human-readable explanation (e.g.
+		// "1d trend aligned, adx=24.3"). Surfaces in UI tooltips.
+		LabelReason string `json:"label_reason,omitempty"`
+		// Blocked is true when the user's risk tier does not allow this label
+		// (e.g. conservative tier receiving mean_reversion). When set, the
+		// effective Direction is forced to "neutral".
+		Blocked bool `json:"blocked,omitempty"`
+		// RiskTier echoes the tier applied (for UI badges).
+		RiskTier string `json:"risk_tier,omitempty"`
 	} `json:"consensus"`
 }
 
@@ -136,6 +177,59 @@ type mlPredictMultiRequest struct {
 	Intervals    []string `json:"intervals"` // ["1h","4h","1d"]
 	TradingStyle string   `json:"trading_style"`
 	Source       string   `json:"source"`
+	// RiskTier (Patch 2C): optional per-request override.
+	RiskTier string `json:"risk_tier,omitempty"`
+}
+
+// ─── Signal classifier (Patch 2C) ────────────────────────────────
+// Pure rule-based — no ML retraining. Relies on features already
+// exposed by PredictionV2.Features, plus the 1d trend-anchor
+// direction cached for 15 min to avoid spawning a 1d predict on
+// every classify call (handy for scalp/day signals).
+
+type dailyDirCacheEntry struct {
+	direction string
+	expiresAt time.Time
+}
+
+var (
+	dailyDirCache   sync.Map // symbol → dailyDirCacheEntry
+	dailyDirCacheMu sync.Mutex
+	dailyDirTTL     = 15 * time.Minute
+)
+
+// getDailyDirectionCached returns the 1d direction for symbol with 15 min
+// TTL. computeFn is invoked on miss; returning "" treats the result as
+// uncached and the cache won't poison future calls.
+func getDailyDirectionCached(symbol string, computeFn func() string) string {
+	if v, ok := dailyDirCache.Load(symbol); ok {
+		if e := v.(dailyDirCacheEntry); time.Now().Before(e.expiresAt) {
+			return e.direction
+		}
+	}
+	// Serialize computation per-symbol to avoid stampede on cold start.
+	dailyDirCacheMu.Lock()
+	defer dailyDirCacheMu.Unlock()
+	if v, ok := dailyDirCache.Load(symbol); ok {
+		if e := v.(dailyDirCacheEntry); time.Now().Before(e.expiresAt) {
+			return e.direction
+		}
+	}
+	dir := computeFn()
+	if dir != "" {
+		dailyDirCache.Store(symbol, dailyDirCacheEntry{
+			direction: dir,
+			expiresAt: time.Now().Add(dailyDirTTL),
+		})
+	}
+	return dir
+}
+
+// ClassifySignal is re-exported from internal/ml so the scenario package can
+// reuse the same rules without an import cycle. Kept as a thin alias here to
+// avoid breaking existing callers in this file.
+func ClassifySignal(signalDir, dailyDir, interval string, features map[string]float64) (string, string) {
+	return ml.ClassifySignal(signalDir, dailyDir, interval, features)
 }
 
 // intervalRank sorts interval strings by actual duration (regardless of
@@ -179,6 +273,9 @@ func handleMLPredictMulti(w http.ResponseWriter, r *http.Request) {
 		req.Source = "binance"
 	}
 
+	// Resolve tier once; reused for per-TF vol gates AND post-consensus label gate.
+	tier := resolveRiskTier(r, req.RiskTier)
+
 	// Fetch candles for each requested interval, pass to PredictV2 per-TF.
 	// BTC cross-asset context reused across TFs when symbol != BTC.
 	predictions := make(map[string]*ml.PredictionV2)
@@ -198,7 +295,7 @@ func handleMLPredictMulti(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		p := ml.PredictV2(req.Symbol, iv, req.TradingStyle, candles, nil, btcCloses)
+		p := ml.PredictV2WithTier(req.Symbol, iv, req.TradingStyle, tier, candles, nil, btcCloses)
 		predictions[iv] = &p
 	}
 
@@ -227,6 +324,8 @@ func handleMLPredictMulti(w http.ResponseWriter, r *http.Request) {
 		Predictions: predictions,
 	}
 
+	resp.Consensus.RiskTier = tier
+
 	if nValid > 0 {
 		// Majority direction.
 		majority := "neutral"
@@ -246,6 +345,39 @@ func handleMLPredictMulti(w http.ResponseWriter, r *http.Request) {
 		resp.Consensus.AvgConfidence = sumConf / float64(nValid)
 		// High-quality signal: ALL intervals agree + at least one HC on any TF.
 		resp.Consensus.HighQuality = alignment == 1.0 && hcAligned > 0 && majority != "neutral"
+
+		// Patch 2C: classify consensus + apply tier label gate.
+		// Use primary-interval features as the signal's feature snapshot.
+		// Daily direction comes from the matching prediction if requested;
+		// else lazy-fetch with a 15-min cache.
+		var primaryFeatures map[string]float64
+		if pp, ok := predictions[primary]; ok && pp != nil {
+			primaryFeatures = pp.Features
+		}
+		var dailyDir string
+		if pd, ok := predictions["1d"]; ok && pd != nil {
+			dailyDir = pd.Direction
+		} else if req.Symbol != "" {
+			dailyDir = getDailyDirectionCached(req.Symbol, func() string {
+				cd, err := market.FetchCryptoCandles(req.Symbol, "1d", 500)
+				if err != nil || len(cd) < 30 {
+					return ""
+				}
+				// No BTC context on cold classify → acceptable; direction is all we need.
+				dp := ml.PredictV2WithTier(req.Symbol, "1d", req.TradingStyle, tier, cd, nil, nil)
+				return dp.Direction
+			})
+		}
+		if primaryFeatures != nil {
+			label, reason := ClassifySignal(resp.Consensus.Direction, dailyDir, primary, primaryFeatures)
+			resp.Consensus.Label = label
+			resp.Consensus.LabelReason = reason
+			policy := ml.GetTier(tier)
+			if !policy.LabelAllowed(label) {
+				resp.Consensus.Blocked = true
+				resp.Consensus.Direction = "neutral"
+			}
+		}
 	}
 
 	writeJSON(w, resp)

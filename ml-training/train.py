@@ -31,7 +31,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from xgboost import XGBClassifier
 from lightgbm import LGBMClassifier
 
-from feature_engine import FEATURE_NAMES, build_features, make_target
+from feature_engine import FEATURE_NAMES, build_features, make_target, make_target_triple_barrier, _atr
 from data_fetcher import fetch_or_cache, TOP_PAIRS
 from pattern_matcher import PatternIndex, save_index
 
@@ -45,12 +45,25 @@ LOGS_DIR.mkdir(exist_ok=True)
 
 # Horizon in bars per interval — matches TradingStyle node ranges.
 # Lower TFs predict shorter horizons (high-freq); higher TFs look further out.
+# Kept for backward compatibility — new code should use TF_CONFIG below.
 HORIZON_MAP = {
     "5m":  12,   # ~1 hour ahead (scalping)
     "15m": 16,   # ~4 hours ahead (day trading early)
     "1h":  24,   # ~1 day ahead (day trading / short swing)
     "4h":  18,   # ~3 days ahead (swing short)
     "1d":  10,   # ~10 days ahead (swing / position)
+}
+
+
+# Per-interval training overrides.
+# 1d has only ~2400 train rows vs ~840k on 5m → needs shallower trees, fewer
+# estimators to avoid overfit. Also longer horizons benefit from wider barriers.
+TF_CONFIG = {
+    "5m":  {"horizon": 12, "tb_upper": 2.5, "tb_lower": 1.5, "n_est": 200, "xgb_depth": 5},
+    "15m": {"horizon": 16, "tb_upper": 2.5, "tb_lower": 1.5, "n_est": 200, "xgb_depth": 5},
+    "1h":  {"horizon": 24, "tb_upper": 1.5, "tb_lower": 1.0, "n_est": 200, "xgb_depth": 5},
+    "4h":  {"horizon": 18, "tb_upper": 1.5, "tb_lower": 1.0, "n_est": 200, "xgb_depth": 5},
+    "1d":  {"horizon":  5, "tb_upper": 2.5, "tb_lower": 1.8, "n_est": 100, "xgb_depth": 3},
 }
 
 
@@ -161,7 +174,8 @@ def walk_forward_split(dates: np.ndarray, train_months: int = 12, test_months: i
         test_start = test_end
 
 
-def train_ensemble(X_train: np.ndarray, y_train: np.ndarray, quick: bool = False):
+def train_ensemble(X_train: np.ndarray, y_train: np.ndarray, quick: bool = False,
+                   tf_overrides: dict | None = None):
     """
     Train XGB + LGBM + RF + F1-weighted average meta.
 
@@ -179,15 +193,19 @@ def train_ensemble(X_train: np.ndarray, y_train: np.ndarray, quick: bool = False
     (n_jobs=-1 spawns 10+ workers which triggers thermal throttling after
     ~5 min of sustained compute, dropping effective speed by 50%).
     Override via ML_N_JOBS env var for desktops with active cooling.
+
+    tf_overrides: optional dict with per-TF hyperparams (n_est, xgb_depth).
+    Used by train_one to scale model complexity for data-scarce intervals (1d).
     """
     import os
     from sklearn.model_selection import TimeSeriesSplit
 
-    n_est = 50 if quick else 200
+    n_est = (tf_overrides or {}).get("n_est") or (50 if quick else 200)
+    xgb_depth = (tf_overrides or {}).get("xgb_depth", 5)
     n_jobs = int(os.getenv("ML_N_JOBS", "4"))
 
     xgb = XGBClassifier(
-        n_estimators=n_est, max_depth=5, learning_rate=0.05,
+        n_estimators=n_est, max_depth=xgb_depth, learning_rate=0.05,
         subsample=0.8, colsample_bytree=0.8,
         eval_metric="logloss", n_jobs=n_jobs, random_state=42,
         tree_method="hist", verbosity=0,
@@ -334,11 +352,23 @@ def _serialize_rf(rf: RandomForestClassifier) -> list:
     return trees
 
 
-def train_one(symbol: str, interval: str, years: float, quick: bool, btc_close: np.ndarray | None):
+def train_one(symbol: str, interval: str, years: float, quick: bool, btc_close: np.ndarray | None,
+              target_mode: str = "binary", tb_upper: float = -1.0, tb_lower: float = -1.0):
     t0 = time.time()
-    horizon = HORIZON_MAP[interval]
+    # Pull per-TF config; fall back to HORIZON_MAP for unknown intervals.
+    tf_cfg = TF_CONFIG.get(interval, {
+        "horizon": HORIZON_MAP.get(interval, 10),
+        "tb_upper": 1.5, "tb_lower": 1.0,
+        "n_est": None, "xgb_depth": 5,
+    })
+    horizon = tf_cfg["horizon"]
 
-    print(f"\n━━━ {symbol} {interval} (horizon={horizon}) ━━━")
+    # Sentinel -1 → user didn't pass explicit barriers; pull TF defaults.
+    # Lets Patch 2 tune 1d with wider barriers (2.5/1.8) while 1h stays at 1.5/1.0.
+    eff_tb_upper = tf_cfg["tb_upper"] if tb_upper < 0 else tb_upper
+    eff_tb_lower = tf_cfg["tb_lower"] if tb_lower < 0 else tb_lower
+
+    print(f"\n━━━ {symbol} {interval} (horizon={horizon}, target={target_mode}) ━━━")
 
     # 1. Fetch data.
     df = fetch_or_cache(symbol, interval, years=years)
@@ -349,9 +379,23 @@ def train_one(symbol: str, interval: str, years: float, quick: bool, btc_close: 
 
     # 2. Build features.
     feat = build_features(df, btc_close=btc_close)
-    target = make_target(df["close"].to_numpy(), horizon=horizon, threshold=0.0)
+    close_arr = df["close"].to_numpy()
+    if target_mode == "tb_atr":
+        high_arr = df["high"].to_numpy()
+        low_arr = df["low"].to_numpy()
+        atr_arr = _atr(high_arr, low_arr, close_arr, period=14)
+        target = make_target_triple_barrier(
+            high_arr, low_arr, close_arr, atr_arr, horizon=horizon,
+            upper_mult=eff_tb_upper, lower_mult=eff_tb_lower,
+        )
+        n_timeout = int((target == -1).sum())
+        print(f"  tb_atr: upper={eff_tb_upper} lower={eff_tb_lower} "
+              f"timeout/noise dropped = {n_timeout:,}/{len(target):,} "
+              f"({n_timeout/max(len(target),1):.1%})")
+    else:
+        target = make_target(close_arr, horizon=horizon, threshold=0.0)
 
-    # Drop rows with sentinel target.
+    # Drop rows with sentinel target (-1). For tb_atr this also drops chop bars.
     mask = target >= 0
     feat = feat.loc[mask].reset_index(drop=True)
     target = target[mask]
@@ -386,7 +430,10 @@ def train_one(symbol: str, interval: str, years: float, quick: bool, btc_close: 
         returns_te = np.diff(close_te, prepend=close_te[0]) / (np.roll(close_te, 1) + 1e-12)
         returns_te[0] = 0
 
-        xgb, lgbm, rf, meta = train_ensemble(X_tr, y_tr, quick=quick)
+        xgb, lgbm, rf, meta = train_ensemble(
+            X_tr, y_tr, quick=quick,
+            tf_overrides={"n_est": tf_cfg["n_est"], "xgb_depth": tf_cfg["xgb_depth"]},
+        )
         y_proba, _ = ensemble_predict(xgb, lgbm, rf, meta, X_te)
         y_pred = (y_proba > 0.5).astype(int)
 
@@ -430,7 +477,10 @@ def train_one(symbol: str, interval: str, years: float, quick: bool, btc_close: 
 
     # 4. Final training on all data for deployment model.
     print("  training final model on full data...")
-    xgb, lgbm, rf, meta = train_ensemble(X_all, target, quick=quick)
+    xgb, lgbm, rf, meta = train_ensemble(
+        X_all, target, quick=quick,
+        tf_overrides={"n_est": tf_cfg["n_est"], "xgb_depth": tf_cfg["xgb_depth"]},
+    )
 
     # Feature importance = avg of XGB + LGBM gain importances.
     imp_xgb = xgb.feature_importances_
@@ -497,6 +547,12 @@ def main():
     ap.add_argument("--intervals", nargs="*", default=["4h"], choices=["5m", "15m", "1h", "4h", "1d"])
     ap.add_argument("--years", type=float, default=2.0)
     ap.add_argument("--quick", action="store_true", help="50 estimators, 3 folds, for iteration")
+    ap.add_argument("--target-mode", choices=["binary", "tb_atr"], default="binary",
+                    help="binary = up/down @ horizon; tb_atr = triple-barrier ATR (drops chop)")
+    ap.add_argument("--tb-upper", type=float, default=-1.0,
+                    help="Upper barrier in ATR multiples (-1 = use TF_CONFIG default)")
+    ap.add_argument("--tb-lower", type=float, default=-1.0,
+                    help="Lower barrier in ATR multiples (-1 = use TF_CONFIG default)")
     args = ap.parse_args()
 
     symbols = args.symbols or TOP_PAIRS
@@ -513,7 +569,9 @@ def main():
         for iv in args.intervals:
             try:
                 btc_close = btc_close_by_iv.get(iv) if sym != "BTCUSDT" else None
-                mp = train_one(sym, iv, args.years, args.quick, btc_close)
+                mp = train_one(sym, iv, args.years, args.quick, btc_close,
+                               target_mode=args.target_mode,
+                               tb_upper=args.tb_upper, tb_lower=args.tb_lower)
                 if mp:
                     trained.append(mp.name)
             except Exception as e:

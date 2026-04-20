@@ -36,6 +36,12 @@ type PredictionV2 struct {
 	Metrics           SimplePredictMetrics `json:"metrics"`
 	Features          map[string]float64  `json:"features,omitempty"` // for debug
 	FallbackReason    string              `json:"fallback_reason,omitempty"`
+	// VolGate is set by risk-tier post-filter (Patch 2C). "" = passed;
+	// "blocked_low_vol" = atr_norm_14 below tier floor. When set,
+	// Direction is downgraded to "neutral".
+	VolGate string `json:"vol_gate,omitempty"`
+	// RiskTier echoes the tier applied to this prediction (for UI badges).
+	RiskTier string `json:"risk_tier,omitempty"`
 }
 
 type SimplePredictMetrics struct {
@@ -54,12 +60,24 @@ type SimplePredictMetrics struct {
 	HighConfidence bool `json:"high_confidence"`
 }
 
-// PredictV2 runs the ensemble + pattern matcher for a symbol/interval.
-// candles: raw OHLCV; takerBuyVolumes optional (same length as candles);
-// btcCloses optional (use for cross-asset features; len must equal candles or be empty).
-// tradingStyle: scalp/day/swing/position — used to pick the right interval's model.
+// PredictV2 runs the ensemble + pattern matcher for a symbol/interval
+// with the default Balanced risk tier. Kept as a thin wrapper so callers
+// that don't care about tiers stay unchanged.
 func PredictV2(
 	symbol, interval, tradingStyle string,
+	candles []types.OHLCVCandle,
+	takerBuyVolumes, btcCloses []float64,
+) PredictionV2 {
+	return PredictV2WithTier(symbol, interval, tradingStyle, string(TierBalanced), candles, takerBuyVolumes, btcCloses)
+}
+
+// PredictV2WithTier runs the ensemble + pattern matcher and applies a
+// risk-tier vol gate on top. tierName: "conservative"|"balanced"|"aggressive"
+// (falls back to balanced on unknown). The gate never overrides probability
+// or confidence values — it only downgrades Direction to "neutral" and
+// marks VolGate, so the UI can still display raw ML output for transparency.
+func PredictV2WithTier(
+	symbol, interval, tradingStyle, tierName string,
 	candles []types.OHLCVCandle,
 	takerBuyVolumes, btcCloses []float64,
 ) PredictionV2 {
@@ -155,6 +173,22 @@ func PredictV2(
 	default:
 		out.Direction = "neutral"
 		out.Confidence = 50
+	}
+
+	// Risk-tier vol gate (Patch 2C). Runs AFTER direction so the caller can
+	// still see the raw ML verdict in logs/debug via `probability`. When
+	// realized vol (atr_norm_14 = feats[12]) is below the tier's per-TF
+	// floor, we flip direction to neutral and expose the reason.
+	tier := GetTier(tierName)
+	out.RiskTier = tierName
+	if out.RiskTier == "" {
+		out.RiskTier = string(TierBalanced)
+	}
+	if len(feats) > 12 && out.Direction != "neutral" {
+		if floor, ok := tier.MinVolPctByTF[interval]; ok && feats[12] < floor {
+			out.Direction = "neutral"
+			out.VolGate = "blocked_low_vol"
+		}
 	}
 
 	// Price target: ATR-based.

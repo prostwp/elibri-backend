@@ -16,8 +16,11 @@ type User struct {
 	PasswordHash string    `json:"-"`
 	DisplayName  string    `json:"display_name"`
 	Role         string    `json:"role"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	// RiskTier drives ML prediction gating (Patch 2C).
+	// One of: conservative | balanced | aggressive. Default "balanced".
+	RiskTier  string    `json:"risk_tier" db:"risk_tier"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 var ErrUserExists = errors.New("user already exists")
@@ -40,9 +43,10 @@ func CreateUser(ctx context.Context, pool *pgxpool.Pool, email, password, displa
 	err = pool.QueryRow(ctx, `
 		INSERT INTO users (email, password_hash, display_name, role)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, email, password_hash, COALESCE(display_name, ''), role, created_at, updated_at
+		RETURNING id, email, password_hash, COALESCE(display_name, ''), role,
+		         COALESCE(risk_tier, 'balanced'), created_at, updated_at
 	`, email, hash, displayName, role).Scan(
-		&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.CreatedAt, &u.UpdatedAt,
+		&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.RiskTier, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "users_email_key") {
@@ -58,9 +62,10 @@ func GetUserByEmail(ctx context.Context, pool *pgxpool.Pool, email string) (*Use
 	email = strings.ToLower(strings.TrimSpace(email))
 	var u User
 	err := pool.QueryRow(ctx, `
-		SELECT id, email, password_hash, COALESCE(display_name, ''), role, created_at, updated_at
+		SELECT id, email, password_hash, COALESCE(display_name, ''), role,
+		       COALESCE(risk_tier, 'balanced'), created_at, updated_at
 		FROM users WHERE email = $1
-	`, email).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.CreatedAt, &u.UpdatedAt)
+	`, email).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.RiskTier, &u.CreatedAt, &u.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, ErrUserNotFound
 	}
@@ -73,9 +78,10 @@ func GetUserByEmail(ctx context.Context, pool *pgxpool.Pool, email string) (*Use
 func GetUserByID(ctx context.Context, pool *pgxpool.Pool, id string) (*User, error) {
 	var u User
 	err := pool.QueryRow(ctx, `
-		SELECT id, email, password_hash, COALESCE(display_name, ''), role, created_at, updated_at
+		SELECT id, email, password_hash, COALESCE(display_name, ''), role,
+		       COALESCE(risk_tier, 'balanced'), created_at, updated_at
 		FROM users WHERE id = $1
-	`, id).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.CreatedAt, &u.UpdatedAt)
+	`, id).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.RiskTier, &u.CreatedAt, &u.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, ErrUserNotFound
 	}
@@ -87,7 +93,8 @@ func GetUserByID(ctx context.Context, pool *pgxpool.Pool, id string) (*User, err
 
 func ListUsers(ctx context.Context, pool *pgxpool.Pool) ([]User, error) {
 	rows, err := pool.Query(ctx, `
-		SELECT id, email, '' AS password_hash, COALESCE(display_name, ''), role, created_at, updated_at
+		SELECT id, email, '' AS password_hash, COALESCE(display_name, ''), role,
+		       COALESCE(risk_tier, 'balanced'), created_at, updated_at
 		FROM users ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -98,7 +105,7 @@ func ListUsers(ctx context.Context, pool *pgxpool.Pool) ([]User, error) {
 	users := []User{}
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.RiskTier, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		users = append(users, u)

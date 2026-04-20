@@ -36,6 +36,14 @@ func NewRouter(cfg *config.Config) http.Handler {
 	mux.HandleFunc("POST /api/v1/strategies", handleStrategiesCreate)
 	mux.HandleFunc("/api/v1/strategies/", handleStrategyByID)
 
+	// Scenarios (live runner control) — Patch 3
+	mux.HandleFunc("GET /api/v1/scenarios/active", handleScenariosActive)
+	mux.HandleFunc("/api/v1/scenarios/", handleScenarioSubroute)
+
+	// Telegram link + alerts history — Patch 3
+	mux.HandleFunc("/api/v1/telegram/link", handleTelegramLinkRouter(cfg))
+	mux.HandleFunc("GET /api/v1/alerts", handleAlertsList)
+
 	// Admin (protected + role check inside handler)
 	mux.HandleFunc("GET /api/v1/admin/users", handleAdminListUsers)
 	mux.HandleFunc("POST /api/v1/admin/users/{id}/reset-password", handleAdminResetPassword)

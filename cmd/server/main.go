@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/prostwp/elibri-backend/internal/api"
 	"github.com/prostwp/elibri-backend/internal/config"
 	"github.com/prostwp/elibri-backend/internal/ml"
+	"github.com/prostwp/elibri-backend/internal/scenario"
 	"github.com/prostwp/elibri-backend/internal/store"
+	"github.com/prostwp/elibri-backend/internal/telegram"
 )
 
 func main() {
@@ -38,12 +44,50 @@ func main() {
 		log.Printf("ML thresholds: %d loaded", n)
 	}
 
+	// Parent context for live-runner + Telegram bot. Cancelled on SIGINT/SIGTERM.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// Telegram bot (nil if TELEGRAM_BOT_TOKEN empty — runner still logs alerts in DB).
+	tgBot, err := telegram.NewBot(cfg.TelegramBotToken, cfg.TelegramBotUsername, store.Pool)
+	if err != nil {
+		log.Printf("Telegram disabled: %v", err)
+	} else if tgBot != nil {
+		log.Printf("Telegram bot initialized (@%s)", cfg.TelegramBotUsername)
+	}
+
+	// Alert delivery queue + drain goroutine.
+	alertQ := telegram.NewAlertQueue(tgBot, store.Pool)
+	go alertQ.Run(ctx)
+
+	// Scenario runner — polls active strategies, emits alerts.
+	runner := scenario.NewRunner(ctx, store.Pool, alertQ)
+	if err := runner.StartAllActive(ctx); err != nil {
+		log.Printf("Scenario runner hydrate error: %v", err)
+	}
+	api.SetRunner(runner)
+	defer runner.Shutdown()
+
+	// Start Telegram long-poll last (it blocks on bot.Start).
+	if tgBot != nil {
+		go tgBot.Start(ctx)
+	}
+
 	router := api.NewRouter(cfg)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	log.Printf("Elibri Backend starting on %s", addr)
 
-	if err := http.ListenAndServe(addr, router); err != nil {
-		log.Fatalf("Server failed: %v", err)
-	}
+	server := &http.Server{Addr: addr, Handler: router}
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("Shutdown signal received, stopping scenario runner and HTTP server...")
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	defer shutdownCancel()
+	_ = server.Shutdown(shutdownCtx)
 }

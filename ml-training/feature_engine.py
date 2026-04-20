@@ -336,3 +336,42 @@ def make_target(close: np.ndarray, horizon: int, threshold: float = 0.0) -> np.n
     label = np.where(ret > threshold, 1, 0).astype(np.int8)
     label[-horizon:] = -1  # sentinel
     return label
+
+
+def make_target_triple_barrier(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    atr: np.ndarray,
+    horizon: int,
+    upper_mult: float = 1.5,
+    lower_mult: float = 1.0,
+) -> np.ndarray:
+    """
+    Triple-barrier labels (López de Prado):
+        1  — price hit +upper_mult*ATR before -lower_mult*ATR (long wins)
+        0  — first hit -lower_mult*ATR before +upper_mult*ATR (long loses)
+       -1  — timeout with no barrier touch (noise — drop before training)
+
+    Removes the ~50% of bars that live in chop, raising class separation
+    and letting HC-filtering extract clean conviction signals.
+    """
+    n = len(close)
+    labels = np.full(n, -1, dtype=np.int8)
+    for t in range(n):
+        end = t + horizon
+        if end >= n:
+            continue
+        a = atr[t]
+        if not np.isfinite(a) or a <= 0:
+            continue
+        up = close[t] + upper_mult * a
+        dn = close[t] - lower_mult * a
+        for j in range(t + 1, end + 1):
+            if high[j] >= up:
+                labels[t] = 1
+                break
+            if low[j] <= dn:
+                labels[t] = 0
+                break
+    return labels

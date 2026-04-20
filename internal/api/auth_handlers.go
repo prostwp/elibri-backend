@@ -7,6 +7,7 @@ import (
 
 	"github.com/prostwp/elibri-backend/internal/auth"
 	"github.com/prostwp/elibri-backend/internal/config"
+	"github.com/prostwp/elibri-backend/internal/ml"
 	"github.com/prostwp/elibri-backend/internal/store"
 )
 
@@ -124,6 +125,9 @@ func handleMe(w http.ResponseWriter, r *http.Request) {
 
 type updateMeReq struct {
 	DisplayName *string `json:"display_name"`
+	// RiskTier (Patch 2C): optional risk-tier change. When nil, column untouched.
+	// Validated against ml.IsValidTier — only "conservative"|"balanced"|"aggressive".
+	RiskTier *string `json:"risk_tier,omitempty"`
 }
 
 func handleUpdateMe(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +156,20 @@ func handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 			name, userID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to update")
+			return
+		}
+	}
+	if req.RiskTier != nil {
+		tier := strings.ToLower(strings.TrimSpace(*req.RiskTier))
+		if !ml.IsValidTier(tier) {
+			writeError(w, http.StatusBadRequest, "risk_tier must be one of: conservative, balanced, aggressive")
+			return
+		}
+		_, err := store.Pool.Exec(r.Context(),
+			`UPDATE users SET risk_tier = $1, updated_at = NOW() WHERE id = $2`,
+			tier, userID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update risk_tier")
 			return
 		}
 	}
