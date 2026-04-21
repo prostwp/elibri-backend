@@ -1,0 +1,105 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel older in-progress runs on the same PR / branch — saves minutes and
+# lets reviewers always look at the latest commit.
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: go test + build + vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Match go.mod (go 1.25.0). Bump both in lockstep if we upgrade.
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: go mod download
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        # -trimpath keeps CI build byte-identical with local builds for the same
+        # commit, useful when we start attaching binaries to releases.
+        run: go build -trimpath -o /tmp/server ./cmd/server
+
+      - name: go test (race + coverage)
+        # -race catches data races in scenario runner / AlertQueue goroutines.
+        # -count=1 disables the test result cache so every CI run is a real run.
+        # Coverage file is uploaded as artifact for PR review but we don't fail
+        # on thresholds yet (tests were added in Patch 2I; coverage is still low).
+        # NOTE: the parity test lives in ./internal/ml and is picked up by ./...
+        # It reads testdata fixture committed under ml-training/testdata — no
+        # Python required on this runner (fixture is precomputed).
+        run: |
+          go test -race -count=1 -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | tail -5
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-coverage
+          path: coverage.out
+          retention-days: 7
+
+  parity-fixture-check:
+    # Validates that ml-training/testdata/fixture_expected.json is in sync with
+    # the Python feature_engine.py by regenerating it on every PR and diffing.
+    # If Python output drifted (someone changed a formula, did not regen) this
+    # fails and points to the stale file. Complements the Go parity test in
+    # the `test` job: that checks Go -> fixture match; this checks fixture ->
+    # Python match. Together we close the Go <-> Python loop.
+    name: python fixture freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: ml-training/requirements.txt
+
+      - name: Install ML deps
+        run: |
+          cd ml-training
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Regenerate fixture in a scratch dir
+        run: |
+          cd ml-training
+          # Dump into /tmp so we never touch the committed files — we only want
+          # to compare. Python script writes to ml-training/testdata/ by default,
+          # so we stage into a copy via PYTHONPATH trick: let it write normally,
+          # then diff against committed copy via git.
+          python3 make_parity_fixture.py
+
+      - name: Diff against committed fixture
+        run: |
+          cd ml-training
+          # `git diff --exit-code` returns non-zero if files changed. That's
+          # the signal the committed fixture is stale.
+          git diff --exit-code testdata/fixture_expected.json testdata/fixture_ohlcv.csv \
+            || (echo "::error::fixture drift detected — run make_parity_fixture.py and commit" && exit 1)

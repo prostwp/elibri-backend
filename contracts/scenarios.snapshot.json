@@ -1,0 +1,32 @@
+{
+  "alerts_list_row": [
+    "bar_time",
+    "confidence",
+    "created_at",
+    "direction",
+    "entry_price",
+    "id",
+    "interval",
+    "label",
+    "meta",
+    "position_size_usd",
+    "stop_loss",
+    "strategy_id",
+    "symbol",
+    "take_profit",
+    "telegram_message_id",
+    "telegram_sent_at"
+  ],
+  "scenario_active_item": [
+    "id",
+    "interval",
+    "is_active",
+    "last_signal_bar_time",
+    "last_signal_direction",
+    "name",
+    "paused_until",
+    "risk_tier",
+    "running",
+    "symbol"
+  ]
+}
