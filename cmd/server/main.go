@@ -58,7 +58,8 @@ func main() {
 	}
 
 	// Alert delivery queue + drain goroutine.
-	alertQ := telegram.NewAlertQueue(tgBot, store.Pool)
+	// Pass AlertsMaxPerDayPerUser so deliver() enforces per-user quota.
+	alertQ := telegram.NewAlertQueue(tgBot, store.Pool, cfg.AlertsMaxPerDayPerUser)
 	go alertQ.Run(ctx)
 
 	// Scenario runner — polls active strategies, emits alerts.
@@ -67,6 +68,7 @@ func main() {
 		log.Printf("Scenario runner hydrate error: %v", err)
 	}
 	api.SetRunner(runner)
+	api.SetScenarioConfig(cfg) // wire quotas + kill-switch into handlers
 
 	// Start Telegram long-poll last (it blocks on bot.Start).
 	if tgBot != nil {
@@ -78,7 +80,16 @@ func main() {
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	log.Printf("Elibri Backend starting on %s", addr)
 
-	server := &http.Server{Addr: addr, Handler: router}
+	// Patch 2L: HTTP timeouts to kill Slowloris / stuck clients.
+	// Without these, one idle TCP connection holds a goroutine forever.
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second, // attacker can't dribble headers
+		ReadTimeout:       30 * time.Second, // body must arrive in 30s
+		WriteTimeout:      60 * time.Second, // slow ML predicts can take ~5-10s; 60s headroom
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed: %v", err)

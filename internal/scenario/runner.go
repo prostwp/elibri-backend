@@ -11,12 +11,18 @@ import (
 // Runner owns the pool of per-scenario goroutines. One process-wide instance;
 // main.go creates it, wires it to HTTP handlers via SetRunner, and calls
 // StartAllActive on boot.
+//
+// Shutdown semantics (Patch 2L): the WaitGroup tracks every live
+// scenarioLoop goroutine. Shutdown() cancels each loop's context and then
+// Wait()s until every goroutine returns, so main.go can safely close the
+// DB pool afterwards without pgx "closed pool" panics from mid-tick writes.
 type Runner struct {
 	pool  *pgxpool.Pool
 	sink  AlertSink
 	mu    sync.Mutex
 	loops map[string]*scenarioLoop
 	ctx   context.Context
+	wg    sync.WaitGroup
 }
 
 // NewRunner constructs a Runner bound to a DB pool and alert sink.
@@ -83,14 +89,20 @@ func (r *Runner) Stop(scenarioID string) {
 	}
 }
 
-// Shutdown cancels every loop. Called from main.go on SIGINT/SIGTERM.
+// Shutdown cancels every loop AND waits for their goroutines to exit.
+// Called from main.go on SIGINT/SIGTERM before store.ClosePostgres, so any
+// in-flight InsertAlert / MarkLastSignal finishes before the pool is torn
+// down (previously Shutdown returned immediately, main.go closed the pool,
+// and live ticks panicked inside pgx).
 func (r *Runner) Shutdown() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	for id, loop := range r.loops {
 		loop.Stop()
 		delete(r.loops, id)
 	}
+	r.mu.Unlock()
+	log.Printf("[runner] shutdown: waiting for in-flight ticks to finish")
+	r.wg.Wait()
 	log.Printf("[runner] shutdown: all loops stopped")
 }
 
@@ -124,6 +136,7 @@ func (r *Runner) startLoop(s ActiveScenario) {
 		scenario: s,
 		pool:     r.pool,
 		sink:     r.sink,
+		wg:       &r.wg,
 	}
 	r.loops[s.ID] = loop
 	r.mu.Unlock()

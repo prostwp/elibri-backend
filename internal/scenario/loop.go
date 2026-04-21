@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,14 +24,25 @@ type scenarioLoop struct {
 	pool     *pgxpool.Pool
 	sink     AlertSink
 	cancel   context.CancelFunc
+	wg       *sync.WaitGroup // Runner's group — Add/Done bracket the goroutine
 }
 
-// Start launches the loop in the background.
+// Start launches the loop in the background. Registers with the Runner's
+// WaitGroup so Runner.Shutdown() can block until the goroutine's final
+// in-flight tick completes (Patch 2L).
 func (l *scenarioLoop) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	l.cancel = cancel
 
+	if l.wg != nil {
+		l.wg.Add(1)
+	}
 	go func() {
+		defer func() {
+			if l.wg != nil {
+				l.wg.Done()
+			}
+		}()
 		defer log.Printf("[scenario %s] loop exited (%s %s)", l.scenario.ID, l.scenario.Symbol, l.scenario.Interval)
 		poll := TFToPoll(l.scenario.Interval)
 		ticker := time.NewTicker(poll)

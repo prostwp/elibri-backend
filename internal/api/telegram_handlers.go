@@ -14,6 +14,9 @@ import (
 // Issues a short-lived code. User types `/link <code>` in the bot to bind.
 func handleTelegramLinkCreate(cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireDB(w) {
+			return
+		}
 		userID := auth.GetUserID(r)
 		if userID == "" {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
@@ -39,6 +42,9 @@ func handleTelegramLinkCreate(cfg *config.Config) http.HandlerFunc {
 
 // DELETE /api/v1/telegram/link
 func handleTelegramUnlink(w http.ResponseWriter, r *http.Request) {
+	if !requireDB(w) {
+		return
+	}
 	userID := auth.GetUserID(r)
 	if userID == "" {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)

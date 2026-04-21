@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/prostwp/elibri-backend/internal/auth"
+	"github.com/prostwp/elibri-backend/internal/config"
 	"github.com/prostwp/elibri-backend/internal/scenario"
 	"github.com/prostwp/elibri-backend/internal/store"
 )
@@ -15,12 +16,36 @@ import (
 // behaviour when the runner isn't ready.
 var runner *scenario.Runner
 
+// scenarioCfg carries per-process limits (SCENARIO_MAX_PER_USER,
+// SCENARIO_KILL_SWITCH) wired in from main.go. Guarded by SetScenarioConfig.
+var scenarioCfg *config.Config
+
 // SetRunner is called from cmd/server/main.go after Runner is constructed.
 func SetRunner(r *scenario.Runner) { runner = r }
+
+// SetScenarioConfig exposes config to handlers for quota/kill-switch checks.
+// Keeps config as a handler-local dependency instead of a package global
+// (handlers currently reach for cfg via router.go closures, but scenario
+// quotas are a cross-cutting concern easier to test with this setter).
+func SetScenarioConfig(cfg *config.Config) { scenarioCfg = cfg }
+
+// requireDB returns false (and writes a 503) if the Postgres pool is nil —
+// handlers that would otherwise nil-deref on store.Pool.Exec. Previously
+// such requests panicked and leaked stack traces via default http recover.
+func requireDB(w http.ResponseWriter) bool {
+	if store.Pool == nil {
+		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
+		return false
+	}
+	return true
+}
 
 // POST /api/v1/scenarios/{id}/start
 // Marks the strategy is_active=true, asks runner to spawn the loop.
 func handleScenarioStart(w http.ResponseWriter, r *http.Request) {
+	if !requireDB(w) {
+		return
+	}
 	userID := auth.GetUserID(r)
 	if userID == "" {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
@@ -30,6 +55,29 @@ func handleScenarioStart(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		http.Error(w, `{"error":"id required"}`, http.StatusBadRequest)
 		return
+	}
+
+	// Global kill-switch (SCENARIO_KILL_SWITCH=1) — reject all new activations
+	// in emergencies without bringing the HTTP layer down.
+	if scenarioCfg != nil && scenarioCfg.ScenarioKillSwitch {
+		http.Error(w, `{"error":"scenario runner temporarily disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	// Enforce SCENARIO_MAX_PER_USER. Counting already-active scenarios.
+	// Lets the user safely re-toggle an existing one; only blocks new net
+	// additions past the limit.
+	if scenarioCfg != nil && scenarioCfg.ScenarioMaxPerUser > 0 {
+		var active int
+		if err := store.Pool.QueryRow(r.Context(), `
+			SELECT COUNT(*) FROM strategies
+			WHERE user_id = $1 AND is_active = true AND id != $2
+		`, userID, id).Scan(&active); err == nil {
+			if active >= scenarioCfg.ScenarioMaxPerUser {
+				http.Error(w, `{"error":"max active scenarios reached"}`, http.StatusConflict)
+				return
+			}
+		}
 	}
 
 	// Ownership check + toggle active.
@@ -59,6 +107,9 @@ func handleScenarioStart(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/scenarios/{id}/stop
 func handleScenarioStop(w http.ResponseWriter, r *http.Request) {
+	if !requireDB(w) {
+		return
+	}
 	userID := auth.GetUserID(r)
 	if userID == "" {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
@@ -92,6 +143,9 @@ func handleScenarioStop(w http.ResponseWriter, r *http.Request) {
 // GET /api/v1/scenarios/active
 // Returns user's active scenarios with runtime status (running/pending).
 func handleScenariosActive(w http.ResponseWriter, r *http.Request) {
+	if !requireDB(w) {
+		return
+	}
 	userID := auth.GetUserID(r)
 	if userID == "" {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
@@ -148,6 +202,9 @@ func handleScenariosActive(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/alerts?limit=50&strategy_id=...
 func handleAlertsList(w http.ResponseWriter, r *http.Request) {
+	if !requireDB(w) {
+		return
+	}
 	userID := auth.GetUserID(r)
 	if userID == "" {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)

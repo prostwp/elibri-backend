@@ -19,11 +19,12 @@ import (
 // If the Bot is nil (token not configured), alerts are logged and marked
 // sent-skipped. Stays idempotent against InsertAlert dedup.
 type AlertQueue struct {
-	bot   *Bot
-	pool  *pgxpool.Pool
-	ch    chan *scenario.Alert
-	done  chan struct{}
-	once  sync.Once
+	bot       *Bot
+	pool      *pgxpool.Pool
+	ch        chan *scenario.Alert
+	done      chan struct{}
+	once      sync.Once
+	maxPerDay int // AlertsMaxPerDayPerUser from config; 0 disables the quota
 }
 
 const (
@@ -32,13 +33,15 @@ const (
 )
 
 // NewAlertQueue constructs a queue. bot may be nil (Telegram disabled —
-// alerts still log through DB, runner stays functional).
-func NewAlertQueue(bot *Bot, pool *pgxpool.Pool) *AlertQueue {
+// alerts still log through DB, runner stays functional). maxPerDay is the
+// per-user daily cap enforced in deliver(); 0 disables the check.
+func NewAlertQueue(bot *Bot, pool *pgxpool.Pool, maxPerDay int) *AlertQueue {
 	return &AlertQueue{
-		bot:  bot,
-		pool: pool,
-		ch:   make(chan *scenario.Alert, queueSize),
-		done: make(chan struct{}),
+		bot:       bot,
+		pool:      pool,
+		ch:        make(chan *scenario.Alert, queueSize),
+		done:      make(chan struct{}),
+		maxPerDay: maxPerDay,
 	}
 }
 
@@ -102,7 +105,30 @@ func (q *AlertQueue) Done() <-chan struct{} {
 
 // deliver sends one alert. Errors are logged; the alert row stays in DB so
 // the user can still see it via /api/v1/alerts history.
-func (q *AlertQueue) deliver(ctx context.Context, a *scenario.Alert) {
+//
+// PHASE 2L fix — per-delivery timeout + ctx-aware throttle so a single hung
+// Telegram TCP connection can't eat the entire shutdown drain budget, and
+// SIGINT during throttle sleep doesn't add unkillable 350ms per queued alert.
+// Previously a slow Telegram response burned the 10s drain ctx for everyone.
+func (q *AlertQueue) deliver(parentCtx context.Context, a *scenario.Alert) {
+	// Cap one delivery at 5s so Run() and drain can make forward progress
+	// even if Telegram servers are slow or unreachable. The DB row stays
+	// intact; user sees the alert in web UI.
+	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
+	defer cancel()
+
+	// Enforce daily alert quota per user. Config default 100 — adjust via env.
+	// Previously AlertsMaxPerDayPerUser was loaded and CountAlertsLast24h
+	// was defined, but nothing tied them together. Compounded by no rate
+	// limit on scenario creation, one runaway scenario could flood Telegram.
+	if q.maxPerDay > 0 {
+		if n, err := scenario.CountAlertsLast24h(ctx, q.pool, a.UserID); err == nil && n > q.maxPerDay {
+			log.Printf("[tg alerts] daily quota %d exceeded for user %s (count=%d); alert %s kept in DB only",
+				q.maxPerDay, a.UserID, n, a.ID)
+			return
+		}
+	}
+
 	// Resolve chat_id lazily — user may have linked TG after scenario started.
 	chatID, linked, err := scenario.GetUserTelegramChatID(ctx, q.pool, a.UserID)
 	if err != nil {
@@ -130,6 +156,10 @@ func (q *AlertQueue) deliver(ctx context.Context, a *scenario.Alert) {
 		log.Printf("[tg alerts] mark-sent DB error for alert %s: %v", a.ID, err)
 	}
 
-	// Gentle per-chat throttle.
-	time.Sleep(perChatDelay)
+	// Gentle per-chat throttle; bail immediately if the parent context
+	// (SIGINT, drain deadline) fires so we don't strand the Run goroutine.
+	select {
+	case <-parentCtx.Done():
+	case <-time.After(perChatDelay):
+	}
 }
