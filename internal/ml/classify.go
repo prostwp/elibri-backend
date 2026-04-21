@@ -22,10 +22,10 @@ func ClassifySignal(signalDir, dailyDir, interval string, features map[string]fl
 	// signal got labelled "random". Denormalize to absolute ADX (0-100 scale).
 	adxNorm := features["adx_14"]
 	adxAbs := adxNorm * 100.0
-	// rsi_14 is ALSO normalized (rsi/100) in feature_engine — use absolute
-	// thresholds on the denormalized value.
-	rsiNorm := features["rsi_14"]
-	rsiAbs := rsiNorm * 100.0
+	// rsi_14 in feature_engine is stored ABSOLUTE (0-100), NOT normalized.
+	// Earlier patch mistakenly multiplied by 100 producing rsi=6165.4 in
+	// the UI reason string. Use the raw feature value directly.
+	rsiAbs := features["rsi_14"]
 	bb := features["bb_position"]
 
 	if signalDir != "neutral" && dailyDir == signalDir && adxAbs > 20 {

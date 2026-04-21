@@ -265,7 +265,11 @@ func handleMLPredictMulti(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Compute consensus: count directions, check HC alignment.
+	// Two vote pools: all predictions + HC-only. When HC signals exist,
+	// they outvote non-HC neutrals (fixes case where 2 HC SELLs lose to
+	// 3 neutral-but-biased predictions and the consensus reports flat).
 	dirCount := map[string]int{"buy": 0, "sell": 0, "neutral": 0}
+	hcDirCount := map[string]int{"buy": 0, "sell": 0, "neutral": 0}
 	var sumConf float64
 	nValid := 0
 	hcAligned := 0
@@ -278,6 +282,7 @@ func handleMLPredictMulti(w http.ResponseWriter, r *http.Request) {
 		nValid++
 		if p.Metrics.HighConfidence {
 			hcAligned++
+			hcDirCount[p.Direction]++
 		}
 	}
 
@@ -292,19 +297,36 @@ func handleMLPredictMulti(w http.ResponseWriter, r *http.Request) {
 	resp.Consensus.RiskTier = tier
 
 	if nValid > 0 {
-		// Majority direction.
-		majority := "neutral"
-		maxCount := 0
-		for dir, c := range dirCount {
-			if c > maxCount {
-				maxCount = c
-				majority = dir
+		// Prefer HC-weighted majority when any HC signals exist.
+		// HC predictions are the ones that actually passed the model's
+		// confidence gate — they carry more information than neutral
+		// predictions that fell through by default.
+		var majority string
+		var maxCount int
+		hcBuy, hcSell := hcDirCount["buy"], hcDirCount["sell"]
+		switch {
+		case hcBuy > hcSell:
+			majority = "buy"
+			maxCount = hcBuy
+		case hcSell > hcBuy:
+			majority = "sell"
+			maxCount = hcSell
+		default:
+			// No HC signals or HC tie — fall back to raw majority.
+			majority = "neutral"
+			maxCount = 0
+			for dir, c := range dirCount {
+				if c > maxCount {
+					maxCount = c
+					majority = dir
+				}
 			}
 		}
 		alignment := float64(maxCount) / float64(nValid)
 		resp.Consensus.Direction = majority
-		if alignment < 1.0 && dirCount["buy"] > 0 && dirCount["sell"] > 0 {
-			resp.Consensus.Direction = "mixed" // explicit conflict
+		// Explicit conflict: at least one HC buy AND one HC sell.
+		if hcBuy > 0 && hcSell > 0 {
+			resp.Consensus.Direction = "mixed"
 		}
 		resp.Consensus.Alignment = alignment
 		resp.Consensus.AvgConfidence = sumConf / float64(nValid)
