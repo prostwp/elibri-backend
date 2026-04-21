@@ -28,7 +28,7 @@ import pandas as pd
 
 from feature_engine import FEATURE_NAMES, build_features, make_target, make_target_triple_barrier, _atr
 from data_fetcher import fetch_or_cache
-from train import HORIZON_MAP, train_ensemble, ensemble_predict
+from train import HORIZON_MAP, TF_CONFIG, train_ensemble, ensemble_predict
 
 
 ROOT = Path(__file__).parent
@@ -134,7 +134,11 @@ def analyze(symbol: str, interval: str, btc_close: np.ndarray | None,
     if len(df) < 500:
         return {"symbol": symbol, "interval": interval, "error": "insufficient data"}
 
-    horizon = HORIZON_MAP[interval]
+    # Patch 2H: read horizon from TF_CONFIG (same dict train.py uses).
+    # HORIZON_MAP is legacy (e.g. 1d: 10) while TF_CONFIG 1d: 5. Threshold
+    # sweeps on a different horizon than the deployed model are meaningless.
+    tf_cfg = TF_CONFIG.get(interval, {"horizon": HORIZON_MAP.get(interval, 10)})
+    horizon = tf_cfg["horizon"]
     feat = build_features(df, btc_close=btc_close)
     close_arr = df["close"].to_numpy()
 

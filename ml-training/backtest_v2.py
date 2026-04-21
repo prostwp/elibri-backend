@@ -40,9 +40,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from feature_engine import FEATURE_NAMES, build_features, make_target, _atr
+from feature_engine import (
+    FEATURE_NAMES, build_features, make_target,
+    make_target_triple_barrier, _atr,
+)
 from data_fetcher import fetch_or_cache
-from train import HORIZON_MAP, train_ensemble, ensemble_predict
+from train import HORIZON_MAP, TF_CONFIG, train_ensemble, ensemble_predict
 from risk_tiers_config import TIERS, tier_names
 
 
@@ -98,8 +101,20 @@ def load_best_thresholds(path: Path | None = None) -> dict[str, float]:
 # ------------------------------------------------------------ train + predict --
 
 def train_and_predict(symbol: str, interval: str, years: float,
-                      btc_close: np.ndarray | None = None):
+                      btc_close: np.ndarray | None = None,
+                      target_mode: str = "tb_atr"):
     """Train on first 70%, predict on remaining 30%.
+
+    Patch 2H fix: target_mode defaults to "tb_atr" to match what
+    production models in models/latest.json were trained on. Previously
+    hardcoded binary `make_target`, producing a DIFFERENT model than the
+    one that runs in production — every Sharpe/WR published from here
+    was for the wrong model.
+
+    Horizon/tb_upper/tb_lower now pulled from TF_CONFIG (the same dict
+    train.py uses), not HORIZON_MAP. This ensures the backtest model's
+    horizon matches the production model's horizon (e.g. 1d: TF_CONFIG
+    says 5 bars, HORIZON_MAP says 10 — bug fixed).
 
     Returns a dict with:
       proba    : np.ndarray[float]  (test set)
@@ -114,18 +129,47 @@ def train_and_predict(symbol: str, interval: str, years: float,
     if len(df) < 500:
         raise RuntimeError(f"{symbol} {interval}: only {len(df)} candles, need >= 500")
 
-    horizon = HORIZON_MAP[interval]
+    tf_cfg = TF_CONFIG.get(interval, {
+        "horizon": HORIZON_MAP.get(interval, 10),
+        "tb_upper": 1.5, "tb_lower": 1.0,
+    })
+    horizon = tf_cfg["horizon"]
     feat = build_features(df, btc_close=btc_close)
-    target = make_target(df["close"].to_numpy(), horizon=horizon)
+
+    # Build the same target shape production uses.
+    if target_mode == "tb_atr":
+        high_arr = df["high"].to_numpy()
+        low_arr  = df["low"].to_numpy()
+        close_arr = df["close"].to_numpy()
+        atr_arr   = _atr(high_arr, low_arr, close_arr, period=14)
+        target = make_target_triple_barrier(
+            high_arr, low_arr, close_arr, atr_arr,
+            horizon=horizon,
+            upper_mult=tf_cfg["tb_upper"],
+            lower_mult=tf_cfg["tb_lower"],
+        )
+        print(f"  [backtest_v2] {symbol} {interval}: target=tb_atr "
+              f"horizon={horizon} tb_upper={tf_cfg['tb_upper']} tb_lower={tf_cfg['tb_lower']}")
+    else:
+        target = make_target(df["close"].to_numpy(), horizon=horizon)
+        print(f"  [backtest_v2] {symbol} {interval}: target=binary horizon={horizon}")
+
     mask = target >= 0
     feat = feat.loc[mask].reset_index(drop=True)
     target = target[mask]
     df_m = df[mask].reset_index(drop=True)
 
+    # Walk-forward split 70/30 with embargo = max(horizon, lag_4=4) so the
+    # last H bars of train don't leak into the first H bars of test via the
+    # forward-looking target. Without this, triple-barrier labels reach
+    # into the test window and metrics overstate OOS skill.
     split = int(len(feat) * 0.7)
-    X_train = feat[FEATURE_NAMES].iloc[:split].to_numpy()
-    y_train = target[:split]
+    embargo = max(horizon, 4)
+    train_end = max(0, split - embargo)
+    X_train = feat[FEATURE_NAMES].iloc[:train_end].to_numpy()
+    y_train = target[:train_end]
     X_test = feat[FEATURE_NAMES].iloc[split:].to_numpy()
+    print(f"  [backtest_v2] split: train=[0:{train_end}] embargo={embargo} test=[{split}:{len(feat)}]")
 
     xgb, lgbm, rf, meta = train_ensemble(X_train, y_train, quick=False)
     proba, _ = ensemble_predict(xgb, lgbm, rf, meta, X_test)
