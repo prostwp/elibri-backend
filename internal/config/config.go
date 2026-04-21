@@ -27,6 +27,14 @@ type Config struct {
 	ScenarioMaxPerUser     int
 	AlertsMaxPerDayPerUser int
 	ScenarioKillSwitch     bool
+
+	// Patch 3A — macro blackout gate. Blocks scenario alerts around
+	// high-impact USD releases (FOMC, CPI, NFP, PCE, Fed speakers) where
+	// volatility expands and the ML edge collapses.
+	MacroBlackoutEnabled bool
+	MacroBlackoutBefore  int    // minutes before event to start blocking
+	MacroBlackoutAfter   int    // minutes after event to keep blocking
+	MacroImpactFilter    string // "low" | "medium" | "high" — min impact to block
 }
 
 func Load() *Config {
@@ -48,6 +56,13 @@ func Load() *Config {
 		ScenarioMaxPerUser:     getEnvInt("SCENARIO_MAX_PER_USER", 5),
 		AlertsMaxPerDayPerUser: getEnvInt("ALERTS_MAX_PER_DAY", 100),
 		ScenarioKillSwitch:     getEnv("SCENARIO_KILL_SWITCH", "0") == "1",
+
+		// Macro blackout gate — ON by default so paper trading respects
+		// high-impact USD releases without user action.
+		MacroBlackoutEnabled: getEnv("MACRO_BLACKOUT_ENABLED", "1") == "1",
+		MacroBlackoutBefore:  getEnvInt("MACRO_BLACKOUT_MINUTES_BEFORE", 30),
+		MacroBlackoutAfter:   getEnvInt("MACRO_BLACKOUT_MINUTES_AFTER", 15),
+		MacroImpactFilter:    getEnv("MACRO_IMPACT_FILTER", "high"),
 	}
 	// Refuse to start in production with the dev secret.
 	if cfg.JWTSecret == devJWTSecret && cfg.Env != "development" {

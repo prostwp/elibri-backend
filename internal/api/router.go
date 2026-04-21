@@ -45,6 +45,9 @@ func NewRouter(cfg *config.Config) http.Handler {
 	mux.HandleFunc("GET /api/v1/scenarios/active", handleScenariosActive)
 	mux.HandleFunc("/api/v1/scenarios/", handleScenarioSubroute)
 
+	// Macro calendar (Patch 3A) — upcoming high-impact events + blackout status
+	mux.HandleFunc("GET /api/v1/macrocal", handleMacroCalendar)
+
 	// Telegram link + alerts history — Patch 3
 	mux.HandleFunc("/api/v1/telegram/link", handleTelegramLinkRouter(cfg))
 	mux.HandleFunc("GET /api/v1/alerts", handleAlertsList)

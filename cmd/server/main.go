@@ -12,6 +12,7 @@ import (
 
 	"github.com/prostwp/elibri-backend/internal/api"
 	"github.com/prostwp/elibri-backend/internal/config"
+	"github.com/prostwp/elibri-backend/internal/macrocal"
 	"github.com/prostwp/elibri-backend/internal/ml"
 	"github.com/prostwp/elibri-backend/internal/scenario"
 	"github.com/prostwp/elibri-backend/internal/store"
@@ -49,6 +50,23 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Macro blackout: init Finnhub economic-calendar poller + inject config
+	// into scenario.evaluate. Disabled silently if FINNHUB_API_KEY is empty
+	// (IsBlackout returns false; runner behaves as before).
+	macrocal.Init(ctx, cfg.FinnhubAPIKey)
+	scenario.SetMacroConfig(macrocal.Config{
+		Enabled:        cfg.MacroBlackoutEnabled,
+		BlackoutBefore: time.Duration(cfg.MacroBlackoutBefore) * time.Minute,
+		BlackoutAfter:  time.Duration(cfg.MacroBlackoutAfter) * time.Minute,
+		MinImpact:      cfg.MacroImpactFilter,
+	})
+	api.SetMacroConfig(macrocal.Config{
+		Enabled:        cfg.MacroBlackoutEnabled,
+		BlackoutBefore: time.Duration(cfg.MacroBlackoutBefore) * time.Minute,
+		BlackoutAfter:  time.Duration(cfg.MacroBlackoutAfter) * time.Minute,
+		MinImpact:      cfg.MacroImpactFilter,
+	})
+
 	// Telegram bot (nil if TELEGRAM_BOT_TOKEN empty — runner still logs alerts in DB).
 	tgBot, err := telegram.NewBot(cfg.TelegramBotToken, cfg.TelegramBotUsername, store.Pool)
 	if err != nil {
@@ -69,6 +87,7 @@ func main() {
 	}
 	api.SetRunner(runner)
 	api.SetScenarioConfig(cfg) // wire quotas + kill-switch into handlers
+	// (macro config already injected via api.SetMacroConfig above)
 
 	// Start Telegram long-poll last (it blocks on bot.Start).
 	if tgBot != nil {

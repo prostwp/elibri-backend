@@ -3,30 +3,45 @@ package scenario
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/prostwp/elibri-backend/internal/macrocal"
 	"github.com/prostwp/elibri-backend/internal/market"
 	"github.com/prostwp/elibri-backend/internal/ml"
 	"github.com/prostwp/elibri-backend/pkg/types"
 )
+
+// MacroCfg is the blackout-gate config read once from env at startup and
+// injected here by main.go. Kept as a package-level var so every scenario
+// loop shares the same policy without plumbing it through ActiveScenario.
+// When nil (tests), gate is disabled.
+var MacroCfg *macrocal.Config
+
+// SetMacroConfig wires the config from cmd/server/main.go.
+func SetMacroConfig(cfg macrocal.Config) { MacroCfg = &cfg }
 
 // Evaluation is the outcome of a single scenario tick.
 // Ready=true means the runner should emit an alert; everything else is
 // either "no signal" (neutral/hold) or "blocked by a gate" (keep the
 // scenario alive but don't alert).
 type Evaluation struct {
-	Ready            bool
-	Direction        string  // "buy" | "sell" (only when Ready)
-	Confidence       float64 // 0-100
-	EntryPrice       float64
-	StopLoss         float64
-	TakeProfit       float64
-	PositionSizeUSD  float64
-	Label            string // trend_aligned | mean_reversion | random
-	LabelReason      string
-	BarTime          int64  // last candle open_time (unix seconds)
-	HCPass           bool   // model high-confidence flag
-	BlockReason      string // "" | "low_vol" | "label_not_allowed" | "same_bar" | "ml_down"
-	ModelVersion     string
+	Ready           bool
+	Direction       string  // "buy" | "sell" (only when Ready)
+	Confidence      float64 // 0-100
+	EntryPrice      float64
+	StopLoss        float64
+	TakeProfit      float64
+	PositionSizeUSD float64
+	Label           string // trend_aligned | mean_reversion | random
+	LabelReason     string
+	BarTime         int64  // last candle open_time (unix seconds)
+	HCPass          bool   // model high-confidence flag
+	BlockReason     string // "" | "low_vol" | "label_not_allowed" | "same_bar" | "ml_down" | "macro_blackout"
+	ModelVersion    string
+	// Macro blackout details — populated when BlockReason == "macro_blackout".
+	MacroEvent     string
+	MacroEventTime time.Time
+	MacroMinutes   int
 }
 
 // Evaluate runs one tick: pulls candles, runs PredictV2WithTier, applies
@@ -89,6 +104,20 @@ func Evaluate(
 	}
 	if pred.Direction == "neutral" {
 		return ev // not an error, just no signal this bar
+	}
+
+	// Macro blackout gate: suppress signals around high-impact USD releases
+	// (FOMC, CPI, NFP, PCE, PPI, Fed speakers). ML edge collapses inside
+	// these vol-expansion windows. Check is a pure in-memory lookup against
+	// the cached Finnhub calendar — free call cost.
+	if MacroCfg != nil {
+		if gate := macrocal.IsBlackout(time.Now(), *MacroCfg); gate.Blocked {
+			ev.BlockReason = "macro_blackout"
+			ev.MacroEvent = gate.Event
+			ev.MacroEventTime = gate.EventTime
+			ev.MacroMinutes = gate.Minutes
+			return ev
+		}
 	}
 
 	// Classify via 1d trend anchor. Reuse api.ClassifySignal to stay in sync
