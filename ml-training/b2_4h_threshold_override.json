@@ -1,0 +1,4 @@
+{
+  "note": "Session B.2 d5 threshold tuning experiment — thr 0.750 -> 0.725 for BTCUSDT_4h only. Expected +48% candidates, ~1pp precision loss per Phase 2 sweep. Goal: see if tier-level Sharpe improves with more samples.",
+  "BTCUSDT_4h": 0.725
+}
