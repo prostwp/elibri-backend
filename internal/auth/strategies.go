@@ -11,22 +11,30 @@ import (
 )
 
 type Strategy struct {
-	ID            string          `json:"id"`
-	UserID        string          `json:"user_id"`
-	Name          string          `json:"name"`
-	NodesJSON     json.RawMessage `json:"nodes_json"`
-	EdgesJSON     json.RawMessage `json:"edges_json"`
-	Segment       string          `json:"segment"`
-	SelectedPair  string          `json:"selected_pair"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
+	ID           string          `json:"id"`
+	UserID       string          `json:"user_id"`
+	Name         string          `json:"name"`
+	NodesJSON    json.RawMessage `json:"nodes_json"`
+	EdgesJSON    json.RawMessage `json:"edges_json"`
+	Segment      string          `json:"segment"`
+	SelectedPair string          `json:"selected_pair"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+	// Patch 2C + Patch 3 fields (read-only here; set via /scenarios/*/start+stop).
+	IsActive         bool   `json:"is_active"`
+	Interval         string `json:"interval"`
+	RiskTier         string `json:"risk_tier"`
+	TelegramEnabled  bool   `json:"telegram_enabled"`
 }
 
 var ErrStrategyNotFound = errors.New("strategy not found")
 
 func ListStrategies(ctx context.Context, pool *pgxpool.Pool, userID string) ([]Strategy, error) {
 	rows, err := pool.Query(ctx, `
-		SELECT id, user_id, name, nodes_json, edges_json, segment, selected_pair, created_at, updated_at
+		SELECT id, user_id, name, nodes_json, edges_json, segment, selected_pair,
+		       created_at, updated_at,
+		       COALESCE(is_active, false), COALESCE(interval, '1h'),
+		       COALESCE(risk_tier, 'balanced'), COALESCE(telegram_enabled, true)
 		FROM strategies WHERE user_id = $1 ORDER BY updated_at DESC
 	`, userID)
 	if err != nil {
@@ -37,7 +45,11 @@ func ListStrategies(ctx context.Context, pool *pgxpool.Pool, userID string) ([]S
 	out := []Strategy{}
 	for rows.Next() {
 		var s Strategy
-		if err := rows.Scan(&s.ID, &s.UserID, &s.Name, &s.NodesJSON, &s.EdgesJSON, &s.Segment, &s.SelectedPair, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(
+			&s.ID, &s.UserID, &s.Name, &s.NodesJSON, &s.EdgesJSON,
+			&s.Segment, &s.SelectedPair, &s.CreatedAt, &s.UpdatedAt,
+			&s.IsActive, &s.Interval, &s.RiskTier, &s.TelegramEnabled,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -48,9 +60,16 @@ func ListStrategies(ctx context.Context, pool *pgxpool.Pool, userID string) ([]S
 func GetStrategy(ctx context.Context, pool *pgxpool.Pool, userID, id string) (*Strategy, error) {
 	var s Strategy
 	err := pool.QueryRow(ctx, `
-		SELECT id, user_id, name, nodes_json, edges_json, segment, selected_pair, created_at, updated_at
+		SELECT id, user_id, name, nodes_json, edges_json, segment, selected_pair,
+		       created_at, updated_at,
+		       COALESCE(is_active, false), COALESCE(interval, '1h'),
+		       COALESCE(risk_tier, 'balanced'), COALESCE(telegram_enabled, true)
 		FROM strategies WHERE id = $1 AND user_id = $2
-	`, id, userID).Scan(&s.ID, &s.UserID, &s.Name, &s.NodesJSON, &s.EdgesJSON, &s.Segment, &s.SelectedPair, &s.CreatedAt, &s.UpdatedAt)
+	`, id, userID).Scan(
+		&s.ID, &s.UserID, &s.Name, &s.NodesJSON, &s.EdgesJSON,
+		&s.Segment, &s.SelectedPair, &s.CreatedAt, &s.UpdatedAt,
+		&s.IsActive, &s.Interval, &s.RiskTier, &s.TelegramEnabled,
+	)
 	if err == pgx.ErrNoRows {
 		return nil, ErrStrategyNotFound
 	}

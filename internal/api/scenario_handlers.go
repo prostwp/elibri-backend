@@ -143,7 +143,7 @@ func handleScenariosActive(w http.ResponseWriter, r *http.Request) {
 		it.Running = runner != nil && runner.IsRunning(it.ID)
 		out = append(out, it)
 	}
-	writeJSON(w, out)
+	writeJSON(w, map[string]any{"scenarios": out})
 }
 
 // GET /api/v1/alerts?limit=50&strategy_id=...
@@ -221,7 +221,7 @@ func handleAlertsList(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, it)
 	}
-	writeJSON(w, out)
+	writeJSON(w, map[string]any{"alerts": out})
 }
 
 // extractScenarioID pulls id from `/api/v1/scenarios/{id}/start` etc.
