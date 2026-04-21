@@ -3,8 +3,10 @@ package scenario
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -110,9 +112,11 @@ func InsertAlert(ctx context.Context, pool *pgxpool.Pool, a *Alert) (bool, error
 		a.BarTime, a.Meta,
 	).Scan(&id)
 	if err != nil {
-		// pgx returns "no rows" on ON CONFLICT DO NOTHING with RETURNING — that
-		// means the dedup index blocked insertion. Treat as non-error.
-		if err.Error() == "no rows in result set" {
+		// pgx returns pgx.ErrNoRows on ON CONFLICT DO NOTHING + RETURNING
+		// when the dedup index blocked insertion. Treat as non-error.
+		// PHASE 1 fix: use errors.Is, not string compare — future library
+		// upgrades could change the message silently.
+		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
 		return false, err

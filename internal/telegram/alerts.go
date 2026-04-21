@@ -53,18 +53,51 @@ func (q *AlertQueue) Push(ctx context.Context, a *scenario.Alert) {
 }
 
 // Run drains the queue in one goroutine. Call from main.go under parent ctx.
-// Exits when ctx is done or Shutdown is called.
+// Exits when ctx is done; before exit, drains any remaining alerts with a
+// short-lived background context so in-flight Telegram sends + DB marks
+// complete even after SIGINT (PHASE 1 fix #2: shutdown drain).
 func (q *AlertQueue) Run(ctx context.Context) {
 	log.Printf("[tg alerts] running (bot_enabled=%t)", q.bot != nil)
+	defer q.once.Do(func() { close(q.done) })
 	for {
 		select {
 		case <-ctx.Done():
-			q.once.Do(func() { close(q.done) })
+			q.drainRemaining()
 			return
 		case a := <-q.ch:
 			q.deliver(ctx, a)
 		}
 	}
+}
+
+// drainRemaining processes any buffered alerts before Run returns. Uses its
+// own background context with a short timeout so Postgres + Telegram API
+// calls can actually complete after the parent ctx is cancelled. Safe to
+// call with an empty queue — returns immediately.
+func (q *AlertQueue) drainRemaining() {
+	drainCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	drained := 0
+	for {
+		select {
+		case a := <-q.ch:
+			q.deliver(drainCtx, a)
+			drained++
+			if drainCtx.Err() != nil {
+				log.Printf("[tg alerts] drain deadline hit; %d delivered, %d dropped", drained, len(q.ch))
+				return
+			}
+		default:
+			log.Printf("[tg alerts] shutdown drain complete — %d alerts delivered", drained)
+			return
+		}
+	}
+}
+
+// Done returns a channel that is closed when Run exits. main.go should
+// <-alertQ.Done() after server.Shutdown to guarantee no lost alerts.
+func (q *AlertQueue) Done() <-chan struct{} {
+	return q.done
 }
 
 // deliver sends one alert. Errors are logged; the alert row stays in DB so

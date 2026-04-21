@@ -49,7 +49,9 @@ func Evaluate(
 	}
 
 	// Fetch fresh candles. Need ~300 for feature window + HC.
-	candles, err := market.FetchCryptoCandles(s.Symbol, s.Interval, 300)
+	// Uses 30s-TTL cache so N scenarios on same (symbol, interval) share
+	// a single Binance REST call per 30s window (PHASE 1 fix for rate limits).
+	candles, err := market.FetchCryptoCandlesCached(s.Symbol, s.Interval, 300)
 	if err != nil || len(candles) < 30 {
 		ev.BlockReason = fmt.Sprintf("candles: %v", err)
 		return ev
@@ -63,7 +65,7 @@ func Evaluate(
 	// BTC cross-asset context for non-BTC symbols.
 	var btcCloses []float64
 	if s.Symbol != "BTCUSDT" {
-		btcCandles, err := market.FetchCryptoCandles("BTCUSDT", s.Interval, 300)
+		btcCandles, err := market.FetchCryptoCandlesCached("BTCUSDT", s.Interval, 300)
 		if err == nil {
 			btcCloses = closesOf(btcCandles)
 		}
@@ -92,7 +94,14 @@ func Evaluate(
 	// Classify via 1d trend anchor. Reuse api.ClassifySignal to stay in sync
 	// with the multi-predict handler (same label rules, same 5m mean_rev
 	// disable).
-	dailyDir := resolveDailyDir(s.Symbol)
+	//
+	// PHASE 1 fix: route through ml.GetDailyDirectionCached so the runner
+	// and the HTTP handler share the same 15-min TTL cache. Previously the
+	// runner called resolveDailyDir directly, triggering a 1d PredictV2
+	// every tick per scenario — multiplied Binance 1d fetches by N.
+	dailyDir := ml.GetDailyDirectionCached(s.Symbol, func() string {
+		return resolveDailyDir(s.Symbol)
+	})
 	label, reason := ml.ClassifySignal(pred.Direction, dailyDir, s.Interval, pred.Features)
 	ev.Label = label
 	ev.LabelReason = reason
@@ -159,11 +168,15 @@ func closesOf(cs []types.OHLCVCandle) []float64 {
 }
 
 // resolveDailyDir fetches a cheap 1d PredictV2 to anchor MTF classification.
-// Cached in-process with 15-min TTL inside handlers_ml_v2 (dailyDirCache).
-// For the scenario runner we call directly; the cache there kicks in too
-// because the runner and handlers share the same package-level sync.Map.
+//
+// This is the compute function — callers MUST wrap it with
+// ml.GetDailyDirectionCached(symbol, func() string { return resolveDailyDir(symbol) })
+// to avoid hammering Binance + re-predicting 1d on every tick.
+//
+// Returns "neutral" on fetch failure (treated as "no trend lock" by
+// ClassifySignal — signal may still fire as random/mean_reversion per tier).
 func resolveDailyDir(symbol string) string {
-	candles, err := market.FetchCryptoCandles(symbol, "1d", 300)
+	candles, err := market.FetchCryptoCandlesCached(symbol, "1d", 300)
 	if err != nil || len(candles) < 30 {
 		return "neutral"
 	}

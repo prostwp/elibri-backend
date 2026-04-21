@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/prostwp/elibri-backend/internal/api"
 	"github.com/prostwp/elibri-backend/internal/config"
@@ -66,7 +67,6 @@ func main() {
 		log.Printf("Scenario runner hydrate error: %v", err)
 	}
 	api.SetRunner(runner)
-	defer runner.Shutdown()
 
 	// Start Telegram long-poll last (it blocks on bot.Start).
 	if tgBot != nil {
@@ -86,8 +86,26 @@ func main() {
 	}()
 
 	<-ctx.Done()
-	log.Println("Shutdown signal received, stopping scenario runner and HTTP server...")
-	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	log.Println("Shutdown signal received — draining runner + alert queue + HTTP server...")
+
+	// PHASE 1 fix #2: explicit shutdown ordering so in-flight work completes.
+	//   1) HTTP server stops accepting new requests (existing ones get 20s to finish).
+	//   2) Scenario runner stops ticking (goroutines exit on parent ctx.Done).
+	//   3) Alert queue drains any buffered alerts to Telegram + DB.
+	//   4) Store pool closes (via deferred ClosePostgres).
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer shutdownCancel()
-	_ = server.Shutdown(shutdownCtx)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	runner.Shutdown()
+
+	// Block until AlertQueue.Run returns (buffered alerts flushed).
+	select {
+	case <-alertQ.Done():
+		log.Println("Shutdown complete")
+	case <-time.After(15 * time.Second):
+		log.Println("Shutdown hit 15s deadline — some alerts may be in DB but not delivered")
+	}
 }

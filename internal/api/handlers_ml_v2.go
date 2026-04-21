@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sync"
 	"time"
 
 	"github.com/prostwp/elibri-backend/internal/auth"
@@ -186,44 +185,10 @@ type mlPredictMultiRequest struct {
 // exposed by PredictionV2.Features, plus the 1d trend-anchor
 // direction cached for 15 min to avoid spawning a 1d predict on
 // every classify call (handy for scalp/day signals).
-
-type dailyDirCacheEntry struct {
-	direction string
-	expiresAt time.Time
-}
-
-var (
-	dailyDirCache   sync.Map // symbol → dailyDirCacheEntry
-	dailyDirCacheMu sync.Mutex
-	dailyDirTTL     = 15 * time.Minute
-)
-
-// getDailyDirectionCached returns the 1d direction for symbol with 15 min
-// TTL. computeFn is invoked on miss; returning "" treats the result as
-// uncached and the cache won't poison future calls.
-func getDailyDirectionCached(symbol string, computeFn func() string) string {
-	if v, ok := dailyDirCache.Load(symbol); ok {
-		if e := v.(dailyDirCacheEntry); time.Now().Before(e.expiresAt) {
-			return e.direction
-		}
-	}
-	// Serialize computation per-symbol to avoid stampede on cold start.
-	dailyDirCacheMu.Lock()
-	defer dailyDirCacheMu.Unlock()
-	if v, ok := dailyDirCache.Load(symbol); ok {
-		if e := v.(dailyDirCacheEntry); time.Now().Before(e.expiresAt) {
-			return e.direction
-		}
-	}
-	dir := computeFn()
-	if dir != "" {
-		dailyDirCache.Store(symbol, dailyDirCacheEntry{
-			direction: dir,
-			expiresAt: time.Now().Add(dailyDirTTL),
-		})
-	}
-	return dir
-}
+//
+// PHASE 1 fix: daily-direction cache moved to internal/ml so the
+// scenario runner shares the same cache — previously it bypassed
+// and hammered 1d predict on every tick.
 
 // ClassifySignal is re-exported from internal/ml so the scenario package can
 // reuse the same rules without an import cycle. Kept as a thin alias here to
@@ -358,8 +323,8 @@ func handleMLPredictMulti(w http.ResponseWriter, r *http.Request) {
 		if pd, ok := predictions["1d"]; ok && pd != nil {
 			dailyDir = pd.Direction
 		} else if req.Symbol != "" {
-			dailyDir = getDailyDirectionCached(req.Symbol, func() string {
-				cd, err := market.FetchCryptoCandles(req.Symbol, "1d", 500)
+			dailyDir = ml.GetDailyDirectionCached(req.Symbol, func() string {
+				cd, err := market.FetchCryptoCandlesCached(req.Symbol, "1d", 500)
 				if err != nil || len(cd) < 30 {
 					return ""
 				}
