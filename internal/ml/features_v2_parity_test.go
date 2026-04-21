@@ -122,19 +122,17 @@ func TestExtractFeaturesV2_ParityWithPython(t *testing.T) {
 		"btc_beta_30": 5e-6,
 	}
 
-	// Known divergences surfaced by the first parity run (Patch 2N). These
-	// are real bugs, not tolerance issues — Patch 2N+1 owns fixing them:
-	//   atr_norm_14:         Python uses Wilder ATR, Go uses SMA ATR (6e-6 gap)
-	//   vol_regime:          regime window length differs between sides (0.2 gap)
-	//   vol_ratio_20_lag_4:  lag indexing off by one (0.01 gap)
-	// Logged, not failed, so CI stays green and the fix lands as its own PR
-	// with byte-equal before/after. DO NOT add new entries here without a
-	// commit message explaining the plan to remove.
-	knownDivergences := map[string]bool{
-		"atr_norm_14":        true,
-		"vol_regime":         true,
-		"vol_ratio_20_lag_4": true,
-	}
+	// Known divergences surfaced by the first parity run (Patch 2N).
+	// Patch 2N+2 (2026-04-23) byte-equal fixed all three. Map is now empty;
+	// any new addition should have a DEVLOG entry + a TODO with removal plan.
+	//
+	// Historical entries (for audit):
+	//   atr_norm_14:         Python included fake TR[0] — aligned to Wilder canon (skip TR[0]).
+	//   vol_regime:          Python used pandas .rank(pct=True) with shift(1) — aligned to Go
+	//                        less-than-count and current-inclusive window.
+	//   vol_ratio_20_lag_4:  Go window [lagIdx-20, lagIdx) vs Python [lagIdx-19, lagIdx] —
+	//                        aligned Go to inclusive-of-lag window.
+	knownDivergences := map[string]bool{}
 
 	failures := 0
 	knownFailures := 0

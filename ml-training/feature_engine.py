@@ -122,15 +122,33 @@ def _bollinger(close: np.ndarray, period: int = 20, num_std: float = 2.0):
 
 
 def _atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
-    prev_close = np.roll(close, 1)
-    prev_close[0] = close[0]
-    tr = np.maximum.reduce([high - low, np.abs(high - prev_close), np.abs(low - prev_close)])
-    # Wilder smoothing
+    """Wilder's ATR — matches Go wilderATR byte-equal (Patch 2N+2 parity fix).
+
+    The canonical Wilder formula (New Concepts in Technical Trading Systems,
+    1978) skips TR[0] because it requires prev_close which doesn't exist on
+    the first bar. Previously this Python impl faked prev_close[0] = close[0]
+    and included TR[0] in the initial mean, which made atr[i] drift from Go's
+    (Go skips TR[0] correctly) by ~6e-6 on the last bar of a 60-bar series.
+
+    The drift was surfaced by the Patch 2N parity test. Fixing Python to match
+    Go means the next retrain on vast.ai will produce models trained on the
+    canonical ATR. Not retraining would leave production still on the old
+    formula; the 2H-extended retrain cycle is exactly where we cut over.
+    """
+    n = len(close)
     atr = np.zeros_like(close)
-    if len(close) < period:
+    if n < period + 1:
         return atr
-    atr[period - 1] = tr[:period].mean()
-    for i in range(period, len(close)):
+    # TR from bar 1 onward — needs prev_close[i-1], undefined at i=0.
+    tr = np.zeros_like(close)
+    for i in range(1, n):
+        hl = high[i] - low[i]
+        hc = abs(high[i] - close[i - 1])
+        lc = abs(low[i] - close[i - 1])
+        tr[i] = max(hl, hc, lc)
+    # Bootstrap from mean of the first `period` TRs (indices 1..period).
+    atr[period] = tr[1 : period + 1].mean()
+    for i in range(period + 1, n):
         atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
     return atr
 
@@ -268,8 +286,23 @@ def build_features(df: pd.DataFrame, btc_close: np.ndarray | None = None) -> pd.
     # Volatility regime: ATR/price ratio percentile (0-1). Shift by 1 so bar t
     # doesn't rank itself (that would be label leakage via its own ATR value).
     atr_norm = atr14 / (close + 1e-12)
-    atr_s = pd.Series(atr_norm)
-    vol_regime = atr_s.rolling(100, min_periods=20).rank(pct=True).shift(1).fillna(0.5).to_numpy()
+    # Patch 2N+2 parity fix: vol_regime now matches Go rollingPercentile byte-equal.
+    # Changes vs the previous pandas-based impl:
+    #   1. No shift(1) — use current-included window, same as Go idx.
+    #   2. `strictly-less-than` ratio, NOT pandas .rank(pct=True). Pandas
+    #      uses average-of-ties which gave ~0.2 divergence from Go's count/n.
+    #   3. Warmup: < 20 bars → 0.5 (matches Go's `if idx < 20`).
+    # Same O(n²) bound as Go (called once per bar at feature-build time; for
+    # the production path that hits Go we only care about the last bar, which
+    # is O(window) = O(100)).
+    vol_regime = np.full_like(close, 0.5, dtype=float)
+    for idx in range(20, len(close)):
+        start = max(0, idx - 100 + 1)
+        cur = atr_norm[idx]
+        window = atr_norm[start : idx + 1]
+        less = int((window < cur).sum())
+        cnt = len(window)
+        vol_regime[idx] = less / cnt if cnt > 0 else 0.5
 
     # Lagged (4 bars back)
     rsi14_lag4 = np.roll(rsi14, 4)

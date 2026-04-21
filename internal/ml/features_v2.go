@@ -168,9 +168,14 @@ func ExtractFeaturesV2(candles []types.OHLCVCandle, takerBuyVolumes []float64, b
 		ret5Lag4 = (closes[lagIdx] - closes[lagIdx-5]) / (closes[lagIdx-5] + 1e-12)
 	}
 
+	// Patch 2N+2 parity fix: vol_ratio_20_lag_4 window was [lagIdx-20, lagIdx)
+	// (20 items, EXCLUDING lagIdx) but Python's rolling(20).mean() at lagIdx
+	// spans [lagIdx-19, lagIdx] (20 items INCLUDING lagIdx). Off-by-one gave
+	// a ~1% drift on 60-bar fixtures. Now both sides compute the mean on the
+	// same 20 bars inclusive of the current lag position.
 	vr20Lag4 := 1.0
-	if lagIdx >= 20 {
-		vr20Lag4 = vols[lagIdx] / (meanOfRange(vols, lagIdx-20, lagIdx) + 1e-12)
+	if lagIdx >= 19 {
+		vr20Lag4 = vols[lagIdx] / (meanOfRange(vols, lagIdx-19, lagIdx+1) + 1e-12)
 		vr20Lag4 = clampV2(vr20Lag4, 0, 20)
 	}
 
