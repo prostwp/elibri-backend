@@ -1,12 +1,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/prostwp/elibri-backend/internal/auth"
 	"github.com/prostwp/elibri-backend/internal/config"
+	"github.com/prostwp/elibri-backend/internal/ml"
+	"github.com/prostwp/elibri-backend/internal/store"
 	"github.com/prostwp/elibri-backend/internal/ws"
 )
 
@@ -19,8 +23,9 @@ func NewRouter(cfg *config.Config) http.Handler {
 	WsHub = ws.NewHub()
 	go WsHub.Run()
 
-	// Health
+	// Health + readiness (liveness = /health always 200, readiness = /ready)
 	mux.HandleFunc("GET /health", handleHealth)
+	mux.HandleFunc("GET /ready", handleReady)
 
 	// WebSocket
 	mux.HandleFunc("/ws", WsHub.HandleWS)
@@ -77,14 +82,64 @@ func NewRouter(cfg *config.Config) http.Handler {
 	// Middleware chain: CORS → Auth (JWT)
 	var handler http.Handler = mux
 	handler = auth.Middleware(cfg.JWTSecret)(handler)
+	handler = bodyLimitMiddleware(handler)
 	return corsMiddleware(cfg.CORSOrigins, handler)
 }
 
+// bodyLimitMiddleware caps request bodies at 2 MB. Strategies with large
+// nodes_json are the only heavy payload (~50 KB typical, 500 KB worst case)
+// — 2 MB is ample for that without letting an attacker POST 50 MB JSON
+// blobs that would end up in Postgres JSONB columns and OOM the pool.
+// Must run BEFORE auth.Middleware so an auth-failed request still has the
+// body capped (MaxBytesReader only measures once the body is read).
+func bodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// GET/HEAD/DELETE/OPTIONS don't carry bodies — skip the wrapper to
+		// avoid extra allocations on the hot read path.
+		if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead &&
+			r.Method != http.MethodDelete && r.Method != http.MethodOptions {
+			r.Body = http.MaxBytesReader(w, r.Body, 2<<20) // 2 MB
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// handleHealth is a lightweight liveness probe — answers 200 OK even when
+// the DB is down, so systemd/LB can tell "process is alive" vs "process
+// crashed." For dependency checks use /ready.
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{
 		"status":  "ok",
 		"version": "0.2.0",
 		"service": "elibri-backend",
+	})
+}
+
+// handleReady is the readiness probe — returns 503 when a required
+// dependency is missing, so K8s/LB rotates the instance out of rotation
+// instead of serving 500s. Lightweight: just checks store.Pool presence
+// and a fast `SELECT 1` round-trip.
+func handleReady(w http.ResponseWriter, r *http.Request) {
+	if store.Pool == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"not_ready","reason":"database pool uninitialized"}`))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	var n int
+	if err := store.Pool.QueryRow(ctx, `SELECT 1`).Scan(&n); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"not_ready","reason":"database ping failed"}`))
+		return
+	}
+	// ML models optional — report as advisory, not blocking.
+	writeJSON(w, map[string]any{
+		"status":     "ready",
+		"ml_loaded":  ml.V2Health().NModels,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
 	})
 }
 

@@ -107,6 +107,7 @@ func Middleware(secret string) func(http.Handler) http.Handler {
 
 var publicPaths = []string{
 	"/health",
+	"/ready",
 	"/api/v1/auth/register",
 	"/api/v1/auth/login",
 }
