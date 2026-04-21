@@ -16,21 +16,29 @@ import "fmt"
 // noise. Keep the override here so it applies everywhere ClassifySignal is
 // called (HTTP predict, scenario runner, backtester).
 func ClassifySignal(signalDir, dailyDir, interval string, features map[string]float64) (string, string) {
-	adx := features["adx_14"]
-	rsi := features["rsi_14"]
+	// adx_14 is stored as ADX/100 (see feature_engine.py:`"adx_14": adx14/100.0`).
+	// Previous `adx > 20` check would only fire when absolute ADX ≥ 2000 —
+	// effectively never — meaning "trend_aligned" was unreachable and every
+	// signal got labelled "random". Denormalize to absolute ADX (0-100 scale).
+	adxNorm := features["adx_14"]
+	adxAbs := adxNorm * 100.0
+	// rsi_14 is ALSO normalized (rsi/100) in feature_engine — use absolute
+	// thresholds on the denormalized value.
+	rsiNorm := features["rsi_14"]
+	rsiAbs := rsiNorm * 100.0
 	bb := features["bb_position"]
 
-	if signalDir != "neutral" && dailyDir == signalDir && adx > 20 {
-		return "trend_aligned", fmt.Sprintf("1d %s aligned, adx_14=%.1f", signalDir, adx)
+	if signalDir != "neutral" && dailyDir == signalDir && adxAbs > 20 {
+		return "trend_aligned", fmt.Sprintf("1d %s aligned, adx=%.1f", signalDir, adxAbs)
 	}
-	if dailyDir == "neutral" && (rsi < 30 || rsi > 70) && (bb < 0.1 || bb > 0.9) {
+	if dailyDir == "neutral" && (rsiAbs < 30 || rsiAbs > 70) && (bb < 0.1 || bb > 0.9) {
 		label := "mean_reversion"
-		reason := fmt.Sprintf("1d flat, rsi_14=%.1f, bb_pos=%.2f", rsi, bb)
+		reason := fmt.Sprintf("1d flat, rsi=%.1f, bb_pos=%.2f", rsiAbs, bb)
 		if interval == "5m" && label == "mean_reversion" {
 			label = "random"
 			reason = "mean_rev disabled on 5m (backtest confirmed pure noise)"
 		}
 		return label, reason
 	}
-	return "random", fmt.Sprintf("no regime match (1d=%s, adx=%.1f, rsi=%.1f)", dailyDir, adx, rsi)
+	return "random", fmt.Sprintf("no regime match (1d=%s, adx=%.1f, rsi=%.1f)", dailyDir, adxAbs, rsiAbs)
 }
