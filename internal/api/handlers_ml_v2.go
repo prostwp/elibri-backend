@@ -415,7 +415,13 @@ func handleMLPaperTrades(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMLRunBacktest triggers backtest.py in background (guarded by slot).
+// ADMIN-ONLY: this spawns a ~5-30 min Python process that saturates CPU and
+// memory. Any authenticated non-admin user calling this could permanently
+// DoS the ML pipeline (mlJobSlot has capacity 1).
 func handleMLRunBacktest(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
 	select {
 	case mlJobSlot <- struct{}{}:
 	default:
@@ -438,7 +444,11 @@ func handleMLRunBacktest(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMLRunPaperTrades triggers paper_trade.py in background (guarded).
+// ADMIN-ONLY: same DoS rationale as handleMLRunBacktest.
 func handleMLRunPaperTrades(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
 	select {
 	case mlJobSlot <- struct{}{}:
 	default:
@@ -489,7 +499,12 @@ type mlTrainRequest struct {
 	Quick    bool   `json:"quick"`
 }
 
+// handleMLTrain triggers a Python training run in-process (admin-only).
+// 90-minute process consuming all cores + ~600MB — never expose to the public.
 func handleMLTrain(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
 	var req mlTrainRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
@@ -545,7 +560,12 @@ func handleMLTrain(w http.ResponseWriter, r *http.Request) {
 
 // handleMLReload forces re-scan of the models directory + threshold file.
 // Call after train.py + analyze_thresholds.py produce fresh artifacts.
+// ADMIN-ONLY: reload blocks prediction traffic for 2-5s on large pattern
+// files and should not be reachable by unprivileged users.
 func handleMLReload(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
 	n, err := ml.LoadModelsV2()
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")

@@ -7,14 +7,33 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Core
+      - GO_ENV=production
+      - PORT=8080
       - DATABASE_URL=postgresql://elibri:${PG_PASSWORD:-elibri}@postgres:5432/elibri?sslmode=disable
       - REDIS_URL=redis://redis:6379/0
-      - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
-      - SUPABASE_URL=${SUPABASE_URL}
-      - BINANCE_API_KEY=${BINANCE_API_KEY}
-      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
-      - CORS_ORIGINS=https://prostwp.github.io,http://localhost:5173
-      - PORT=8080
+      # Auth (REQUIRED — server refuses to start with dev secret in prod)
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required for production — generate 32+ bytes}
+      - ADMIN_EMAILS=${ADMIN_EMAILS:?at least one admin email required, comma-separated}
+      # CORS — restrict to your real frontend origin in prod
+      - CORS_ORIGINS=${CORS_ORIGINS:-https://app.elibri.fx}
+      # Optional integrations
+      - BINANCE_API_KEY=${BINANCE_API_KEY:-}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - LUNARCRUSH_API_KEY=${LUNARCRUSH_API_KEY:-}
+      # Telegram (optional — runner falls back to DB-only if unset)
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME:-}
+      # Scenario quotas
+      - SCENARIO_MAX_PER_USER=${SCENARIO_MAX_PER_USER:-5}
+      - ALERTS_MAX_PER_DAY=${ALERTS_MAX_PER_DAY:-100}
+      - SCENARIO_KILL_SWITCH=${SCENARIO_KILL_SWITCH:-0}
+      # ML threshold tuning overrides (paper-trading experiment knob)
+      - ML_THRESHOLD_OVERRIDES=${ML_THRESHOLD_OVERRIDES:-}
+    volumes:
+      # ML models are huge and deploy-time; mount them read-only from host.
+      - ${ML_MODELS_PATH:-./ml-models}:/app/ml-training/models:ro
+      - ${ML_LOGS_PATH:-./ml-logs}:/app/ml-training/logs:ro
     depends_on:
       - postgres
       - redis

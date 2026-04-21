@@ -40,3 +40,9 @@ ml-training/models/*.patch*.bak.*
 
 # Claude Flow metadata
 .claude-flow/
+.claude/
+
+# Local env files & secrets (NEVER commit)
+.env
+.env.local
+.env.*.local

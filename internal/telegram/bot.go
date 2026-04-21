@@ -108,35 +108,57 @@ func (b *Bot) replyLink(ctx context.Context, chatID int64, text string) {
 	}
 	code := strings.ToUpper(strings.TrimSpace(parts[1]))
 
-	// Look up non-expired code, consume it, bind chat_id to user.
+	// Redeem atomically in one transaction:
+	//   1) DELETE code RETURNING user_id  — burns the code exactly once
+	//   2) SELECT existing binding for this chat_id
+	//   3) UPDATE users.telegram_chat_id
+	//
+	// Doing this non-transactionally (as before) left a window where a
+	// crash between UPDATE and DELETE leaves the code valid, allowing
+	// silent chat_id hijack from a second Telegram account.
+	tx, err := b.pool.Begin(ctx)
+	if err != nil {
+		log.Printf("[tg bot] link begin tx error: %v", err)
+		b.reply(ctx, chatID, "⚠️ Internal error. Try again in a moment.")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // rollback if commit not reached
+
+	// Step 1: burn the code, get user_id. If code missing or expired, 0 rows.
 	var userID string
-	err := b.pool.QueryRow(ctx, `
-		SELECT user_id FROM telegram_link_codes
+	err = tx.QueryRow(ctx, `
+		DELETE FROM telegram_link_codes
 		WHERE code = $1 AND expires_at > NOW()
+		RETURNING user_id
 	`, code).Scan(&userID)
 	if err != nil {
 		b.reply(ctx, chatID, "⚠️ Code invalid or expired. Generate a new one in the web UI.")
 		return
 	}
 
-	// Enforce 1:1 — if another user already holds this chat_id, refuse.
+	// Step 2: enforce 1:1. If someone else already holds this chat_id, bail
+	// BEFORE committing — tx rollback keeps the code available for retry.
 	var existing string
-	_ = b.pool.QueryRow(ctx, `SELECT id FROM users WHERE telegram_chat_id = $1`, chatID).Scan(&existing)
+	_ = tx.QueryRow(ctx, `SELECT id FROM users WHERE telegram_chat_id = $1`, chatID).Scan(&existing)
 	if existing != "" && existing != userID {
 		b.reply(ctx, chatID, "⚠️ This Telegram chat is already linked to another Elibri account. Use `/unlink` there first.")
 		return
 	}
 
-	// Bind and burn the code.
-	_, err = b.pool.Exec(ctx, `
+	// Step 3: bind chat_id to user.
+	if _, err := tx.Exec(ctx, `
 		UPDATE users SET telegram_chat_id = $2, telegram_linked_at = NOW() WHERE id = $1
-	`, userID, chatID)
-	if err != nil {
+	`, userID, chatID); err != nil {
 		log.Printf("[tg bot] link bind error: %v", err)
 		b.reply(ctx, chatID, "⚠️ Internal error. Try again in a moment.")
 		return
 	}
-	_, _ = b.pool.Exec(ctx, `DELETE FROM telegram_link_codes WHERE code = $1`, code)
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("[tg bot] link commit error: %v", err)
+		b.reply(ctx, chatID, "⚠️ Internal error. Try again in a moment.")
+		return
+	}
 
 	b.reply(ctx, chatID, "✅ Linked. You'll receive live trade alerts here when scenarios trigger HC signals.")
 }

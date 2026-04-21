@@ -24,7 +24,13 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-const accessTokenTTL = 24 * time.Hour
+const (
+	accessTokenTTL = 24 * time.Hour
+	// Issuer is stamped on every token we issue and verified on every parse.
+	// Prevents a sibling service (or leaked dev secret) from minting tokens
+	// acceptable to this backend.
+	issuerName = "elibri-backend"
+)
 
 func IssueToken(secret, userID, email, role string) (string, error) {
 	now := time.Now()
@@ -35,7 +41,7 @@ func IssueToken(secret, userID, email, role string) (string, error) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(accessTokenTTL)),
-			Issuer:    "elibri-backend",
+			Issuer:    issuerName,
 			Subject:   userID,
 		},
 	}
@@ -59,6 +65,12 @@ func parseToken(tokenStr, secret string) (*Claims, error) {
 	}
 	if claims.UserID == "" {
 		return nil, errors.New("missing user_id")
+	}
+	// Reject tokens issued by a different service that happens to share the
+	// HMAC secret. The ParseWithClaims chain does not validate Issuer by
+	// default — we enforce it explicitly.
+	if claims.Issuer != issuerName {
+		return nil, fmt.Errorf("invalid issuer: %s", claims.Issuer)
 	}
 	return claims, nil
 }
