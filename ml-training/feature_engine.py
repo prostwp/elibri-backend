@@ -57,6 +57,28 @@ FEATURE_NAMES: List[str] = [
     "rsi_14_lag_4",
     "return_5_lag_4",
     "vol_ratio_20_lag_4",
+    # Regime (Patch 4 Этап 1.2). EMA-200 slope normalized by ATR-14. Positive
+    # means trend is rising in vol-adjusted terms, negative means falling,
+    # near-zero means chop. Intended to help the model distinguish
+    # bull/bear/chop without an explicit regime class label.
+    "regime_score",
+    # Patch 4 Iter 1 Night — Volume-confirmed breakouts + divergences (13 new).
+    # Addresses ML hypothesis: our model can't distinguish institutional
+    # breakouts (high volume) from retail false breakouts (low volume), and
+    # thus defaults to 100% short in bull markets where RSI/BB look overbought.
+    "volume_spike_3x",           # #33 — volume > 3× SMA20(volume)
+    "breakout_up_with_volume",   # #34 — high > 20-bar high AND volume spike
+    "breakout_down_with_volume", # #35 — low < 20-bar low AND volume spike
+    "fake_breakout_up",          # #36 — breakout up without volume
+    "fake_breakout_down",        # #37 — breakout down without volume
+    "bullish_divergence",        # #38 — price LL + OBV HL (weakening downtrend)
+    "bearish_divergence",        # #39 — price HH + OBV LH (weakening uptrend)
+    "obv_slope_20",              # #40 — (OBV - SMA20(OBV)) / |SMA20|
+    "vwap_ratio",                # #41 — close / VWAP20 - 1
+    "delta_ratio_20",            # #42 — Σ(taker_buy - taker_sell) / Σ(volume), 20-bar
+    "vol_rank_90d",              # #43 — volume percentile in 90-day window
+    "vol_sma20_slope",           # #44 — (vol_sma20 - lag20(vol_sma20)) / lag20
+    "price_vol_corr_20",         # #45 — 20-bar correlation of |return| vs volume
 ]
 
 
@@ -312,6 +334,113 @@ def build_features(df: pd.DataFrame, btc_close: np.ndarray | None = None) -> pd.
     vol20_lag4 = np.roll(vol20, 4)
     vol20_lag4[:4] = 1.0
 
+    # Regime score (Patch 4 Этап 1.2): EMA-200 slope normalized by ATR-14, so
+    # it measures "how many ATR units per bar does the long-term trend move".
+    # Positive → bull, negative → bear, near-zero → chop. The 50-bar lookback
+    # averages out short-term noise without losing regime shifts.
+    # Warmup (first 200 bars) → 0 (neutral) so the model doesn't see spurious
+    # slope from partial EMA.
+    ema200_slope = np.zeros_like(close, dtype=float)
+    for i in range(250, len(close)):
+        dy = ema200[i] - ema200[i - 50]
+        denom = 50.0 * (atr14[i] + 1e-12)
+        ema200_slope[i] = dy / denom
+    regime_score = np.clip(ema200_slope, -5.0, 5.0)
+
+    # ─── Patch 4 Iter 1 Night — volume-confirmed breakouts + divergences ──
+    # All causal: use .shift(1) for reference levels so bar i doesn't self-
+    # reference. Warmup rows default to 0 (neutral).
+    #
+    # #33 volume_spike_3x — volume > 3× of past 20-bar SMA (excl current)
+    vol_sma20 = pd.Series(vol).rolling(20, min_periods=5).mean().shift(1).fillna(0).to_numpy()
+    volume_spike_3x = (vol / (vol_sma20 + 1e-12) > 3.0).astype(np.float32)
+    # Suppress spurious spikes in warmup.
+    volume_spike_3x[:20] = 0.0
+
+    # #34-#37 breakouts (with/without volume). hh20/ll20 use shift(1) to
+    # avoid the current bar being part of the reference high/low.
+    hh20 = pd.Series(high).rolling(20, min_periods=5).max().shift(1).fillna(0).to_numpy()
+    ll20 = pd.Series(low).rolling(20, min_periods=5).min().shift(1).fillna(0).to_numpy()
+    breakout_up = np.where((hh20 > 0) & (high > hh20), 1.0, 0.0).astype(np.float32)
+    breakout_down = np.where((ll20 > 0) & (low < ll20), 1.0, 0.0).astype(np.float32)
+    breakout_up_with_volume = breakout_up * volume_spike_3x
+    breakout_down_with_volume = breakout_down * volume_spike_3x
+    fake_breakout_up = breakout_up * (1.0 - volume_spike_3x)
+    fake_breakout_down = breakout_down * (1.0 - volume_spike_3x)
+
+    # #38-#39 divergences via OBV.
+    # OBV = cumulative signed volume.
+    direction_sign = np.sign(np.diff(close, prepend=close[0]))
+    obv = np.cumsum(direction_sign * vol).astype(np.float64)
+    price_low_20 = pd.Series(close).rolling(20, min_periods=5).min().shift(1).fillna(close[0]).to_numpy()
+    price_high_20 = pd.Series(close).rolling(20, min_periods=5).max().shift(1).fillna(close[0]).to_numpy()
+    obv_low_20 = pd.Series(obv).rolling(20, min_periods=5).min().shift(1).fillna(0).to_numpy()
+    obv_high_20 = pd.Series(obv).rolling(20, min_periods=5).max().shift(1).fillna(0).to_numpy()
+    # Bullish divergence: price near 20-low but OBV above its 20-low.
+    price_at_low = (close <= price_low_20 * 1.002).astype(np.float32)
+    obv_above_low = np.where(obv_low_20 != 0, (obv > obv_low_20 * 1.01), False).astype(np.float32)
+    bullish_divergence = price_at_low * obv_above_low
+    # Bearish divergence (mirror).
+    price_at_high = (close >= price_high_20 * 0.998).astype(np.float32)
+    obv_below_high = np.where(obv_high_20 != 0, (obv < obv_high_20 * 0.99), False).astype(np.float32)
+    bearish_divergence = price_at_high * obv_below_high
+
+    # #40 obv_slope_20 — how far OBV is above/below its 20-bar mean.
+    obv_sma20 = pd.Series(obv).rolling(20, min_periods=5).mean().fillna(0).to_numpy()
+    obv_slope_20 = (obv - obv_sma20) / (np.abs(obv_sma20) + 1e-6)
+    obv_slope_20 = np.clip(obv_slope_20, -5.0, 5.0).astype(np.float32)
+
+    # #41 vwap_ratio — close vs 20-bar VWAP.
+    typical_price = (high + low + close) / 3.0
+    pv = typical_price * vol
+    vwap_20 = (pd.Series(pv).rolling(20, min_periods=5).sum().to_numpy()
+               / (pd.Series(vol).rolling(20, min_periods=5).sum().to_numpy() + 1e-12))
+    vwap_ratio = np.where(vwap_20 > 0, close / vwap_20 - 1.0, 0.0)
+    vwap_ratio = np.clip(vwap_ratio, -0.5, 0.5).astype(np.float32)
+
+    # #42 delta_ratio_20 — net buying/selling pressure (cumulative delta).
+    taker_sell = vol - taker_buy
+    delta = taker_buy - taker_sell
+    delta_cum20 = pd.Series(delta).rolling(20, min_periods=5).sum().fillna(0).to_numpy()
+    vol_cum20 = pd.Series(vol).rolling(20, min_periods=5).sum().fillna(0).to_numpy()
+    delta_ratio_20 = np.where(vol_cum20 > 0, delta_cum20 / vol_cum20, 0.0)
+    delta_ratio_20 = np.clip(delta_ratio_20, -1.0, 1.0).astype(np.float32)
+
+    # #43 vol_rank_90d — volume percentile over past 90 days (8640 bars for 15m,
+    # 2160 for 1h, 540 for 4h). We compute with min_periods=100 so early bars
+    # default to 0.5. Using rank(pct=True) for simplicity (not exact parity with
+    # Go's strict-less-than, but used only for training, not runtime).
+    # Window scales by interval: roll up to 8640 (15m×90d); for coarser TFs the
+    # rolling window is shorter but still meaningful.
+    # To keep implementation robust: cap window at min(len, 8640).
+    window_90d = min(len(vol), 8640)
+    vol_rank_90d = (pd.Series(vol)
+                    .rolling(window_90d, min_periods=100)
+                    .rank(pct=True)
+                    .fillna(0.5)
+                    .to_numpy().astype(np.float32))
+
+    # #44 vol_sma20_slope — relative change of 20-bar volume SMA vs 20 bars ago.
+    vol_sma20_series = pd.Series(vol).rolling(20, min_periods=5).mean().fillna(0).to_numpy()
+    vol_sma20_lag20 = np.roll(vol_sma20_series, 20)
+    vol_sma20_lag20[:20] = vol_sma20_series[:20]  # prevent negative index noise
+    vol_sma20_slope = np.where(
+        vol_sma20_lag20 > 0,
+        (vol_sma20_series - vol_sma20_lag20) / vol_sma20_lag20,
+        0.0,
+    )
+    vol_sma20_slope = np.clip(vol_sma20_slope, -10.0, 10.0).astype(np.float32)
+
+    # #45 price_vol_corr_20 — correlation of |return| vs volume in 20-bar window.
+    # High = volume confirms move (institutional). Low/negative = volume diverges.
+    abs_ret1 = np.abs(ret1)
+    abs_ret_s = pd.Series(abs_ret1)
+    vol_s_ = pd.Series(vol)
+    price_vol_corr_20 = (abs_ret_s.rolling(20, min_periods=10)
+                         .corr(vol_s_)
+                         .fillna(0).to_numpy().astype(np.float32))
+    price_vol_corr_20 = np.clip(price_vol_corr_20, -1.0, 1.0)
+
     # Assemble in canonical order (FEATURE_NAMES).
     feat = pd.DataFrame({
         "rsi_7": rsi7,
@@ -345,6 +474,21 @@ def build_features(df: pd.DataFrame, btc_close: np.ndarray | None = None) -> pd.
         "rsi_14_lag_4": rsi14_lag4,
         "return_5_lag_4": ret5_lag4,
         "vol_ratio_20_lag_4": np.clip(vol20_lag4, 0, 20),
+        "regime_score": regime_score,
+        # Patch 4 Iter 1 Night — volume-confirmed breakouts (#33-#45).
+        "volume_spike_3x": volume_spike_3x,
+        "breakout_up_with_volume": breakout_up_with_volume,
+        "breakout_down_with_volume": breakout_down_with_volume,
+        "fake_breakout_up": fake_breakout_up,
+        "fake_breakout_down": fake_breakout_down,
+        "bullish_divergence": bullish_divergence,
+        "bearish_divergence": bearish_divergence,
+        "obv_slope_20": obv_slope_20,
+        "vwap_ratio": vwap_ratio,
+        "delta_ratio_20": delta_ratio_20,
+        "vol_rank_90d": vol_rank_90d,
+        "vol_sma20_slope": vol_sma20_slope,
+        "price_vol_corr_20": price_vol_corr_20,
     })
 
     # Ensure exact column order matches FEATURE_NAMES.
@@ -406,5 +550,73 @@ def make_target_triple_barrier(
                 break
             if low[j] <= dn:
                 labels[t] = 0
+                break
+    return labels
+
+
+# Class encoding for make_target_triple_class — Patch 4 Этап 1.1.
+TRIPLE_CLASS_HOLD = 0  # neutral / timeout / sit out
+TRIPLE_CLASS_LONG = 1  # up barrier hit first
+TRIPLE_CLASS_SHORT = 2  # down barrier hit first
+TRIPLE_CLASS_UNLABELED = -1  # sentinel for last `horizon` bars (drop before train)
+
+
+def make_target_triple_class(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    atr: np.ndarray,
+    horizon: int,
+    upper_mult: float = 1.5,
+    lower_mult: float = 1.0,
+) -> np.ndarray:
+    """
+    Three-class triple-barrier labels for Patch 4 Этап 1.
+
+    Unlike `make_target_triple_barrier` which treats timeout as noise (to drop),
+    this function returns three legitimate classes — the "hold" class is itself
+    an informative outcome the model must learn to recognize. Goal: eliminate
+    the 100%-short-bias observed in Session B by making "do nothing" a
+    first-class training target.
+
+    Return values (np.int8):
+        TRIPLE_CLASS_HOLD   = 0  — timeout: neither barrier hit within `horizon`.
+                                   Semantic: "sit out, market is chop".
+        TRIPLE_CLASS_LONG   = 1  — upper barrier hit first (+upper_mult*ATR).
+                                   Semantic: "long would have won".
+        TRIPLE_CLASS_SHORT  = 2  — lower barrier hit first (-lower_mult*ATR).
+                                   Semantic: "short would have won".
+        TRIPLE_CLASS_UNLABELED = -1  — last `horizon` bars: no forward data to
+                                       decide. Drop before training via mask.
+
+    Encoding compatible with XGBoost's `multi:softprob` / `num_class=3`
+    (classes in [0, num_class)). The -1 sentinel is outside that range so the
+    standard `target >= 0` mask drops unlabeled rows without touching class 0
+    (hold).
+
+    Note: argument signature matches `make_target_triple_barrier` so both
+    functions can be used interchangeably in upstream pipelines that pass
+    the same kwargs.
+    """
+    n = len(close)
+    labels = np.full(n, TRIPLE_CLASS_UNLABELED, dtype=np.int8)
+    for t in range(n):
+        end = t + horizon
+        if end >= n:
+            continue
+        a = atr[t]
+        if not np.isfinite(a) or a <= 0:
+            continue
+        up = close[t] + upper_mult * a
+        dn = close[t] - lower_mult * a
+
+        # Default: neither barrier hit within horizon → hold class.
+        labels[t] = TRIPLE_CLASS_HOLD
+        for j in range(t + 1, end + 1):
+            if high[j] >= up:
+                labels[t] = TRIPLE_CLASS_LONG
+                break
+            if low[j] <= dn:
+                labels[t] = TRIPLE_CLASS_SHORT
                 break
     return labels
