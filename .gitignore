@@ -37,6 +37,17 @@ ml-training/**/__pycache__/
 ml-training/models.backup_*/
 ml-training/models/*.bak.*
 ml-training/models/*.patch*.bak.*
+ml-training/models/*.bak_*
+ml-training/models/latest.json.bak_*
+
+# Python bot — local virtualenv + bytecode + secrets
+telegram-bot/.venv/
+telegram-bot/**/__pycache__/
+telegram-bot/.env
+telegram-bot/*.egg-info/
+
+# Stray lockfile from npm install in wrong dir
+package-lock.json
 
 # Claude Flow metadata
 .claude-flow/

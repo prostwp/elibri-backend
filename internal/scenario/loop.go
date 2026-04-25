@@ -126,6 +126,10 @@ func (l *scenarioLoop) tick(ctx context.Context) {
 		return
 	}
 
+	// Real-time fanout via Redis Streams. Non-fatal: alerts are durable in
+	// postgres regardless of Redis state. See streams.go for the contract.
+	PublishToStream(ctx, a)
+
 	// Update last_signal_* in strategies so next tick sees the same bar as dup.
 	if err := MarkLastSignal(ctx, l.pool, l.scenario.ID, ev.BarTime, ev.Direction); err != nil {
 		log.Printf("[scenario %s] mark last_signal error: %v", l.scenario.ID, err)
