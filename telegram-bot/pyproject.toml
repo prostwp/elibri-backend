@@ -1,0 +1,31 @@
+[project]
+name = "nodevision-tg-bot"
+version = "0.1.0"
+description = "NodeVision Telegram bot — fans out trading signals from Redis Streams to per-author Telegram channels."
+requires-python = ">=3.11"
+dependencies = [
+    "aiogram==3.13.1",
+    "redis[hiredis]==5.0.8",
+    "pydantic-settings==2.6.1",
+    "python-dotenv==1.0.1",
+    "structlog==24.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.7.4",
+    "mypy==1.13.0",
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "ASYNC", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
