@@ -22,9 +22,10 @@ from aiogram.types import (
     Message,
 )
 
+from .analyzers import render_for_author
 from .db import Db
 from .market_data import MarketData
-from .render import render_author_response, render_premium_paywall
+from .render import render_premium_paywall
 
 log = logging.getLogger(__name__)
 
@@ -95,11 +96,8 @@ def register_handlers(
             await cq.answer()
             return
 
-        # Real data: latest alert + live ticker
-        alert = await db.latest_alert(author.strategy_id)
-        ticker = await market.ticker_24h(author.symbol)
-
-        text = render_author_response(author, alert, ticker)
+        # Per-style analyzer — fetches live data, returns finished message.
+        text = await render_for_author(author, db)
         await cq.message.answer(text, disable_web_page_preview=True)
         await cq.answer()
 
@@ -146,5 +144,6 @@ def _theme_icon(theme: str) -> str:
         "currencies": "💱",
         "indices": "📊",
         "oil_gas": "⛽",
+        "astro": "🌌",
         "multi": "🔔",
     }.get(theme, "📈")
