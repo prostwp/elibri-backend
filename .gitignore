@@ -6,8 +6,8 @@ bin/
 *.dll
 *.so
 *.dylib
-elibri-backend
-server
+/elibri-backend
+/server
 /tmp/
 
 # Tests & coverage

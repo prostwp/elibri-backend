@@ -90,8 +90,13 @@ func main() {
 	// (macro config already injected via api.SetMacroConfig above)
 
 	// Start Telegram long-poll last (it blocks on bot.Start).
-	if tgBot != nil {
+	// V4 author-bot lives in the Python service and owns interactive long-polling.
+	// Set TELEGRAM_DISABLE_LONGPOLL=true to keep the Go bot for outbound alerts only
+	// (still works for sending — Telegram allows multiple sender clients per token).
+	if tgBot != nil && os.Getenv("TELEGRAM_DISABLE_LONGPOLL") != "true" {
 		go tgBot.Start(ctx)
+	} else if tgBot != nil {
+		log.Printf("[tg bot] long-poll DISABLED (TELEGRAM_DISABLE_LONGPOLL=true) — Python bot owns getUpdates")
 	}
 
 	router := api.NewRouter(cfg)
