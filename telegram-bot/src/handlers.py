@@ -92,13 +92,23 @@ def register_handlers(
         # Premium gate
         if author.is_premium and not await db.user_is_premium(cq.from_user.id):
             text = render_premium_paywall(author)
-            await cq.message.answer(text, disable_web_page_preview=True)
+            await cq.message.answer(
+                text,
+                disable_web_page_preview=True,
+                reply_markup=await _build_menu_keyboard(db),
+            )
             await cq.answer()
             return
 
         # Per-style analyzer — fetches live data, returns finished message.
+        # Re-attach the menu keyboard so the user can pick another author
+        # without typing /start again.
         text = await render_for_author(author, db)
-        await cq.message.answer(text, disable_web_page_preview=True)
+        await cq.message.answer(
+            text,
+            disable_web_page_preview=True,
+            reply_markup=await _build_menu_keyboard(db),
+        )
         await cq.answer()
 
 
