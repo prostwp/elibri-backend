@@ -26,6 +26,10 @@ type ActiveScenario struct {
 	LastSignalBarTime   int64  // unix seconds; 0 if never fired
 	LastSignalDirection string // "buy" | "sell" | ""
 	PausedUntil         *time.Time
+
+	// V4 author metadata (migration 008). Empty/zero for legacy personal strategies.
+	AuthorSlug string // url-safe id used in Redis stream key + bot menu
+	IsPremium  bool   // gates Telegram delivery to premium-subscriber users only
 }
 
 // ListActiveScenarios returns every scenario flagged is_active=true and not
@@ -36,7 +40,8 @@ func ListActiveScenarios(ctx context.Context, pool *pgxpool.Pool) ([]ActiveScena
 		SELECT id, user_id, name, selected_pair, interval, risk_tier,
 		       nodes_json, edges_json, telegram_enabled, auto_execute,
 		       COALESCE(last_signal_bar_time, 0), COALESCE(last_signal_direction, ''),
-		       paused_until
+		       paused_until,
+		       COALESCE(author_slug, ''), is_premium
 		FROM strategies
 		WHERE is_active = true
 		  AND (paused_until IS NULL OR paused_until < NOW())
@@ -53,6 +58,7 @@ func ListActiveScenarios(ctx context.Context, pool *pgxpool.Pool) ([]ActiveScena
 			&s.ID, &s.UserID, &s.Name, &s.Symbol, &s.Interval, &s.RiskTier,
 			&s.NodesJSON, &s.EdgesJSON, &s.TelegramEnabled, &s.AutoExecute,
 			&s.LastSignalBarTime, &s.LastSignalDirection, &s.PausedUntil,
+			&s.AuthorSlug, &s.IsPremium,
 		); err != nil {
 			return nil, err
 		}
@@ -78,6 +84,8 @@ type Alert struct {
 	ID               string
 	UserID           string
 	StrategyID       string
+	AuthorSlug       string // V4: empty for personal strategies, otherwise routes to author Redis stream
+	IsPremium        bool   // V4: paywall gate for Telegram fanout
 	Symbol           string
 	Interval         string
 	Direction        string // "buy" | "sell"

@@ -15,11 +15,16 @@ import (
 // Why streams instead of pub/sub:
 //   - Persistent: if a bot is offline, messages buffer until it reconnects
 //   - Acknowledged: consumers explicitly XACK, otherwise redelivery on idle
-//   - Multi-consumer ready: per-author bots subscribe to different TF streams
+//   - Multi-consumer ready: per-author bots subscribe to different streams
 //
-// Stream key shape: signals:{base}:{interval} — e.g. "signals:btc:4h",
-// "signals:eth:1h", "signals:xau:4h". Bots can pick which streams they care
-// about (one bot = one timeframe is the common pattern).
+// Stream key shapes (V4 author routing):
+//   - Author-backed signals: signals:author:<slug>     e.g. "signals:author:gold_news"
+//   - Personal/legacy signals: signals:<base>:<interval>  e.g. "signals:btc:4h"
+//
+// The bot menu in Telegram derives subscription topology from author_slug,
+// so each author gets a dedicated stream keyspace. Personal user-owned
+// strategies (no author_slug) keep the legacy by-symbol stream so the
+// existing Telegram channel pipeline keeps working unchanged.
 //
 // Failure to publish is intentionally non-fatal: alerts are already durable
 // in postgres `alerts` table. A bot that missed a publish can be backfilled
@@ -34,7 +39,12 @@ func PublishToStream(ctx context.Context, a *Alert) {
 		return
 	}
 
-	streamKey := "signals:" + extractSymbolBase(a.Symbol) + ":" + a.Interval
+	var streamKey string
+	if a.AuthorSlug != "" {
+		streamKey = "signals:author:" + a.AuthorSlug
+	} else {
+		streamKey = "signals:" + extractSymbolBase(a.Symbol) + ":" + a.Interval
+	}
 
 	values := map[string]interface{}{
 		"alert_id":          a.ID,
@@ -50,6 +60,8 @@ func PublishToStream(ctx context.Context, a *Alert) {
 		"bar_time":          a.BarTime,
 		"strategy_id":       a.StrategyID,
 		"user_id":           a.UserID,
+		"author_slug":       a.AuthorSlug,
+		"is_premium":        a.IsPremium,
 	}
 
 	// MaxLen with approximate trim (~) keeps the stream bounded so a misbehaving

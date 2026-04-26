@@ -103,6 +103,8 @@ func (l *scenarioLoop) tick(ctx context.Context) {
 	a := &Alert{
 		UserID:          l.scenario.UserID,
 		StrategyID:      l.scenario.ID,
+		AuthorSlug:      l.scenario.AuthorSlug,
+		IsPremium:       l.scenario.IsPremium,
 		Symbol:          l.scenario.Symbol,
 		Interval:        l.scenario.Interval,
 		Direction:       ev.Direction,
