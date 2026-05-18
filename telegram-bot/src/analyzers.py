@@ -47,18 +47,27 @@ async def _get_json(session: aiohttp.ClientSession, url: str) -> Any | None:
 
 
 async def _binance_24h(session: aiohttp.ClientSession, symbol: str) -> dict[str, Any] | None:
+    """Bug #6 fix: validate ALL required keys + catch parse errors so
+    partial payloads (mini-ticker, transient Binance shape changes) return
+    None cleanly instead of crashing analyzers with KeyError/ValueError.
+    """
     data = await _get_json(
         session, f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
     )
-    if not data or "lastPrice" not in data:
+    required = ("lastPrice", "priceChangePercent", "highPrice", "lowPrice", "quoteVolume")
+    if not data or not all(k in data for k in required):
         return None
-    return {
-        "price": float(data["lastPrice"]),
-        "change_pct": float(data["priceChangePercent"]),
-        "high": float(data["highPrice"]),
-        "low": float(data["lowPrice"]),
-        "vol": float(data["quoteVolume"]),
-    }
+    try:
+        return {
+            "price": float(data["lastPrice"]),
+            "change_pct": float(data["priceChangePercent"]),
+            "high": float(data["highPrice"]),
+            "low": float(data["lowPrice"]),
+            "vol": float(data["quoteVolume"]),
+        }
+    except (TypeError, ValueError):
+        log.warning("ticker/24hr for %s returned unparseable values", symbol)
+        return None
 
 
 async def _binance_klines(
@@ -150,17 +159,26 @@ def _levels(klines: list[list[Any]], lookback: int = 50) -> tuple[float, float, 
     return max(highs), min(lows), (max(highs) + min(lows) + close) / 3.0
 
 
-def _trend(closes: list[float]) -> str:
+def _trend(closes: list[float]) -> tuple[str, str]:
+    """Returns (literal, human_label). The literal feeds SignalContext.trend
+    (must match the Literal type checked in idea_engine); the human_label is
+    rendered in templates only.
+
+    Bug #1 fix (review 2026-04-30): prior version returned only the human
+    string and SignalContext.trend silently mismatched against
+    Literal["uptrend","downtrend","sideways"], dropping confidence by 5 on
+    every post and disabling trend-alignment scoring entirely.
+    """
     if len(closes) < 20:
-        return "недостаточно данных"
+        return "sideways", "недостаточно данных"
     sma20 = sum(closes[-20:]) / 20
     last = closes[-1]
     delta_pct = (last - sma20) / sma20 * 100
     if delta_pct > 1.5:
-        return f"восходящий (цена на {delta_pct:.1f}% выше SMA-20)"
+        return "uptrend", f"восходящий (цена на {delta_pct:.1f}% выше SMA-20)"
     if delta_pct < -1.5:
-        return f"нисходящий (цена на {abs(delta_pct):.1f}% ниже SMA-20)"
-    return f"боковой (цена около SMA-20, отклонение {delta_pct:+.1f}%)"
+        return "downtrend", f"нисходящий (цена на {abs(delta_pct):.1f}% ниже SMA-20)"
+    return "sideways", f"боковой (цена около SMA-20, отклонение {delta_pct:+.1f}%)"
 
 
 def _fmt_price(v: float) -> str:
@@ -176,143 +194,173 @@ def _fmt_price(v: float) -> str:
 # ─────────────────────────────────────────────────────────────────────────
 
 
-async def analyze_crypto_technical(
-    session: aiohttp.ClientSession, author: Author, db: Db
+async def _run_idea_pipeline(
+    session: aiohttp.ClientSession,
+    author: Author,
+    template_key: str,
+    pair_override: str | None = None,
+    extra_market_note: str | None = None,
 ) -> str:
-    """For TA Trader (BTC), Technical Crypto (ETH), Price Alerts."""
-    sym = author.symbol
+    """Shared pipeline for analyzers that share the TA → idea → pattern-match flow.
+
+    Used by: crypto_technical (TA BTC, TA ETH, Price Alerts), crypto_ml,
+    gold_news. Each caller passes its template_key (per-author voice/format)
+    plus an optional override for the trading pair (gold uses PAXG even
+    though author.symbol may be something else) and an optional extra
+    market_note (e.g. news bullets for gold) prepended to pattern-match text.
+
+    Returns finished HTML post or `_err_block` on data outage.
+    """
+    from .idea_engine import SignalContext, build_setup, infer_regime
+    from .pattern_match import compute_query_features, enrich_with_pattern
+    from .templates import PostContext, render_post
+
+    sym = pair_override or author.symbol
     ticker = await _binance_24h(session, sym)
     klines = await _binance_klines(session, sym, author.interval, 60)
-    if ticker is None or klines is None:
+    klines_1d = await _binance_klines(session, sym, "1d", 300)
+
+    # Bug #5 fix: empty list (Binance halt / rate-limit) passes `is None`
+    # check but breaks _levels with IndexError. Use truthiness + length floor.
+    if ticker is None or not klines:
         return _err_block(author, "Binance API временно недоступен")
+    if len(klines) < 20:
+        return _err_block(author, "Недостаточно баров для анализа")
 
     closes = _closes(klines)
     rsi = _rsi(closes)
     macd = _macd_signal(closes)
-    res, sup, pivot = _levels(klines)
-    trend = _trend(closes)
+    res, sup, _pivot = _levels(klines)
+    trend_lit, trend_human = _trend(closes)
 
-    rsi_word = (
-        "перекупленность" if rsi and rsi > 70
-        else "перепроданность" if rsi and rsi < 30
-        else "нейтрально"
-    )
-    macd_word = (
-        "бычье пересечение" if macd and macd[0] > macd[1]
-        else "медвежье пересечение" if macd else "—"
-    )
+    # Bug #4 fix: replicate `pandas .ewm(alpha=1/period, adjust=False).mean()`
+    # used in build script (Wilder smoothing). Recurrence (matches pandas
+    # adjust=False exactly):
+    #     s[0] = x[0]
+    #     s[i] = alpha * x[i] + (1 - alpha) * s[i-1]   where alpha = 1/period
+    # We seed from the first available TR (same as pandas), accept some
+    # initial drift, but with 60 input bars the seed influence on the last
+    # bar is < 1.5% (decay = (1-1/14)^58 ≈ 0.014).
+    atr = 0.0
+    period = 14
+    n = len(klines)
+    if n >= 2:
+        alpha = 1.0 / period
+        trs: list[float] = []
+        for i in range(1, n):
+            high_i = float(klines[i][2])
+            low_i = float(klines[i][3])
+            prev_close = float(klines[i - 1][4])
+            tr = max(high_i - low_i, abs(high_i - prev_close), abs(low_i - prev_close))
+            trs.append(tr)
+        smoothed = trs[0]
+        for tr in trs[1:]:
+            smoothed = alpha * tr + (1 - alpha) * smoothed
+        atr = smoothed
 
-    return (
-        f"<b>{author.name}</b>\n"
-        f"<i>Сырьё для поста — упакуйте в свой стиль и опубликуйте.</i>\n"
-        f"\n"
-        f"📊 <b>{sym} {author.interval}</b>\n"
-        f"Цена: <code>{_fmt_price(ticker['price'])}</code> "
-        f"({ticker['change_pct']:+.2f}% за 24ч)\n"
-        f"24ч диапазон: {_fmt_price(ticker['low'])} — {_fmt_price(ticker['high'])}\n"
-        f"\n"
-        f"📈 <b>Тренд:</b> {trend}\n"
-        f"\n"
-        f"🎯 <b>Уровни (последние 50 свечей):</b>\n"
-        f"   Сопротивление: <code>{_fmt_price(res)}</code>\n"
-        f"   Поддержка:     <code>{_fmt_price(sup)}</code>\n"
-        f"   Pivot:         <code>{_fmt_price(pivot)}</code>\n"
-        f"\n"
-        f"🔢 <b>Индикаторы:</b>\n"
-        f"   RSI(14): <b>{rsi:.1f}</b> — {rsi_word}\n"
-        f"   MACD: {macd_word}"
-        + (f" (line {macd[0]:+.2f}, signal {macd[1]:+.2f})" if macd else "")
-        + f"\n"
-        f"\n"
-        f"<i>Данные: Binance (live). NodeVision · {dt.datetime.utcnow():%H:%M UTC}</i>"
-    )
+    closes_1d = _closes(klines_1d) if klines_1d else []
+    regime, regime_slope = infer_regime(closes_1d)
 
+    sig = SignalContext(
+        # Bug #3 fix: explicit None-check, not truthiness — preserves rsi=0.0
+        # (max oversold) and macd_line=0.0 (real EMA crossover).
+        rsi=float(rsi) if rsi is not None else 50.0,
+        macd_line=float(macd[0]) if macd is not None else 0.0,
+        macd_signal=float(macd[1]) if macd is not None else 0.0,
+        trend=trend_lit,
+        price=float(ticker["price"]),
+        support=float(sup),
+        resistance=float(res),
+        atr=float(atr),
+        regime=regime,
+    )
+    setup = build_setup(sig)
+
+    pattern_text: str | None = None
+    try:
+        query_vec = compute_query_features(
+            rsi=sig.rsi, macd_line=sig.macd_line, macd_signal=sig.macd_signal,
+            atr=sig.atr, price=sig.price,
+            support_50=sig.support, resistance_50=sig.resistance,
+            recent_closes=closes[-6:] if len(closes) >= 6 else closes,
+            # Bug #2 fix: pass real slope from infer_regime — not hardcoded 0.0.
+            regime_score=regime_slope,
+        )
+        pattern_text = enrich_with_pattern(
+            symbol=sym, interval=author.interval,
+            query_vec=query_vec, direction=setup.direction, top_k=100,
+        )
+    except Exception:
+        log.exception("pattern_match failed for %s %s", sym, author.interval)
+        pattern_text = None
+
+    market_note_parts = [p for p in (extra_market_note, pattern_text) if p]
+    market_note = "\n".join(market_note_parts) if market_note_parts else None
+
+    ctx = PostContext(
+        author_name=author.name, symbol=sym, interval=author.interval,
+        price_now=float(ticker["price"]),
+        change_24h_pct=float(ticker["change_pct"]),
+        signal_ctx=sig, setup=setup, bio=author.bio,
+        market_note=market_note,
+        trend_human=trend_human,
+    )
+    return render_post(ctx, template_key=template_key)
+
+
+async def analyze_crypto_technical(
+    session: aiohttp.ClientSession, author: Author, db: Db
+) -> str:
+    """For TA Trader (BTC), Technical Crypto (ETH), Price Alerts.
+
+    Routes to per-author template:
+      author.style="technical" → ta_default (TA Trader / Technical Crypto style)
+      author.style="levels"    → price_alerts (focus on key-level break)
+    """
+    template_key = "price_alerts" if author.style == "levels" else "ta_default"
+    return await _run_idea_pipeline(session, author, template_key=template_key)
 
 async def analyze_crypto_ml(
     session: aiohttp.ClientSession, author: Author, db: Db
 ) -> str:
-    """For Crypto ML Trader, Premium BTC ML — uses our model's latest alert."""
-    sym = author.symbol
-    ticker = await _binance_24h(session, sym)
-    alert = await db.latest_alert(author.strategy_id)
+    """Pilot author — uses idea_engine + templates + HNSW pattern-match.
 
-    parts = [f"<b>{author.name}</b>"]
-    if author.is_premium:
-        parts[0] = f"💎 {parts[0]}"
-    parts.append(f"<i>{author.bio}</i>" if author.bio else "")
-    parts.append("")
-
-    parts.append(f"📊 <b>{sym} {author.interval}</b>")
-    if ticker:
-        parts.append(
-            f"Цена: <code>{_fmt_price(ticker['price'])}</code> "
-            f"({ticker['change_pct']:+.2f}% за 24ч)"
-        )
-    parts.append("")
-
-    parts.append("🤖 <b>Сигнал ML модели:</b>")
-    if alert is None:
-        parts.append(
-            f"Активного сигнала нет. Модель обучена на 8 годах истории "
-            f"{sym}, ждём подтверждённого setup на {author.interval}."
-        )
-    else:
-        direction = alert.direction.upper()
-        parts.append(
-            f"{'🟢 LONG' if direction == 'BUY' else '🔴 SHORT'} от "
-            f"<code>{_fmt_price(alert.entry_price)}</code>"
-        )
-        parts.append(
-            f"Стоп: <code>{_fmt_price(alert.stop_loss)}</code> · "
-            f"Цель: <code>{_fmt_price(alert.take_profit)}</code>"
-        )
-        parts.append(f"Уверенность модели: {alert.confidence * 100 if alert.confidence < 1 else alert.confidence:.1f}%")
-        parts.append(f"Сетап: <i>{alert.label or '—'}</i>")
-        parts.append(f"Возраст сигнала: {(dt.datetime.now(alert.created_at.tzinfo) - alert.created_at).total_seconds() / 3600:.1f} ч")
-    parts.append("")
-
-    parts.append(f"<i>Данные: Binance + наша 4ч ML модель. Paper trade. Не финсовет.</i>")
-    return "\n".join(p for p in parts if p is not None)
+    Was the entry-point for the dropped 4h supervised model; now serves as
+    pattern-based analyst (rule-based idea + historical context). The
+    pipeline body is shared with TA Trader / Gold News via
+    `_run_idea_pipeline`.
+    """
+    return await _run_idea_pipeline(session, author, template_key="crypto_ml")
 
 
 async def analyze_gold_news(
     session: aiohttp.ClientSession, author: Author, db: Db
 ) -> str:
-    """Gold/Silver News — PAXG (tokenized gold 1:1) for price + GDELT for headlines."""
-    paxg = await _binance_24h(session, "PAXGUSDT")
+    """Gold/Silver News — PAXG (tokenized gold 1:1) + GDELT headlines.
 
-    parts = [f"<b>{author.name}</b>"]
-    parts.append(f"<i>{author.bio}</i>" if author.bio else "")
-    parts.append("")
-
-    parts.append("🥇 <b>Золото (через PAXG/USDT, 1 PAXG = 1 oz)</b>")
-    if paxg:
-        parts.append(
-            f"Цена: <code>${_fmt_price(paxg['price'])}</code> за oz "
-            f"({paxg['change_pct']:+.2f}% за 24ч)"
-        )
-        parts.append(
-            f"24ч диапазон: ${_fmt_price(paxg['low'])} — ${_fmt_price(paxg['high'])}"
-        )
-    else:
-        parts.append("Цена временно недоступна (Binance API)")
-    parts.append("")
-
-    # GDELT news — best effort, often timeouts in some regions
-    parts.append("📰 <b>Свежие новости по золоту:</b>")
+    Uses the shared idea pipeline (PAXG OHLCV via Binance), then prepends
+    fresh news headlines as the market_note. No HNSW yet (PAXG parquet
+    not built); pattern-match silently skipped → fallback to rule-based.
+    """
     headlines = await _gdelt_headlines(session, "gold price", limit=3)
     if headlines:
-        for h in headlines:
-            parts.append(f"• <a href='{h['url']}'>{h['title'][:100]}</a>")
+        news_lines = ["<b>Новости по золоту:</b>"] + [
+            f"• <a href='{h['url']}'>{h['title'][:100]}</a>"
+            for h in headlines
+        ]
+        news_note = "\n".join(news_lines)
     else:
-        parts.append(
-            "Лента новостей временно недоступна. Возьмите заголовки с "
-            "investing.com/gold или gold.org для копирайтинга."
+        news_note = (
+            "Лента новостей временно недоступна. Возьмите заголовки "
+            "с investing.com/gold или gold.org."
         )
-    parts.append("")
 
-    parts.append(f"<i>NodeVision · gold_silver · {dt.datetime.utcnow():%H:%M UTC}</i>")
-    return "\n".join(p for p in parts if p is not None)
+    return await _run_idea_pipeline(
+        session, author,
+        template_key="gold_news",
+        pair_override="PAXGUSDT",
+        extra_market_note=news_note,
+    )
 
 
 async def analyze_currency(
@@ -321,75 +369,107 @@ async def analyze_currency(
     db: Db,
     style: str,  # "news" or "fundamental"
 ) -> str:
-    """Currency News / Currency Fundamental — Frankfurter rates + news/macro."""
+    """Currency News / Fundamental — Frankfurter rates + news/macro context.
+
+    Uses `render_simple_post` (no TA pipeline) — FX historical parquet not
+    in this repo, so no HNSW. Idea block is rate-direction directional cue,
+    analysis is the rate table + news, market_block is macro context.
+    """
+    from .templates import render_simple_post
+
     fx = await _frankfurter(session, "USD", "EUR,GBP,JPY,CHF,CAD,AUD")
 
-    parts = [f"<b>{author.name}</b>"]
-    parts.append(f"<i>{author.bio}</i>" if author.bio else "")
-    parts.append("")
-
-    parts.append("💱 <b>Текущие курсы (USD base, ECB):</b>")
     if fx:
+        rate_eur = float(fx["rates"].get("EUR", 0)) or None
+        rate_lines = [f"USD/{ccy}: <code>{rate:.4f}</code>"
+                      for ccy, rate in fx["rates"].items()]
+        rates_block = "\n".join(rate_lines)
         date = fx.get("date", "—")
-        for ccy, rate in fx["rates"].items():
-            parts.append(f"   USD/{ccy}: <code>{rate:.4f}</code>")
-        parts.append(f"<i>Источник: ECB через Frankfurter, дата {date}</i>")
+        idea_pair = "EUR/USD"
+        idea_dir = (
+            "Долгосрочный диапазон 1.05–1.15 — следите за пробоями. "
+            "Confidence: <b>низкий</b> (rate-only, без TA)."
+        )
+        analysis = (
+            f"<b>Курсы (USD base, ECB {date}):</b>\n{rates_block}"
+        )
     else:
-        parts.append("Frankfurter API временно недоступен — попробуйте через 1-2 минуты.")
-    parts.append("")
+        idea_pair = "EUR/USD"
+        idea_dir = "Frankfurter API временно недоступен — данные подгрузятся через 1-2 минуты."
+        analysis = "—"
 
     if style == "news":
-        parts.append("📰 <b>Свежие FX новости:</b>")
-        h = await _gdelt_headlines(session, "forex OR currency OR USD OR ECB OR Fed", limit=3)
+        h = await _gdelt_headlines(
+            session, "forex OR currency OR USD OR ECB OR Fed", limit=3
+        )
         if h:
-            for x in h:
-                parts.append(f"• <a href='{x['url']}'>{x['title'][:100]}</a>")
+            news_lines = [f"• <a href='{x['url']}'>{x['title'][:100]}</a>" for x in h]
+            market_block = "<b>Свежие FX новости:</b>\n" + "\n".join(news_lines)
         else:
-            parts.append("Лента новостей временно недоступна.")
-    else:
-        parts.append("📈 <b>Фундаментальный фон:</b>")
-        parts.append(
+            market_block = (
+                "Лента новостей временно недоступна. "
+                "Возьмите заголовки с investing.com/economic-calendar."
+            )
+    else:  # fundamental
+        market_block = (
+            "<b>Фундаментальный фон:</b>\n"
             "• Решения ФРС/ЕЦБ влияют на USD/EUR через дифференциал ставок\n"
             "• Релизы CPI/NFP — главные триггеры волатильности\n"
-            "• Risk-on рынки → JPY слабеет, AUD/CAD укрепляются"
+            "• Risk-on рынки → JPY слабеет, AUD/CAD укрепляются\n"
+            "<i>Календарь: investing.com/economic-calendar</i>"
         )
-        parts.append("")
-        parts.append("<i>Календарь событий: investing.com/economic-calendar</i>")
-    parts.append("")
-    parts.append(f"<i>NodeVision · currencies · {dt.datetime.utcnow():%H:%M UTC}</i>")
-    return "\n".join(p for p in parts if p is not None)
+
+    return render_simple_post(
+        author_name=author.name,
+        header=f"{idea_pair} · валютный обзор",
+        idea_block=idea_dir,
+        analysis_block=analysis,
+        market_block=market_block,
+        footer_tag="NodeVision · currencies",
+    )
 
 
 async def analyze_astro(
     session: aiohttp.ClientSession, author: Author, db: Db
 ) -> str:
-    """Astro Trader — Moon phase, retrogrades, sun position via ephem."""
+    """Astro Trader — Moon phase, Mercury retrograde, Sun sign via ephem.
+
+    Renders through `render_simple_post` (no TA pipeline) so the post shape
+    matches all other authors. Idea block = directional cue from moon phase;
+    analysis = ephemeris details; market_block = trading lore for the post.
+    """
+    from .templates import render_simple_post
+
     now = dt.datetime.utcnow()
     moon = ephem.Moon(now)
     sun = ephem.Sun(now)
     mercury = ephem.Mercury(now)
-    mars = ephem.Mars(now)
-    venus = ephem.Venus(now)
+    mercury_tomorrow = ephem.Mercury(now + dt.timedelta(days=1))
 
     moon_pct = moon.moon_phase * 100
     if moon_pct > 95:
         moon_word = "🌕 Полнолуние"
+        moon_cue = "Полнолуние ⇒ пик эмоций, ожидайте разворотов"
+        moon_dir = "флэт / ловите развороты"
     elif moon_pct < 5:
         moon_word = "🌑 Новолуние"
+        moon_cue = "Новолуние ⇒ новые циклы, хорошее время для входов в тренд"
+        moon_dir = "тренд-фоллоу со входом по импульсу"
     elif moon_pct > 50:
         moon_word = f"🌔 Растущая Луна ({moon_pct:.0f}%)"
+        moon_cue = "Растущая Луна ⇒ расширение объёмов, тренды продолжаются"
+        moon_dir = "long-bias на тренде"
     else:
         moon_word = f"🌒 Убывающая Луна ({moon_pct:.0f}%)"
+        moon_cue = "Убывающая Луна ⇒ охлаждение, фиксация прибыли"
+        moon_dir = "осторожный shorting / фиксация long-позиций"
 
-    # Next full / new moon
     next_full = ephem.next_full_moon(now)
     next_new = ephem.next_new_moon(now)
 
-    # Mercury retrograde detection — compare today vs tomorrow heliocentric longitude
-    mercury_tomorrow = ephem.Mercury(now + dt.timedelta(days=1))
     merc_retro = float(mercury_tomorrow.hlon) < float(mercury.hlon)
+    merc_word = "🔄 Ретроградный" if merc_retro else "➡️ Директный"
 
-    # Sun sign (rough — by ecliptic longitude)
     sun_signs = [
         ("Овен", 0), ("Телец", 30), ("Близнецы", 60), ("Рак", 90),
         ("Лев", 120), ("Дева", 150), ("Весы", 180), ("Скорпион", 210),
@@ -401,76 +481,79 @@ async def analyze_astro(
         "—",
     )
 
-    parts = [f"<b>{author.name}</b>"]
-    parts.append(f"<i>{author.bio}</i>" if author.bio else "")
-    parts.append("")
-    parts.append(f"🌌 <b>Космический фон ({now:%d.%m.%Y %H:%M} UTC)</b>")
-    parts.append("")
-    parts.append(f"<b>Луна:</b> {moon_word}")
-    parts.append(f"   Следующее полнолуние: {ephem.localtime(next_full):%d.%m %H:%M}")
-    parts.append(f"   Следующее новолуние: {ephem.localtime(next_new):%d.%m %H:%M}")
-    parts.append("")
-    parts.append(f"<b>Меркурий:</b> {'🔄 Ретроградный' if merc_retro else '➡️ Директный'}")
-    parts.append(f"<b>Солнце:</b> в знаке {sun_sign}")
-    parts.append("")
-    parts.append("📜 <b>Что писать в посте:</b>")
-    if moon_pct > 95:
-        parts.append("• Полнолуние = пик эмоций, частые развороты на рынках")
-    elif moon_pct < 5:
-        parts.append("• Новолуние = новые циклы, хорошее время для входов в тренд")
-    elif moon_pct > 50:
-        parts.append("• Растущая Луна = расширение объёмов, тренды продолжаются")
-    else:
-        parts.append("• Убывающая Луна = охлаждение, фиксация прибыли")
+    idea_block = (
+        f"{moon_word} ⇒ {moon_dir}\n"
+        f"Confidence: <b>низкий</b> (астро — статистический фон, не сигнал)."
+    )
+    analysis_block = (
+        f"<b>Луна:</b> {moon_word}\n"
+        f"  Следующее полнолуние: {ephem.localtime(next_full):%d.%m %H:%M}\n"
+        f"  Следующее новолуние: {ephem.localtime(next_new):%d.%m %H:%M}\n"
+        f"<b>Меркурий:</b> {merc_word}\n"
+        f"<b>Солнце:</b> в знаке {sun_sign}"
+    )
+    market_lore = [moon_cue]
     if merc_retro:
-        parts.append("• Меркурий ретроградный — повышенный риск ошибок исполнения")
+        market_lore.append("Меркурий ретроградный — повышенный риск ошибок исполнения")
     else:
-        parts.append("• Меркурий директный — нормальный режим коммуникаций/исполнения")
-    parts.append(f"• Солнце в {sun_sign} — секторная окраска месяца")
-    parts.append("")
-    parts.append(f"<i>Данные: Swiss Ephemeris (ephem). NodeVision · астро</i>")
-    return "\n".join(parts)
+        market_lore.append("Меркурий директный — нормальный режим коммуникаций")
+    market_lore.append(f"Солнце в {sun_sign} — секторная окраска месяца")
+    market_block = "\n".join(f"• {x}" for x in market_lore)
+
+    return render_simple_post(
+        author_name=author.name,
+        header=f"Космический фон ({now:%d.%m.%Y %H:%M} UTC)",
+        idea_block=idea_block,
+        analysis_block=analysis_block,
+        market_block=market_block,
+        footer_tag="NodeVision · астро (Swiss Ephemeris)",
+    )
 
 
 async def analyze_index_or_oil(
     session: aiohttp.ClientSession, author: Author, db: Db
 ) -> str:
-    """Index/Oil Fundamental — honest 'feed integration in progress' for now.
+    """Index/Oil Fundamental — honest 'feed integration in progress' placeholder.
 
-    Truthful placeholder: free-tier feeds for SPX/NASDAQ/Oil require API keys
-    we haven't acquired yet. Returns useful structure (sector context +
-    next steps) instead of fake numbers.
+    Free-tier feeds for SPX/NASDAQ/Oil require API keys we haven't acquired
+    (Twelve Data / Finnhub Premium ~$30/mo). Returns the same 3-section
+    layout as live authors so the post structure is consistent — but
+    populated with sector context + integration status, no fake numbers.
     """
-    asset_word = {
-        "indices": "индексы (SPX/NASDAQ/DJI)",
-        "oil_gas": "нефть и газ (WTI, Brent, Henry Hub)",
-    }.get(author.theme, "актив")
+    from .templates import render_simple_post
 
-    return (
-        f"<b>{author.name}</b>\n"
-        f"<i>{author.bio}</i>\n"
-        f"\n"
-        f"📊 <b>{asset_word}</b>\n"
-        f"\n"
-        f"⚙️ <b>Интеграция в работе.</b>\n"
-        f"Бесплатные источники цен для этого класса активов закрылись "
-        f"(Yahoo Finance, Stooq) — подключаем платный фид (Twelve Data / "
-        f"Finnhub Premium, ~$30/мес).\n"
-        f"\n"
-        f"📜 <b>Что писать сейчас (без бота):</b>\n"
-        + (
+    if author.theme == "indices":
+        asset_word = "индексы (SPX/NASDAQ/DJI)"
+        chart_url = "tradingview.com/chart/?symbol=SPX"
+        market_lore = (
             "• Влияние Fed на индексы через ставки + QT\n"
             "• Корреляция SPX с DXY (доллар вверх → SPX часто вниз)\n"
-            "• Earnings season — главный драйвер волатильности\n"
-            "• График: tradingview.com/chart/?symbol=SPX"
-            if author.theme == "indices"
-            else
-            "• Геополитика (ОПЕК, Ближний Восток) → нефть\n"
-            "• Складские запасы EIA по средам — главный триггер\n"
-            "• Ралли доллара ослабляет нефть\n"
-            "• График: tradingview.com/chart/?symbol=USOIL"
+            "• Earnings season — главный драйвер волатильности"
         )
-        + f"\n\n<i>NodeVision · {author.theme}</i>"
+    else:  # oil_gas
+        asset_word = "нефть и газ (WTI, Brent, Henry Hub)"
+        chart_url = "tradingview.com/chart/?symbol=USOIL"
+        market_lore = (
+            "• Геополитика (ОПЕК+, Ближний Восток) → нефть\n"
+            "• Складские запасы EIA по средам — главный триггер\n"
+            "• Ралли доллара ослабляет нефть"
+        )
+
+    return render_simple_post(
+        author_name=author.name,
+        header=f"{asset_word} — обзор",
+        idea_block=(
+            "⚙️ <b>Интеграция в работе.</b> Готовая trade idea появится после "
+            "подключения платного фида (Twelve Data / Finnhub Premium). "
+            "Confidence: <b>—</b> (нет данных)."
+        ),
+        analysis_block=(
+            "Бесплатные источники цен для этого класса активов либо закрылись "
+            "(Yahoo Finance), либо отдают сильно лагнутые данные (Stooq). "
+            "Подключаем платный фид."
+        ),
+        market_block=f"{market_lore}\n<i>График сейчас: {chart_url}</i>",
+        footer_tag=f"NodeVision · {author.theme}",
     )
 
 
@@ -506,39 +589,84 @@ async def _gdelt_headlines(
 # ─────────────────────────────────────────────────────────────────────────
 
 
+async def _live_render(session: aiohttp.ClientSession, author: Author, db: Db) -> str:
+    """Live recompute via the analyzer matched by author.theme + author.style.
+
+    Used by signal_worker to generate the post text that gets stored in
+    alerts.meta.rendered_text. NOT called from the bot click handler.
+    """
+    if author.style == "ml" and author.theme == "crypto":
+        return await analyze_crypto_ml(session, author, db)
+    if author.theme == "crypto":
+        return await analyze_crypto_technical(session, author, db)
+    if author.theme == "gold_silver":
+        return await analyze_gold_news(session, author, db)
+    if author.theme == "currencies":
+        return await analyze_currency(session, author, db, author.style or "news")
+    if author.style == "astro":
+        return await analyze_astro(session, author, db)
+    if author.theme in ("indices", "oil_gas"):
+        return await analyze_index_or_oil(session, author, db)
+    return _err_block(author, f"unknown analyzer for theme={author.theme} style={author.style}")
+
+
+async def compute_alert_payload(
+    session: aiohttp.ClientSession, author: Author, db: Db,
+) -> dict | None:
+    """Public worker entry point. Renders + structures author's post.
+
+    Returns dict with keys ready for `db.upsert_alert`:
+        direction, confidence, entry_price, stop_loss, take_profit,
+        rendered_text, label
+    or None if generation failed at a level we shouldn't write to DB.
+
+    For non-TA authors (Astro/Currency/Index/Oil) the structured fields
+    are coarse defaults — direction='hold', no entry/SL/TP. The rendered
+    text is what subscribers actually see.
+    """
+    try:
+        text = await _live_render(session, author, db)
+    except Exception:
+        log.exception("live render failed for %s", author.slug)
+        return None
+
+    # For TA authors we'd ideally extract Setup back from the rendered post
+    # to populate structured columns, but the simple route is to recompute
+    # Setup once for storage purposes. Skipping that for now — non-essential
+    # for the bot UX (subscribers see rendered_text, not the columns). Fill
+    # safe defaults; columns can be promoted later if a dashboard needs them.
+    return {
+        "direction": "info",
+        "rendered_text": text,
+        "label": author.style,
+        "confidence": None,
+        "entry_price": None,
+        "stop_loss": None,
+        "take_profit": None,
+    }
+
+
 async def render_for_author(author: Author, db: Db) -> str:
-    """Pick the right analyzer by author.theme + author.style."""
-    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-        try:
-            # Crypto ML
-            if author.style == "ml" and author.theme == "crypto":
-                return await analyze_crypto_ml(session, author, db)
+    """Bot click handler. Reads stored rendered_text from alerts.
 
-            # Crypto technical / levels
-            if author.theme == "crypto":
-                return await analyze_crypto_technical(session, author, db)
-
-            # Gold / Silver
-            if author.theme == "gold_silver":
-                return await analyze_gold_news(session, author, db)
-
-            # Currency news / fundamental
-            if author.theme == "currencies":
-                return await analyze_currency(session, author, db, author.style or "news")
-
-            # Astro
-            if author.style == "astro":
-                return await analyze_astro(session, author, db)
-
-            # Indices / Oil — honest placeholder
-            if author.theme in ("indices", "oil_gas"):
-                return await analyze_index_or_oil(session, author, db)
-
-            # Fallback — should never trigger if seed is correct
-            return _err_block(author, f"unknown analyzer for theme={author.theme} style={author.style}")
-        except Exception:
-            log.exception("analyzer crashed for author %s", author.slug)
-            return _err_block(author, "сценарий упал — посмотрите логи")
+    The signal_worker writes new alerts every 5 minutes (bar_time-deduped),
+    so subscribers see the SAME post across multiple clicks until the
+    worker ships a fresh bar's update. Cold-start fallback shows a
+    "waiting" message — never falls back to live recompute (that would
+    re-introduce the "different idea on every click" symptom).
+    """
+    from .signal_worker import COLD_START_MESSAGE
+    try:
+        alert = await db.latest_alert(author.strategy_id)
+    except Exception:
+        log.exception("latest_alert query failed for %s", author.slug)
+        return _err_block(author, "ошибка чтения сигнала из БД")
+    if alert is None:
+        return COLD_START_MESSAGE
+    text = alert.meta.get("rendered_text") if alert.meta else None
+    if not text:
+        return COLD_START_MESSAGE
+    return text
 
 
 def _err_block(author: Author, reason: str) -> str:

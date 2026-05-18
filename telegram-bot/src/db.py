@@ -7,7 +7,7 @@ postgres; the Go runner is the only writer.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -42,6 +42,10 @@ class Alert:
     take_profit: float
     bar_time: int
     created_at: datetime
+    # 2026-05-01: meta stores worker-rendered post text under
+    # `meta["rendered_text"]` plus any author-specific structured data
+    # (regime, pattern_match win rate, etc). Bot reads this at click time.
+    meta: dict = field(default_factory=dict)
 
 
 class Db:
@@ -131,6 +135,7 @@ class Db:
 
     async def latest_alert(self, strategy_id: str) -> Alert | None:
         """Most recent alert for a strategy. Returns None if never fired."""
+        import json as _json
         assert self._pool is not None
         row = await self._pool.fetchrow(
             """
@@ -139,7 +144,7 @@ class Db:
                    entry_price::float8 AS entry_price,
                    stop_loss::float8 AS stop_loss,
                    take_profit::float8 AS take_profit,
-                   bar_time, created_at
+                   bar_time, created_at, meta
               FROM alerts
              WHERE strategy_id = $1
              ORDER BY created_at DESC
@@ -149,6 +154,16 @@ class Db:
         )
         if row is None:
             return None
+        meta_raw = row["meta"]
+        if isinstance(meta_raw, str):
+            try:
+                meta_d = _json.loads(meta_raw)
+            except Exception:
+                meta_d = {}
+        elif isinstance(meta_raw, dict):
+            meta_d = meta_raw
+        else:
+            meta_d = {}
         return Alert(
             id=row["id"],
             direction=row["direction"],
@@ -159,6 +174,61 @@ class Db:
             take_profit=float(row["take_profit"]) if row["take_profit"] is not None else 0.0,
             bar_time=row["bar_time"],
             created_at=row["created_at"],
+            meta=meta_d,
+        )
+
+    async def upsert_alert(
+        self,
+        strategy_id: str,
+        symbol: str,
+        interval: str,
+        direction: str,
+        bar_time: int,
+        rendered_text: str,
+        confidence: float | None = None,
+        entry_price: float | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        label: str = "",
+    ) -> None:
+        """Insert (or no-op on duplicate) an alert row authored by signal_worker.
+
+        UNIQUE(strategy_id, bar_time, direction) on the table dedupes the
+        same (bar, direction) within a TF — so successive worker passes
+        within one 4h bar are silently a no-op via ON CONFLICT.
+
+        `rendered_text` is stored in meta.rendered_text — bot reads it at
+        click time. user_id is pulled from strategies.user_id (alerts FK).
+        """
+        import json as _json
+        assert self._pool is not None
+        meta_payload = _json.dumps(
+            {"rendered_text": rendered_text},
+            ensure_ascii=False, default=str,
+        )
+        await self._pool.execute(
+            """
+            INSERT INTO alerts (
+                user_id, strategy_id, symbol, interval, direction, label,
+                confidence, entry_price, stop_loss, take_profit,
+                bar_time, meta
+            )
+            SELECT s.user_id, s.id, $2, $3, $4, $5,
+                   $6, $7, $8, $9,
+                   $10, $11::jsonb
+              FROM strategies s
+             WHERE s.id = $1::uuid
+             ON CONFLICT (strategy_id, bar_time, direction) DO UPDATE
+                SET meta = EXCLUDED.meta,
+                    confidence = EXCLUDED.confidence,
+                    entry_price = EXCLUDED.entry_price,
+                    stop_loss = EXCLUDED.stop_loss,
+                    take_profit = EXCLUDED.take_profit,
+                    label = EXCLUDED.label
+            """,
+            strategy_id, symbol, interval, direction, label,
+            confidence, entry_price, stop_loss, take_profit,
+            bar_time, meta_payload,
         )
 
     async def user_is_premium(self, telegram_chat_id: int) -> bool:

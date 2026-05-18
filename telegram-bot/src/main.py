@@ -34,6 +34,7 @@ from .handlers import register_handlers
 from .market_data import MarketData
 from .publisher import TelegramPublisher
 from .redis_consumer import StreamConsumer
+from .signal_worker import run_forever as run_signal_worker
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,12 @@ async def run_interactive() -> None:
 
     register_handlers(dp, db, market, settings.admin_chat_id_set)
 
+    # Signal worker: refreshes alerts table every 5 min so bot click handlers
+    # can read a stable post text instead of regenerating live every time.
+    # Cold-start refresh runs synchronously inside run_forever before the
+    # first sleep, so authors have at least one alert ready when /start hits.
+    worker_task = asyncio.create_task(run_signal_worker(db, every_seconds=300))
+
     log.info(
         "Bot started in interactive mode: bot=%s admins=%s premium_check=db",
         settings.telegram_bot_username,
@@ -62,6 +69,11 @@ async def run_interactive() -> None:
     try:
         await dp.start_polling(bot, handle_signals=True)
     finally:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
         await market.close()
         await db.close()
         await bot.session.close()

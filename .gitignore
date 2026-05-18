@@ -32,6 +32,17 @@ ml-training/**/__pycache__/
 
 # Keep "latest.json" pointer for reference
 !ml-training/models/latest.json
+!ml-training/models/latest_autogluon.json
+
+# Stage 2 macro data + AutoGluon predictor dirs (regeneratable, multi-MB)
+ml-training/data/macro/*.parquet
+ml-training/models/ag_*/
+ml-training/models/fusion_*/
+ml-training/models/wfcv/
+
+# Keep manifests for provenance/repro (small JSONs)
+!ml-training/data/macro/manifest.json
+!ml-training/data/regime_manifest_*.json
 
 # Local model backups (safety copies, regeneratable from vast.ai)
 ml-training/models.backup_*/
@@ -57,3 +68,7 @@ package-lock.json
 .env
 .env.local
 .env.*.local
+
+# Telegram bot pattern indexes (binary numpy artefacts)
+telegram-bot/data/pattern_indexes/
+*.npy
