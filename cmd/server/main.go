@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,16 +11,25 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
+
 	"github.com/prostwp/elibri-backend/internal/api"
 	"github.com/prostwp/elibri-backend/internal/config"
 	"github.com/prostwp/elibri-backend/internal/macrocal"
 	"github.com/prostwp/elibri-backend/internal/ml"
+	"github.com/prostwp/elibri-backend/internal/narrative"
 	"github.com/prostwp/elibri-backend/internal/scenario"
 	"github.com/prostwp/elibri-backend/internal/store"
 	"github.com/prostwp/elibri-backend/internal/telegram"
 )
 
 func main() {
+	// Load .env if present. Failing silently — env vars set in the shell
+	// take precedence anyway (godotenv.Load doesn't overwrite existing keys),
+	// so this is purely a developer-convenience path. Production deploys
+	// should use systemd Environment= or a secrets manager.
+	_ = godotenv.Load()
+
 	cfg := config.Load()
 
 	// Initialize stores (non-fatal if unavailable)
@@ -79,6 +89,77 @@ func main() {
 	// Pass AlertsMaxPerDayPerUser so deliver() enforces per-user quota.
 	alertQ := telegram.NewAlertQueue(tgBot, store.Pool, cfg.AlertsMaxPerDayPerUser)
 	go alertQ.Run(ctx)
+
+	// Narrative Radar worker — periodically pulls news from Reddit + RSS feeds,
+	// classifies into narratives, and writes snapshots to narrative_snapshots.
+	// Background goroutine: Run() blocks until ctx is cancelled (SIGTERM/SIGINT).
+	// Skip launch if Postgres isn't available — without a pool the worker would
+	// just log "nil pool" errors every 10 minutes. The /api/v1/narratives
+	// handler returns an empty list cleanly in that state.
+	if store.Pool != nil {
+		narrStore := narrative.NewStore(store.Pool)
+
+		// Pick the importance classifier based on whether ANTHROPIC_API_KEY
+		// is set. CachedClassifier wraps the inner so the same URL
+		// classified across multiple narratives makes only one LLM call.
+		var classifier narrative.ImportanceClassifier
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey != "" {
+			classifier = &narrative.CachedClassifier{
+				Inner: &narrative.HaikuClassifier{
+					APIKey: apiKey,
+					HTTP:   &http.Client{Timeout: 10 * time.Second},
+				},
+				Store: narrStore,
+			}
+			log.Println("Narrative Radar: using Claude Haiku for importance classification")
+		} else {
+			classifier = &narrative.CachedClassifier{
+				Inner: &narrative.RuleClassifier{},
+				Store: narrStore,
+			}
+			log.Println("Narrative Radar: ANTHROPIC_API_KEY empty — using rule-based importance fallback")
+		}
+
+		// IdeaGenerator: same key as the importance classifier — when
+		// ANTHROPIC_API_KEY is set we wire the Haiku-backed generator,
+		// otherwise we fall back to the static "Добавить в watchlist…" line.
+		// Wired into the api package via the global; no need to thread it
+		// through the worker (Phase 3 will move idea-generation to the
+		// worker for pre-computed caching, but v2.1 keeps it request-time).
+		var ideaGen narrative.IdeaGenerator
+		if apiKey != "" {
+			ideaGen = &narrative.HaikuIdeaGenerator{
+				APIKey: apiKey,
+				HTTP:   &http.Client{Timeout: 15 * time.Second},
+			}
+			log.Println("Narrative Radar: using Claude Haiku for trade-idea generation")
+		} else {
+			ideaGen = narrative.StaticIdeaGenerator{}
+			log.Println("Narrative Radar: ANTHROPIC_API_KEY empty — using static trade-idea fallback")
+		}
+		api.SetIdeaGenerator(ideaGen)
+
+		narrWorker := &narrative.Worker{
+			Store:           narrStore,
+			Classifier:      classifier,
+			RefreshInterval: 10 * time.Minute, // explicit; matches narrative.defaultRefreshInterval
+			// Logger nil → uses log.Default() (stdout/stderr).
+		}
+		go func() {
+			// Tolerate both Canceled (SIGTERM via signal.NotifyContext)
+			// and DeadlineExceeded (e.g. a parent that wraps with a
+			// deadline in tests) — both are clean exits, not bugs.
+			if err := narrWorker.Run(ctx); err != nil &&
+				!errors.Is(err, context.Canceled) &&
+				!errors.Is(err, context.DeadlineExceeded) {
+				log.Printf("narrative worker exited: %v", err)
+			}
+		}()
+		log.Println("Narrative Radar worker started (refresh every 10 min)")
+	} else {
+		log.Println("Narrative Radar worker skipped (no Postgres pool)")
+	}
 
 	// Scenario runner — polls active strategies, emits alerts.
 	runner := scenario.NewRunner(ctx, store.Pool, alertQ)

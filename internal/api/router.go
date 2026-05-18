@@ -10,6 +10,7 @@ import (
 	"github.com/prostwp/elibri-backend/internal/auth"
 	"github.com/prostwp/elibri-backend/internal/config"
 	"github.com/prostwp/elibri-backend/internal/ml"
+	"github.com/prostwp/elibri-backend/internal/narrative"
 	"github.com/prostwp/elibri-backend/internal/store"
 	"github.com/prostwp/elibri-backend/internal/ws"
 )
@@ -43,6 +44,17 @@ func NewRouter(cfg *config.Config) http.Handler {
 
 	// Scenarios (live runner control) — Patch 3
 	mux.HandleFunc("GET /api/v1/scenarios/active", handleScenariosActive)
+	// Public scenarios catalog (Sprint 2 v3 SaaS redesign).
+	// Order matters: register specific patterns before the catch-all
+	// /api/v1/scenarios/ subroute so Go's mux resolves the most-specific
+	// match (featured/public/{slug}/clone) before falling back to the
+	// suffix-router for /start and /stop.
+	mux.HandleFunc("GET /api/v1/scenarios/featured", handleScenariosFeatured)
+	mux.HandleFunc("GET /api/v1/scenarios/public", handleScenariosPublicList)
+	mux.HandleFunc("GET /api/v1/scenarios/public/{slug}", handleScenariosPublicDetail)
+	mux.HandleFunc("POST /api/v1/scenarios/{slug}/clone", handleScenarioClone)
+	mux.HandleFunc("GET /api/v1/dashboard/summary", handleDashboardSummary)
+	mux.HandleFunc("GET /api/v1/billing", handleBillingStub)
 	mux.HandleFunc("/api/v1/scenarios/", handleScenarioSubroute)
 
 	// Macro calendar (Patch 3A) — upcoming high-impact events + blackout status
@@ -81,6 +93,12 @@ func NewRouter(cfg *config.Config) http.Handler {
 
 	// News / Fundamental (Finnhub general+crypto, CoinDesk RSS, Cointelegraph RSS, Alpha Vantage)
 	mux.HandleFunc("GET /api/v1/news/fundamental", handleFundamentalNews(cfg))
+
+	// Narrative Radar — latest snapshot per crypto narrative. Worker is
+	// launched separately in cmd/server/main.go; this route reads from
+	// narrative_snapshots regardless of whether the worker has run yet
+	// (returns an empty list with captured_at="" before the first tick).
+	mux.HandleFunc("GET /api/v1/narratives", handleNarrativesList(narrative.NewStore(store.Pool)))
 
 	// Middleware chain: CORS → Auth (JWT)
 	var handler http.Handler = mux

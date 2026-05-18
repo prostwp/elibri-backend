@@ -44,6 +44,9 @@ func runMigrations() {
 		"internal/store/migrations/006_strategies_risk_tier_check.sql",
 		"internal/store/migrations/007_strategies_interval_check_and_alerts_indexes.sql",
 		"internal/store/migrations/008_strategies_authors.sql",
+		"internal/store/migrations/009_narratives.sql",
+		"internal/store/migrations/010_narrative_importance.sql",
+		"internal/store/migrations/011_public_scenarios.sql",
 	}
 
 	for _, f := range files {

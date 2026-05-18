@@ -80,7 +80,25 @@ func parseToken(tokenStr, secret string) (*Claims, error) {
 func Middleware(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Public paths bypass the missing-token rejection but still
+			// parse a Bearer token if one was provided. This lets the
+			// public-detail handler (Sprint 3) attribute scenario views
+			// to a known user when the browser carries a JWT, without
+			// blocking anonymous requests that just want to read.
 			if isPublicPath(r.URL.Path) {
+				if tokenStr := extractToken(r); tokenStr != "" {
+					if claims, err := parseToken(tokenStr, secret); err == nil {
+						ctx := context.WithValue(r.Context(), UserIDKey, claims.UserID)
+						ctx = context.WithValue(ctx, UserEmailKey, claims.Email)
+						ctx = context.WithValue(ctx, UserRoleKey, claims.Role)
+						r = r.WithContext(ctx)
+					}
+					// Invalid tokens on public paths are silently
+					// ignored — we don't want to 401 a legitimate
+					// public-page load just because a stale JWT is in
+					// localStorage. The user still gets a response;
+					// the view row just lands as anonymous.
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -110,11 +128,36 @@ var publicPaths = []string{
 	"/ready",
 	"/api/v1/auth/register",
 	"/api/v1/auth/login",
+	// Public catalog (Sprint 2 v3 SaaS redesign). Featured + list are exact
+	// matches; detail uses prefix matching below because it carries a slug.
+	"/api/v1/scenarios/featured",
+	"/api/v1/scenarios/public",
+	// Narrative Radar feed — no private user data, used by guest landing
+	// and by the Builder dashboard. Keeping it auth-gated burned smoke
+	// time for curl tests with no upside (worker output is the same for
+	// all users — there is no per-user filtering yet).
+	"/api/v1/narratives",
+}
+
+// publicPrefixes lets unauth GETs through when the path STARTS WITH one of
+// these strings AND extends past the prefix (so we don't accidentally
+// accept "/api/v1/scenarios/public/" with an empty slug — that should still
+// 401 to make the bug obvious instead of returning a confusing 404 from
+// the handler). Order is irrelevant: prefixes are mutually disjoint.
+var publicPrefixes = []string{
+	"/api/v1/scenarios/public/",
 }
 
 func isPublicPath(path string) bool {
 	for _, p := range publicPaths {
 		if path == p {
+			return true
+		}
+	}
+	for _, prefix := range publicPrefixes {
+		// HasPrefix + length check: "/api/v1/scenarios/public/abc" passes,
+		// "/api/v1/scenarios/public/" alone does not (slug missing).
+		if strings.HasPrefix(path, prefix) && len(path) > len(prefix) {
 			return true
 		}
 	}
