@@ -369,7 +369,7 @@ func handleScenariosPublicDetail(w http.ResponseWriter, r *http.Request) {
 		nodes  json.RawMessage
 		edges  json.RawMessage
 		seg    string
-		pubAt  *string
+		pubAt  *time.Time
 	)
 	err := store.Pool.QueryRow(r.Context(), `
 		SELECT id, COALESCE(author_slug, ''), name,
@@ -399,7 +399,10 @@ func handleScenariosPublicDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load scenario")
 		return
 	}
-	d.PublishedAt = pubAt
+	if pubAt != nil {
+		s := pubAt.UTC().Format(time.RFC3339)
+		d.PublishedAt = &s
+	}
 	d.Segment = seg
 	if includeGraph {
 		d.NodesJSON = nodes
