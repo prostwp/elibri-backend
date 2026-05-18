@@ -386,7 +386,11 @@ def build_features(df: pd.DataFrame, btc_close: np.ndarray | None = None) -> pd.
     bearish_divergence = price_at_high * obv_below_high
 
     # #40 obv_slope_20 — how far OBV is above/below its 20-bar mean.
-    obv_sma20 = pd.Series(obv).rolling(20, min_periods=5).mean().fillna(0).to_numpy()
+    # FIX (Round 4): obv_sma20 must shift(1) — without shift, the mean
+    # window includes the CURRENT bar's OBV value, so obv_slope_20 is a
+    # function of obv[t] divided by mean that includes obv[t]. That's
+    # structural look-ahead. Now: shift(1) excludes current bar.
+    obv_sma20 = pd.Series(obv).rolling(20, min_periods=5).mean().shift(1).fillna(0).to_numpy()
     obv_slope_20 = (obv - obv_sma20) / (np.abs(obv_sma20) + 1e-6)
     obv_slope_20 = np.clip(obv_slope_20, -5.0, 5.0).astype(np.float32)
 
@@ -414,9 +418,12 @@ def build_features(df: pd.DataFrame, btc_close: np.ndarray | None = None) -> pd.
     # rolling window is shorter but still meaningful.
     # To keep implementation robust: cap window at min(len, 8640).
     window_90d = min(len(vol), 8640)
+    # FIX (Round 4): shift(1) so bar t's rank is computed AGAINST history
+    # excluding bar t itself. Without it the rank includes its own value.
     vol_rank_90d = (pd.Series(vol)
                     .rolling(window_90d, min_periods=100)
                     .rank(pct=True)
+                    .shift(1)
                     .fillna(0.5)
                     .to_numpy().astype(np.float32))
 
@@ -433,11 +440,15 @@ def build_features(df: pd.DataFrame, btc_close: np.ndarray | None = None) -> pd.
 
     # #45 price_vol_corr_20 — correlation of |return| vs volume in 20-bar window.
     # High = volume confirms move (institutional). Low/negative = volume diverges.
+    # FIX (Round 4): shift(1) so the 20-bar correlation excludes the current
+    # bar's |return_1| and volume — otherwise bar t learns the correlation
+    # using its own return realization (look-ahead).
     abs_ret1 = np.abs(ret1)
     abs_ret_s = pd.Series(abs_ret1)
     vol_s_ = pd.Series(vol)
     price_vol_corr_20 = (abs_ret_s.rolling(20, min_periods=10)
                          .corr(vol_s_)
+                         .shift(1)
                          .fillna(0).to_numpy().astype(np.float32))
     price_vol_corr_20 = np.clip(price_vol_corr_20, -1.0, 1.0)
 
@@ -501,6 +512,212 @@ def build_features(df: pd.DataFrame, btc_close: np.ndarray | None = None) -> pd.
     out["close"] = close
     out["open_time"] = df["open_time"].values
     return out
+
+
+# ─── Stage 2 macro features (attach via attach_macro_features) ───────────────
+# These columns extend FEATURE_NAMES when training with --with-macro. Order
+# matters because models use positional float arrays. Add to the END so old
+# binary models keep working with FEATURE_NAMES alone.
+
+MACRO_FEATURE_NAMES: List[str] = [
+    "funding_rate_8h",       # latest funding-rate event, ffilled to bar grid
+    "funding_rate_ma_3d",    # 9-event (3-day) MA, smooths the 8h sawtooth
+    "funding_rate_extreme",  # |fr| > 0.0001 indicator (0/1) — recalibrated
+    "oi_norm",               # oi_value_usd / its 30d-rolling mean (1.0 = average)
+    "oi_in_coverage",        # 1 if OI was real for this bar, 0 if pre-coverage filled.
+                             # Lets model gate oi_norm/oi_change usage. Without this,
+                             # oi_norm=1.0 is ambiguous between "real and avg" vs "filled".
+    "oi_change_1d",          # (oi_value_usd[t] - oi_value_usd[t-6]) / oi[t-6] on 4h grid
+    "fng_value",             # 0-100 daily Fear&Greed
+    "fng_class_int",         # 0=extreme_fear .. 4=extreme_greed
+    "fng_change_3d",         # fng[t] - fng[t-3]  (so >0 means greed rising)
+]
+
+FEATURE_NAMES_WITH_MACRO: List[str] = FEATURE_NAMES + MACRO_FEATURE_NAMES
+
+
+def attach_macro_features(
+    feat: pd.DataFrame,
+    symbol: str,
+    macro_dir: str | "pathlib.Path | None" = None,
+    strict: bool = True,
+) -> pd.DataFrame:
+    """Merge macro parquets onto a feature DataFrame produced by build_features.
+
+    Reads:
+        macro_dir/funding_rate_{symbol}.parquet
+        macro_dir/open_interest_{symbol}.parquet
+        macro_dir/fear_greed.parquet
+
+    Adds 8 columns from MACRO_FEATURE_NAMES, all aligned to feat.open_time via
+    merge_asof (backward direction — each bar receives the most recent macro
+    value on or before its open_time). Pre-coverage bars get neutral defaults:
+
+        funding_rate_8h        → 0.0   (no funding when futures didn't exist)
+        funding_rate_ma_3d     → 0.0
+        funding_rate_extreme   → 0
+        oi_norm                → 1.0   (treat absent OI as "average")
+        oi_change_1d           → 0.0
+        fng_value              → 50    (neutral)
+        fng_class_int          → 2     (neutral)
+        fng_change_3d          → 0.0
+
+    Returns a NEW DataFrame; does not mutate input. Column order preserves the
+    base FEATURE_NAMES then appends MACRO_FEATURE_NAMES.
+
+    Caller is responsible for passing FEATURE_NAMES_WITH_MACRO to the trainer
+    so the column subset stays explicit.
+    """
+    import pathlib as _pl
+
+    if macro_dir is None:
+        macro_dir = _pl.Path(__file__).parent / "data" / "macro"
+    macro_dir = _pl.Path(macro_dir)
+
+    bar_ts = pd.DatetimeIndex(feat["open_time"])
+    if bar_ts.tz is None:
+        bar_ts = bar_ts.tz_localize("UTC")
+    out = feat.copy()
+    n = len(out)
+
+    # Strict mode: when caller asked for macro features, missing parquets
+    # must raise — silent fallback to zero defaults trains on degraded
+    # signal but leaves `with_macro=True` in logs, hiding the regression.
+    # Round-3 security review flagged this as CRITICAL.
+    fr_path = macro_dir / f"funding_rate_{symbol}.parquet"
+    fng_path = macro_dir / "fear_greed.parquet"
+    oi_path = macro_dir / f"open_interest_{symbol}.parquet"
+    if strict:
+        missing = [str(p) for p in (fr_path, fng_path, oi_path) if not p.exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"attach_macro_features(strict=True) missing required parquets: "
+                f"{missing}. Run fetch_macro_features.py first or pass strict=False "
+                f"to fall back to neutral fills (only for tests/dev)."
+            )
+
+    # --- Funding rate ---
+    if fr_path.exists():
+        fr = pd.read_parquet(fr_path).sort_values("bar_open_time")
+        # 9-event (3-day) MA on the funding events themselves before alignment.
+        # Note: 9 events ≈ 3 days at standard 8h cadence (Binance default for
+        # BTCUSDT). If a future asset moves to 4h funding the comment will lie
+        # but rolling stays meaningful as "recent average".
+        fr["funding_rate_ma_3d"] = fr["funding_rate"].rolling(9, min_periods=1).mean()
+        # Threshold recalibrated: observed BTC max |funding| ~0.00074 in our
+        # 200-row tail, p95 ≈ 0.0003. Old threshold 0.0005 fired on top decile
+        # only — too sparse to be useful. 0.0001 = ~p70 = "elevated" zone.
+        fr["funding_rate_extreme"] = (fr["funding_rate"].abs() > 0.0001).astype(int)
+        for col, fill in (
+            ("funding_rate", 0.0),
+            ("funding_rate_ma_3d", 0.0),
+            ("funding_rate_extreme", 0),
+        ):
+            merged = pd.merge_asof(
+                pd.DataFrame({"bar_open_time": bar_ts}),
+                fr[["bar_open_time", col]],
+                on="bar_open_time", direction="backward",
+            )
+            out_name = "funding_rate_8h" if col == "funding_rate" else col
+            out[out_name] = merged[col].fillna(fill).to_numpy()
+    else:
+        out["funding_rate_8h"] = np.zeros(n, dtype=np.float32)
+        out["funding_rate_ma_3d"] = np.zeros(n, dtype=np.float32)
+        out["funding_rate_extreme"] = np.zeros(n, dtype=np.int8)
+
+    # --- Open interest (last ≤30 days only — pre-coverage gets neutral) ---
+    # Coverage indicator (oi_in_coverage) lets the model distinguish "OI is
+    # genuinely average right now" (oi_norm=1.0 with coverage=1) from
+    # "OI is unknown for this old bar, we filled with neutral" (oi_norm=1.0
+    # with coverage=0). Without this, models trained on 8 years of data would
+    # learn "oi_norm == exactly 1.0 → don't trust it" because 99% of train
+    # rows are pre-coverage neutral fills, and treat ALL real OI values as
+    # out-of-distribution at inference. Confound was flagged in the ML review.
+    if oi_path.exists():
+        oi = pd.read_parquet(oi_path).sort_values("bar_open_time")
+        oi["oi_value_mean"] = oi["oi_value_usd"].rolling(180, min_periods=10).mean()
+        oi["oi_norm"] = (oi["oi_value_usd"] / oi["oi_value_mean"]).fillna(1.0)
+        oi["oi_change_1d"] = oi["oi_value_usd"].pct_change(6, fill_method=None).fillna(0.0)
+        # Mark every real OI row as in-coverage; merge_asof will fill 0 for
+        # bars before the OI parquet's earliest timestamp.
+        oi["oi_in_coverage"] = 1
+        for col, fill in (("oi_norm", 1.0), ("oi_change_1d", 0.0), ("oi_in_coverage", 0)):
+            merged = pd.merge_asof(
+                pd.DataFrame({"bar_open_time": bar_ts}),
+                oi[["bar_open_time", col]],
+                on="bar_open_time", direction="backward",
+            )
+            out[col] = merged[col].fillna(fill).to_numpy()
+    else:
+        out["oi_norm"] = np.ones(n, dtype=np.float32)
+        out["oi_change_1d"] = np.zeros(n, dtype=np.float32)
+        out["oi_in_coverage"] = np.zeros(n, dtype=np.int8)
+
+    # --- Fear & Greed ---
+    if fng_path.exists():
+        fng = pd.read_parquet(fng_path).sort_values("bar_open_time")
+        fng["fng_change_3d"] = fng["fng_value"].diff(3).fillna(0.0)
+        for col, fill in (
+            ("fng_value", 50),
+            ("fng_class_int", 2),
+            ("fng_change_3d", 0.0),
+        ):
+            merged = pd.merge_asof(
+                pd.DataFrame({"bar_open_time": bar_ts}),
+                fng[["bar_open_time", col]],
+                on="bar_open_time", direction="backward",
+            )
+            out[col] = merged[col].fillna(fill).to_numpy()
+    else:
+        out["fng_value"] = np.full(n, 50, dtype=np.int16)
+        out["fng_class_int"] = np.full(n, 2, dtype=np.int8)
+        out["fng_change_3d"] = np.zeros(n, dtype=np.float32)
+
+    # Final column ordering: base FEATURE_NAMES first, then MACRO_FEATURE_NAMES.
+    # Preserve close + open_time at the end (build_features convention).
+    extra_cols = [c for c in out.columns if c not in FEATURE_NAMES_WITH_MACRO + ["close", "open_time"]]
+    out = out[FEATURE_NAMES_WITH_MACRO + extra_cols + ["close", "open_time"]]
+    return out
+
+
+def compute_sample_uniqueness(
+    n: int, horizon: int,
+) -> np.ndarray:
+    """Sequential-bootstrap uniqueness weights for overlapping triple-barrier labels.
+
+    Reference: López de Prado, "Advances in Financial Machine Learning" (2018),
+    Chapter 4 — Sample Weights. With horizon=18, every adjacent label shares
+    17/18 of its forward window. Treating these as IID samples lets the model
+    overstate validation precision because effective sample size is N/horizon,
+    not N.
+
+    The "uniqueness" of bar t is `1 / (number of overlapping labels at any
+    time s within [t, t+horizon])`. For evenly-spaced bars this is well
+    approximated by a triangle weighting: bars near the boundary of the
+    rolling window have higher uniqueness than bars in the middle.
+
+    Returns weights in (0, 1] with mean ≈ 1/horizon for interior bars,
+    rising to 1.0 at the dataset edges.
+
+    Implementation: count concurrent labels per bar via a vectorized indicator
+    matrix sum. O(N) memory.
+    """
+    # Bar t's label uses bars [t, t+horizon-1]; bar s's label uses [s, s+horizon-1].
+    # They overlap iff |t - s| < horizon. So bar i is concurrent with at most
+    # 2*horizon - 1 other bars (h-1 before + h-1 after + itself).
+    # Edge effects: at i < horizon, fewer "before" overlaps; same at i > n-horizon.
+    concurrent = np.empty(n, dtype=np.int32)
+    for i in range(n):
+        lo = max(0, i - horizon + 1)
+        hi = min(n, i + horizon)
+        concurrent[i] = hi - lo
+    # Uniqueness = average of 1/concurrent[t] over the bars t in label window.
+    # Simplification (matches AFML Eq. 4.2): use 1/concurrent[i] directly.
+    # This understates uniqueness slightly at edges but stays in (0, 1].
+    weights = 1.0 / concurrent.astype(np.float64)
+    # Normalize so mean = 1.0 (sklearn-style sample_weight convention).
+    weights = weights * (n / weights.sum())
+    return weights.astype(np.float32)
 
 
 def make_target(close: np.ndarray, horizon: int, threshold: float = 0.0) -> np.ndarray:

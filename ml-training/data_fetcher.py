@@ -36,7 +36,18 @@ TOP_PAIRS = [
 ]
 
 
+_SYMBOL_RE = __import__("re").compile(r"^[A-Z0-9]{2,12}$")
+_INTERVAL_RE = __import__("re").compile(r"^[0-9]+[smhdw]$")
+
+
 def _cache_path(symbol: str, interval: str) -> Path:
+    # Defense-in-depth path-traversal guard: even when callers do their own
+    # validation, _cache_path is the single chokepoint that converts
+    # user-controlled strings to filesystem paths.
+    if not _SYMBOL_RE.fullmatch(symbol):
+        raise ValueError(f"invalid symbol {symbol!r}; must match {_SYMBOL_RE.pattern}")
+    if not _INTERVAL_RE.fullmatch(interval):
+        raise ValueError(f"invalid interval {interval!r}; must match {_INTERVAL_RE.pattern}")
     return DATA_DIR / f"{symbol}_{interval}.parquet"
 
 
@@ -100,16 +111,50 @@ def fetch_klines(symbol: str, interval: str, start_ms: int, end_ms: int) -> pd.D
     return df[["open_time", "open", "high", "low", "close", "volume", "taker_buy_base", "num_trades"]]
 
 
+def _validate_ohlcv(df: pd.DataFrame, label: str) -> None:
+    """Defensive checks on a freshly-loaded OHLCV DataFrame.
+
+    Catches the corruption modes flagged in Round-3 security review:
+    duplicate or out-of-order timestamps, NaN/zero prices, negative volumes,
+    high < low, future-dated rows (clock skew).
+    Raises with a specific message on any violation; does not "fix" silently.
+    """
+    if len(df) == 0:
+        return  # empty handled by caller
+    if df["open_time"].duplicated().any():
+        n = int(df["open_time"].duplicated().sum())
+        raise ValueError(f"{label}: {n} duplicate open_time rows")
+    if not df["open_time"].is_monotonic_increasing:
+        raise ValueError(f"{label}: open_time not monotonically increasing")
+    if not (df[["open", "high", "low", "close"]] > 0).all().all():
+        raise ValueError(f"{label}: non-positive OHLC values")
+    if not df["high"].ge(df["low"]).all():
+        raise ValueError(f"{label}: high < low on some bars")
+    if (df["volume"] < 0).any():
+        n = int((df["volume"] < 0).sum())
+        raise ValueError(f"{label}: {n} negative volume rows")
+    now_utc = pd.Timestamp.now(tz="UTC")
+    if (df["open_time"] > now_utc + pd.Timedelta(minutes=5)).any():
+        raise ValueError(f"{label}: future-dated rows (clock skew or feed bug)")
+
+
 def fetch_or_cache(symbol: str, interval: str, years: float = 2.0, force: bool = False) -> pd.DataFrame:
     p = _cache_path(symbol, interval)
     if p.exists() and not force:
-        return pd.read_parquet(p)
+        df = pd.read_parquet(p)
+        _validate_ohlcv(df, f"cached {p.name}")
+        return df
 
     end = datetime.now(tz=timezone.utc)
     start = end.timestamp() - years * 365 * 24 * 3600
     df = fetch_klines(symbol, interval, int(start * 1000), int(end.timestamp() * 1000))
     if len(df) > 0:
-        df.to_parquet(p, index=False)
+        _validate_ohlcv(df, f"freshly-fetched {symbol}_{interval}")
+        # Atomic write: tmp file + rename so a crash mid-write doesn't leave
+        # a half-baked parquet that subsequent reads silently use.
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        df.to_parquet(tmp, index=False)
+        tmp.replace(p)  # atomic on POSIX
     return df
 
 

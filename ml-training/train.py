@@ -64,11 +64,15 @@ HORIZON_MAP = {
 # 1d has only ~2400 train rows vs ~840k on 5m → needs shallower trees, fewer
 # estimators to avoid overfit. Also longer horizons benefit from wider barriers.
 TF_CONFIG = {
-    "5m":  {"horizon": 12, "tb_upper": 2.5, "tb_lower": 1.5, "n_est": 200, "xgb_depth": 5},
-    "15m": {"horizon": 16, "tb_upper": 2.5, "tb_lower": 1.5, "n_est": 200, "xgb_depth": 5},
-    "1h":  {"horizon": 24, "tb_upper": 1.5, "tb_lower": 1.0, "n_est": 200, "xgb_depth": 5},
-    "4h":  {"horizon": 18, "tb_upper": 1.5, "tb_lower": 1.0, "n_est": 200, "xgb_depth": 5},
-    "1d":  {"horizon":  5, "tb_upper": 2.5, "tb_lower": 1.8, "n_est": 100, "xgb_depth": 3},
+    # 2026-04-27: barriers made symmetric to match train_autogluon.py.
+    # Legacy asymmetric values (1.5/1.0 etc) baked a structural prior into the
+    # labels that produced the 100%-short-bias collapse seen in B-session.
+    # Old values preserved in DEVLOG / git history for reproducibility audits.
+    "5m":  {"horizon": 12, "tb_upper": 2.0, "tb_lower": 2.0, "n_est": 200, "xgb_depth": 5},
+    "15m": {"horizon": 16, "tb_upper": 2.0, "tb_lower": 2.0, "n_est": 200, "xgb_depth": 5},
+    "1h":  {"horizon": 24, "tb_upper": 1.5, "tb_lower": 1.5, "n_est": 200, "xgb_depth": 5},
+    "4h":  {"horizon": 18, "tb_upper": 1.5, "tb_lower": 1.5, "n_est": 200, "xgb_depth": 5},
+    "1d":  {"horizon":  5, "tb_upper": 2.2, "tb_lower": 2.2, "n_est": 100, "xgb_depth": 3},
 }
 
 
@@ -156,8 +160,8 @@ def compute_sharpe(y_true: np.ndarray, y_pred_proba: np.ndarray,
         "15m": 365 * 24 * 4,    # 35,040
         "1h":  365 * 24,        # 8,760
         "4h":  365 * 6,         # 2,190
-        "1d":  252,             # trading days
-    }.get(interval, 252)
+        "1d":  365,             # crypto trades 24/7 — equity 252 was wrong
+    }.get(interval, 365)
     return float(np.sqrt(bars_per_year) * strategy_ret.mean() / strategy_ret.std())
 
 
@@ -647,8 +651,8 @@ def compute_sharpe_3class(
         return 0.0
     bars_per_year = {
         "5m": 365 * 24 * 12, "15m": 365 * 24 * 4, "1h": 365 * 24,
-        "4h": 365 * 6, "1d": 252,
-    }.get(interval, 252)
+        "4h": 365 * 6, "1d": 365,  # crypto 24/7
+    }.get(interval, 365)
     return float(np.sqrt(bars_per_year) * strategy_ret.mean() / strategy_ret.std())
 
 

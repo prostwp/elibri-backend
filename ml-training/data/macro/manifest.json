@@ -1,0 +1,39 @@
+{
+  "start": "2018-01-01T00:00:00+00:00",
+  "end": "2026-04-26T20:00:00+00:00",
+  "fetched_at": "2026-04-26T20:58:01.671413+00:00",
+  "results": {
+    "funding_rate_BTCUSDT": {
+      "rows": 7262,
+      "first": "2019-09-10 08:00:00+00:00",
+      "last": "2026-04-26 16:00:00.004000+00:00"
+    },
+    "funding_rate_ETHUSDT": {
+      "rows": 7028,
+      "first": "2019-11-27 08:00:00+00:00",
+      "last": "2026-04-26 16:00:00.004000+00:00"
+    },
+    "open_interest_BTCUSDT": {
+      "rows": 180,
+      "limitation": "Binance free API caps OI history to ~30 days. Pre-coverage bars get 0 in alignment.",
+      "first": "2026-03-28 00:00:00+00:00",
+      "last": "2026-04-26 20:00:00+00:00"
+    },
+    "open_interest_ETHUSDT": {
+      "rows": 180,
+      "limitation": "Binance free API caps OI history to ~30 days.",
+      "first": "2026-03-28 00:00:00+00:00",
+      "last": "2026-04-26 20:00:00+00:00"
+    },
+    "fear_greed": {
+      "rows": 3003,
+      "first": "2018-02-01 00:00:00+00:00",
+      "last": "2026-04-26 00:00:00+00:00"
+    },
+    "btc_dominance": {
+      "rows": 1,
+      "limitation": "CoinGecko free tier only exposes current snapshot. Historical BTC.D needs paid CMC/CG-Pro. Treated as constant in training; effectively zero contribution.",
+      "current_value": 58.13111370909875
+    }
+  }
+}

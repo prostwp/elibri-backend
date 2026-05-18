@@ -7,3 +7,9 @@ python-binance>=1.0.19
 requests>=2.31.0
 joblib>=1.3.0
 pyarrow>=14.0.0
+# Stage 2 ML — AutoGluon for the 3-class TabularPredictor + multi-agent fusion.
+# autogluon.tabular pulls XGB/LGBM/CatBoost/sklearn extras itself. ~2-3 GB total.
+# We don't pin: 1.1.x has no Python 3.12 wheels, and vast.ai PyTorch images ship
+# Python 3.12 by default. Letting pip pick latest avoids the empty-wheels
+# regression. Train_autogluon's API surface is stable across 1.x.
+autogluon.tabular[all]>=1.2,<2.0
