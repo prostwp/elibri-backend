@@ -21,6 +21,7 @@ import (
 	"github.com/prostwp/elibri-backend/internal/scenario"
 	"github.com/prostwp/elibri-backend/internal/store"
 	"github.com/prostwp/elibri-backend/internal/telegram"
+	"github.com/prostwp/elibri-backend/internal/whale"
 )
 
 func main() {
@@ -140,6 +141,21 @@ func main() {
 		}
 		api.SetIdeaGenerator(ideaGen)
 
+		// MarketMoodReader: same key as the idea generator — Haiku when
+		// ANTHROPIC_API_KEY is set, StaticMoodReader (returns "") otherwise.
+		var moodReader narrative.MarketMoodReader
+		if apiKey != "" {
+			moodReader = &narrative.HaikuMoodReader{
+				APIKey: apiKey,
+				HTTP:   &http.Client{Timeout: 15 * time.Second},
+			}
+			log.Println("Crypto Sentiment: using Claude Haiku for market mood read")
+		} else {
+			moodReader = narrative.StaticMoodReader{}
+			log.Println("Crypto Sentiment: ANTHROPIC_API_KEY empty — market mood read disabled")
+		}
+		api.SetMoodReader(moodReader)
+
 		narrWorker := &narrative.Worker{
 			Store:           narrStore,
 			Classifier:      classifier,
@@ -157,8 +173,52 @@ func main() {
 			}
 		}()
 		log.Println("Narrative Radar worker started (refresh every 10 min)")
+
+		// Whale Flow worker — pulls large transfers on/off exchanges from free
+		// on-chain sources, scores netflow/direction, writes whale_snapshots.
+		// Source selection by ETHERSCAN_API_KEY:
+		//   key present → EtherscanSource (ETH + stablecoins) as primary, with
+		//                 MempoolSource (BTC live feed) as an ExtraSource.
+		//   key absent  → MempoolSource only (BTC live feed; ETH netflow empty,
+		//                 frontend shows the honest sample/partial badge).
+		whaleStore := whale.NewStore(store.Pool)
+		var whaleSource whale.WhaleFlowSource
+		var whaleExtras []whale.WhaleFlowSource
+		etherscanKey := os.Getenv("ETHERSCAN_API_KEY")
+		if etherscanKey != "" {
+			whaleSource = whale.NewEtherscanSource(
+				etherscanKey,
+				&http.Client{Timeout: 10 * time.Second},
+				whale.NewStaticRegistry(),
+			)
+			whaleExtras = []whale.WhaleFlowSource{
+				whale.NewMempoolSource(&http.Client{Timeout: 10 * time.Second}),
+			}
+			log.Println("Whale Flow: using Etherscan (ETH + stablecoins) + Mempool (BTC)")
+		} else {
+			whaleSource = whale.NewMempoolSource(&http.Client{Timeout: 10 * time.Second})
+			log.Println("Whale Flow: ETHERSCAN_API_KEY empty — BTC live feed only (Mempool)")
+		}
+		whaleWorker := &whale.Worker{
+			Store:           whaleStore,
+			Source:          whaleSource,
+			ExtraSources:    whaleExtras,
+			RefreshInterval: 10 * time.Minute,
+			// Logger nil → uses log.Default() (stdout/stderr).
+		}
+		go func() {
+			// Tolerate both Canceled (SIGTERM via signal.NotifyContext) and
+			// DeadlineExceeded — both are clean exits, not bugs.
+			if err := whaleWorker.Run(ctx); err != nil &&
+				!errors.Is(err, context.Canceled) &&
+				!errors.Is(err, context.DeadlineExceeded) {
+				log.Printf("whale flow worker exited: %v", err)
+			}
+		}()
+		log.Println("Whale Flow worker started (refresh every 10 min)")
 	} else {
 		log.Println("Narrative Radar worker skipped (no Postgres pool)")
+		log.Println("Whale Flow worker skipped (no Postgres pool)")
 	}
 
 	// Scenario runner — polls active strategies, emits alerts.

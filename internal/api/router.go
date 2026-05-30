@@ -12,6 +12,7 @@ import (
 	"github.com/prostwp/elibri-backend/internal/ml"
 	"github.com/prostwp/elibri-backend/internal/narrative"
 	"github.com/prostwp/elibri-backend/internal/store"
+	"github.com/prostwp/elibri-backend/internal/whale"
 	"github.com/prostwp/elibri-backend/internal/ws"
 )
 
@@ -72,6 +73,16 @@ func NewRouter(cfg *config.Config) http.Handler {
 	mux.HandleFunc("GET /api/v1/market/candles", handleMarketCandlesReal)
 	mux.HandleFunc("GET /api/v1/market/quotes", handleMarketQuotesReal)
 	mux.HandleFunc("GET /api/v1/market/fundamentals", handleMarketFundamentals)
+	// Public: server-side proxy + cache for CMC Fear & Greed (CMC blocks
+	// browser CORS). Allowlisted in internal/auth/jwt.go publicPaths.
+	mux.HandleFunc("GET /api/v1/market/fear-greed", handleMarketFearGreed)
+	// Public: relative-strength (7d/30d vs BTC) + volume trend for the
+	// Crypto Sentiment liquidity panel. Allowlisted in jwt.go publicPaths.
+	mux.HandleFunc("GET /api/v1/market/momentum", handleMarketMomentum)
+	// Public: AlphaVizor AI 2-3 sentence market-mood paragraph (Claude Haiku,
+	// safe-AI filtered). Returns {"read":"...","source":"alphavizor-ai"}.
+	// Allowlisted in internal/auth/jwt.go publicPaths.
+	mux.HandleFunc("GET /api/v1/market/mood-read", handleMarketMoodRead(narrative.NewStore(store.Pool)))
 
 	// ML (real)
 	mux.HandleFunc("POST /api/v1/ml/predict", handleMLPredictV2)
@@ -99,6 +110,24 @@ func NewRouter(cfg *config.Config) http.Handler {
 	// narrative_snapshots regardless of whether the worker has run yet
 	// (returns an empty list with captured_at="" before the first tick).
 	mux.HandleFunc("GET /api/v1/narratives", handleNarrativesList(narrative.NewStore(store.Pool)))
+	// Per-narrative clickable article refs (Narrative Radar UI source chips).
+	// Public — same tier as /api/v1/narratives. Slug is read via PathValue
+	// (net/http pattern matcher decodes %-escapes automatically).
+	mux.HandleFunc("GET /api/v1/narratives/{slug}/mentions", handleNarrativeMentions(narrative.NewStore(store.Pool)))
+
+	// Whale Flow — latest snapshot per asset + live transfer feed. Worker is
+	// launched separately in cmd/server/main.go; this route reads from
+	// whale_snapshots / whale_transfers regardless of whether the worker has
+	// run yet (returns empty flows/transfers with captured_at="" before the
+	// first tick). Public — allowlisted in internal/auth/jwt.go publicPaths.
+	mux.HandleFunc("GET /api/v1/whale-flow", handleWhaleFlowList(whale.NewStore(store.Pool)))
+
+	// Public agent output (MVP-mock). Returns the canonical "what does this
+	// agent emit" JSON for the catalog detail page's Live Output Preview.
+	// Slug is the agent's public id (e.g. "narrative_radar"); 404 if unknown.
+	// Auth-free: the publicPrefixes whitelist in internal/auth/jwt.go lets
+	// /api/v1/agents/ through without a Bearer token.
+	mux.HandleFunc("GET /api/v1/agents/{slug}/output", serveAgentOutput)
 
 	// Middleware chain: CORS → Auth (JWT)
 	var handler http.Handler = mux

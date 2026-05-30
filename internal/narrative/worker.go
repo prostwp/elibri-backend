@@ -422,7 +422,12 @@ func (w *Worker) refreshOneSnapshot(ctx context.Context, slug string, now, since
 		Confidence:          confidence,
 		RelatedAssets:       topTick,
 		SourcesBreakdown:    breakdown,
-		Reasons:             buildReasons(count24, growth, sourceDiv, meanSent, sentLabel, stage),
+		// IsNewTheme: countPrev==0 + count24>0 is the exact condition
+		// ComputeGrowthPct uses to return the +999 sentinel. We mirror
+		// the same predicate here so the boolean and the sentinel can
+		// never disagree.
+		IsNewTheme: countPrev == 0 && count24 > 0,
+		Reasons:    buildReasons(count24, countPrev, growth, sourceDiv, meanSent, sentLabel, stage),
 	}
 	return w.Store.UpsertSnapshot(ctx, snap)
 }
@@ -524,18 +529,35 @@ func sentimentMeanStdDev(mentions []Mention) (float64, float64) {
 }
 
 // buildReasons assembles short bullet phrases for the radar UI. Order is
-// (volume → growth → diversity → sentiment) matching how a trader scans the
-// row. Phrases are deliberately terse and use plain ASCII for the "↑/↓"
-// indicators so a user's terminal/copy-paste doesn't mangle them.
-func buildReasons(mentions24h int, growthPct float64, sourceDiv int, meanSent float64, sentLabel SentimentLabel, stage Stage) []string {
+// (growth → diversity → sentiment → stage) matching how a reader scans
+// the row.
+//
+// Sentinel-value guards added in Phase 2 (May 2026) to suppress
+// meaningless / misleading bullets:
+//
+//  1. When mentions24hPrev == 0 we DO NOT emit a "Mentions up X%" line.
+//     growth_pct is the +999 sentinel in that case, which would render as
+//     "Mentions up 999% vs prior 24h" — technically true, but useless
+//     and tabloid-y. We emit the dedicated "New narrative this cycle"
+//     line instead (when count24>0) so the row still has narrative
+//     framing.
+//  2. When meanSent is exactly ±1.00 (treated as "no real sentiment data
+//     — a single max-score mention skewing the mean") we DO NOT emit
+//     the sentiment bullet. ±1.00 from real-world VADER aggregation is
+//     so rare that suppressing both ends gives a cleaner UI than
+//     letting a thin-signal extreme dominate.
+func buildReasons(mentions24h, mentions24hPrev int, growthPct float64, sourceDiv int, meanSent float64, sentLabel SentimentLabel, stage Stage) []string {
 	out := make([]string, 0, 4)
 
 	// Growth bullet — only if the change is meaningful (≥10% in either
-	// direction) AND the prior period had data. Fresh narratives (the
-	// growthInfinite path) get a dedicated phrase rather than an arrow.
+	// direction) AND the prior period had data. Fresh narratives (prev==0)
+	// get a dedicated phrase rather than the meaningless +999% number.
 	switch {
-	case growthPct >= 999.0 && mentions24h > 0:
-		out = append(out, "New narrative this cycle")
+	case mentions24hPrev == 0:
+		if mentions24h > 0 {
+			out = append(out, "New narrative this cycle")
+		}
+		// mentions24hPrev==0 && mentions24h==0 → no bullet at all (silent).
 	case growthPct >= 10:
 		out = append(out, fmt.Sprintf("Mentions up %.0f%% vs prior 24h", growthPct))
 	case growthPct <= -10:
@@ -553,9 +575,12 @@ func buildReasons(mentions24h int, growthPct float64, sourceDiv int, meanSent fl
 		out = append(out, fmt.Sprintf("%d sources reporting", sourceDiv))
 	}
 
-	// Sentiment — only call it out when not neutral (neutral is the default
-	// expectation, no need to repeat it in the UI).
-	if sentLabel != SentNeutral {
+	// Sentiment — only call it out when (a) it's not neutral and (b) the
+	// score isn't the ±1.00 sentinel that signals "no real distribution".
+	// Neutral is the default expectation; ±1.00 typically means thin data
+	// (one or two mentions hitting VADER's saturation), and both should
+	// be silent in the UI.
+	if sentLabel != SentNeutral && meanSent != 1.0 && meanSent != -1.0 {
 		direction := "bullish"
 		if sentLabel == SentBear {
 			direction = "bearish"

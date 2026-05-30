@@ -28,31 +28,41 @@ type TickerQuote struct {
 	ChangePct float64
 }
 
-// IdeaGenerator produces a one-paragraph trading-idea text for the top
-// narrative, given the snapshot context + (optionally) the related-asset
+// IdeaGenerator produces a one-paragraph narrative-commentary text for the
+// top narrative, given the snapshot context + (optionally) the related-asset
 // price snapshots. Implementations:
 //
-//   - HaikuIdeaGenerator: Anthropic Messages API call (production).
-//   - StaticIdeaGenerator: returns a hardcoded watchlist line (no-key
-//     environments / tests / Anthropic outage fallback in callers).
+//   - HaikuIdeaGenerator: AlphaVizor AI engine (production) — backend-only
+//     name for the upstream is HaikuIdeaGenerator, public-facing name is
+//     AlphaVizor AI.
+//   - StaticIdeaGenerator: returns a neutral observational placeholder
+//     (no-key environments / tests / upstream outage fallback in callers).
 //
 // Callers SHOULD treat any non-nil error as "use the empty-string fallback"
-// — the frontend already renders a default "Add to watchlist…" line when
-// the field is empty, so a Haiku outage degrades gracefully.
+// — the frontend already renders its own neutral placeholder when the
+// field is empty, so an upstream outage degrades gracefully. As of Phase
+// 2 (May 2026), an empty string is ALSO emitted by the production path
+// when the upstream response trips the bannedIdeaPattern blacklist — see
+// idea_haiku.go for the regex contract.
 type IdeaGenerator interface {
 	GenerateIdea(ctx context.Context, narrativeSlug string, snapshot Snapshot, prices []TickerQuote) (string, error)
 }
 
 // StaticIdeaGenerator is the no-key / no-LLM fallback. Returns a fixed
-// English watchlist line — same string the frontend uses as its empty-state
-// default, so plugging this in keeps the Dashboard visually stable when the
-// LLM is unavailable. Safe for concurrent use (no state).
+// English line — same string the frontend uses as its empty-state default,
+// so plugging this in keeps the Dashboard visually stable when the
+// upstream is unavailable. Safe for concurrent use (no state).
 type StaticIdeaGenerator struct{}
 
-// staticIdeaText is the one canonical fallback string. Kept in one place so
-// frontend and backend defaults can't drift apart. If you change this, also
-// update the JSX fallback in NarrativeDashboardNode.tsx.
-const staticIdeaText = "Add to watchlist, wait for confirmation on volume"
+// staticIdeaText is the one canonical fallback string. It is intentionally
+// NEUTRAL and OBSERVATIONAL — no trader vocabulary, no implied action.
+// The prior phrasing ("Add to watchlist, wait for confirmation on volume")
+// was flagged as still leaning into trader-language ("wait for
+// confirmation on volume"), which violates the DoD #11 ban on trade-
+// directive copy. Kept in one place so frontend and backend defaults
+// can't drift apart — if you change this, also update the JSX fallback
+// in NarrativeDashboardNode.tsx.
+const staticIdeaText = "Tracking — source breadth and sentiment evolving."
 
 // GenerateIdea implements IdeaGenerator. Always returns staticIdeaText, nil.
 // The narrative + snapshot + prices arguments are ignored on purpose — the

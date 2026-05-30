@@ -145,6 +145,82 @@ func (s *Store) MentionsSince(ctx context.Context, narrative string, since time.
 	return out, nil
 }
 
+// MentionsByNarrative returns up to `limit` recent click-target mentions for
+// one narrative, posted at or after `since`, sorted by posted_at DESC.
+// Designed for the public GET /api/v1/narratives/:slug/mentions endpoint —
+// returns a slim MentionRef (title/url/source/posted_at/importance_score)
+// rather than the full Mention so the on-wire payload stays small.
+//
+// Filter rationale:
+//   - We use a WHERE on minImportance (with `IS NULL OR ... >= ...`) so rows
+//     that haven't been classified yet (importance_score IS NULL) STILL show
+//     up. This is a deliberate fallback for fresh ingests — a brand-new
+//     mention shouldn't be invisible just because the importance worker
+//     hasn't run yet. Callers passing minImportance<=0 disable the filter
+//     entirely (return all rows in the window).
+//
+// Limit is clamped to [1, 100] by the caller; we don't re-clamp here.
+func (s *Store) MentionsByNarrative(ctx context.Context, narrative string, since time.Time, limit int, minImportance int) ([]MentionRef, error) {
+	if s == nil || s.Pool == nil {
+		return nil, errors.New("narrative.Store: nil pool")
+	}
+	if limit <= 0 {
+		return []MentionRef{}, nil
+	}
+
+	// Two paths: with vs. without importance filter. Keeping the SQL literal
+	// (rather than building a string) so the planner sees identical query
+	// shapes between calls — the indexes on (narrative, posted_at) get reused.
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if minImportance > 0 {
+		rows, err = s.Pool.Query(ctx, `
+			SELECT title, url, source, posted_at, importance_score
+			FROM narrative_mentions
+			WHERE narrative = $1
+			  AND posted_at >= $2
+			  AND (importance_score IS NULL OR importance_score >= $3)
+			ORDER BY posted_at DESC
+			LIMIT $4
+		`, narrative, since, minImportance, limit)
+	} else {
+		rows, err = s.Pool.Query(ctx, `
+			SELECT title, url, source, posted_at, importance_score
+			FROM narrative_mentions
+			WHERE narrative = $1
+			  AND posted_at >= $2
+			ORDER BY posted_at DESC
+			LIMIT $3
+		`, narrative, since, limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("MentionsByNarrative: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]MentionRef, 0, limit)
+	for rows.Next() {
+		var m MentionRef
+		// importance_score is SMALLINT NULL — scan into *int16 so NULL stays
+		// NULL, then promote to *int for the JSON contract.
+		var imp *int16
+		if err := rows.Scan(&m.Title, &m.URL, &m.Source, &m.PostedAt, &imp); err != nil {
+			return nil, fmt.Errorf("MentionsByNarrative: scan: %w", err)
+		}
+		if imp != nil {
+			v := int(*imp)
+			m.ImportanceScore = &v
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("MentionsByNarrative: rows: %w", err)
+	}
+	return out, nil
+}
+
 // SourceBreakdown returns map[source]count for one narrative in [since, until).
 // Used by the worker to (a) populate sources_breakdown JSONB and (b) compute
 // source diversity (= len(map)). Returns an empty (non-nil) map when there

@@ -137,6 +137,19 @@ var publicPaths = []string{
 	// time for curl tests with no upside (worker output is the same for
 	// all users — there is no per-user filtering yet).
 	"/api/v1/narratives",
+	// Fear & Greed proxy — no per-user data; guest landing reads it. Server
+	// proxies CMC because CMC blocks browser CORS.
+	"/api/v1/market/fear-greed",
+	// Relative-strength + volume trend for the Crypto Sentiment liquidity
+	// panel. No per-user data; same public tier as the F&G proxy.
+	"/api/v1/market/momentum",
+	// AlphaVizor AI market-mood read — no per-user data; same public tier
+	// as F&G and momentum. Frontend hides the block when "read" is empty.
+	"/api/v1/market/mood-read",
+	// Whale Flow feed — latest snapshot per asset + live transfer feed. No
+	// per-user data; same public tier as the Narrative Radar feed. Used by
+	// the scenario detail page and guest landing.
+	"/api/v1/whale-flow",
 }
 
 // publicPrefixes lets unauth GETs through when the path STARTS WITH one of
@@ -146,6 +159,11 @@ var publicPaths = []string{
 // the handler). Order is irrelevant: prefixes are mutually disjoint.
 var publicPrefixes = []string{
 	"/api/v1/scenarios/public/",
+	"/api/v1/agents/",
+	// Per-narrative click-target endpoint (.../narratives/{slug}/mentions).
+	// Same public tier as /api/v1/narratives itself — no per-user data,
+	// just article references for the Radar UI's source chips.
+	"/api/v1/narratives/",
 }
 
 func isPublicPath(path string) bool {

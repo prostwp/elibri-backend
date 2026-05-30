@@ -49,14 +49,22 @@ var validThemes = map[string]struct{}{
 	"oil_gas":     {},
 	"crypto":      {},
 	"multi":       {},
+	"casino":      {},
+	"betting":     {},
 }
 
 var validStyles = map[string]struct{}{
-	"news":        {},
-	"fundamental": {},
 	"technical":   {},
-	"astro":       {},
+	"news":        {},
 	"levels":      {},
+	"derivatives": {},
+	"discovery":   {},
+	"macro":       {},
+	"onchain":     {},
+	"sentiment":   {},
+	// Kept for legacy compatibility — no rows in DB use these as of v1.0.
+	"fundamental": {},
+	"astro":       {},
 }
 
 func isValidTheme(s string) bool { _, ok := validThemes[s]; return ok }

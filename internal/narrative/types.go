@@ -93,4 +93,26 @@ type Snapshot struct {
 	RelatedAssets    []string       `json:"related_assets"`
 	SourcesBreakdown map[string]int `json:"sources_breakdown"`
 	Reasons          []string       `json:"reasons"`
+	// IsNewTheme is true when this is the first 24h window the narrative
+	// has any mentions in (mention_count_prev_24h == 0 && mention_count_24h > 0).
+	// In that case growth_pct is set to the +999 sentinel by ComputeGrowthPct
+	// — which is an unambiguous "new theme" marker on the wire but a
+	// nonsense number for a UI badge. Frontend should prefer this boolean
+	// when deciding whether to render a "New" pill rather than parsing
+	// growth_pct >= 999 (which couples the UI to a magic constant).
+	IsNewTheme bool `json:"is_new_theme"`
+}
+
+// MentionRef is the JSON-facing, click-target shape returned by
+// GET /api/v1/narratives/:slug/mentions. Distinct from Mention so the API
+// surface stays minimal (no sentiment / tickers / source-typing leaking into
+// the public endpoint) and so we can include ImportanceScore as a *int
+// (NULL-tolerant — unscored articles return null, not zero, so the frontend
+// can distinguish "we didn't score it" from "we scored it as very low").
+type MentionRef struct {
+	Title           string    `json:"title"`
+	URL             string    `json:"url"`
+	Source          string    `json:"source"`
+	PostedAt        time.Time `json:"posted_at"`
+	ImportanceScore *int      `json:"importance_score"` // nullable: pre-classification rows return null
 }

@@ -1,20 +1,27 @@
 package narrative
 
-// idea_haiku.go — Anthropic Messages API client for the IdeaGenerator.
+// idea_haiku.go — backend client for the AlphaVizor AI commentary engine.
 // Mirrors importance_haiku.go's transport pattern (same retry policy, same
 // header set) but ships a different system+user prompt and parses the
-// response as RAW TEXT (not JSON). Anthropic returns content[0].text
+// response as RAW TEXT (not JSON). Upstream returns content[0].text
 // directly, so for a free-form English paragraph there's no inner unwrap to
-// do — the LLM's reply is the answer.
+// do — the model's reply is the answer.
 //
-// Phase 1 (May 2026): system prompt was switched from Russian to English.
-// The site is EN-only (per UI English-Only rule), and the user-side prompt
-// still ships some Russian context (snapshot.Reasons can be either lang),
-// so the system prompt now repeats the "Reply in English ONLY" instruction
-// twice — once in the role description, once at the end — to override the
-// LLM's tendency to mirror the user message's language.
+// Phase 1 (May 2026): system prompt switched from Russian to English (EN-
+// only UI rule).
+// Phase 2 (May 2026): output is now neutral NARRATIVE commentary — no
+// prices, no support/resistance, no trade directives. The prompt is
+// explicit about banned vocabulary, AND we additionally pass the
+// returned text through bannedIdeaPattern (a regex blacklist) so a
+// model that disobeys the prompt still can't ship a banned phrase to
+// production. If the blacklist trips we return "" — the frontend hides
+// the block.
 //
-// Why a separate file from importance_haiku.go: same model can run very
+// Branding: the model itself is intentionally NOT named in any output
+// path that touches the UI ("AlphaVizor AI" is the public name; the
+// upstream vendor/model identifier never crosses the API boundary).
+//
+// Why a separate file from importance_haiku.go: same upstream can run very
 // different workloads, and we want one place to tune the importance prompt
 // vs one place to tune the idea prompt. Sharing a transport helper would
 // save 30 LOC at the cost of coupling two unrelated tuning surfaces.
@@ -28,44 +35,100 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
 
-// haikuIdeaMaxTokens caps the English paragraph reply. 2-3 short sentences
-// at ~150-200 chars each fit comfortably under 250 tokens; 400 gives slack
-// for the rare LLM run that wants to be more verbose.
-const haikuIdeaMaxTokens = 400
+// haikuIdeaMaxTokens caps the English paragraph reply. 2-4 short sentences
+// of neutral narrative commentary fit comfortably under 200 tokens.
+// Tightened from 400 → 200 to discourage the model from drifting into
+// per-token speculation when a short observation is enough.
+const haikuIdeaMaxTokens = 200
 
-// haikuIdeaSystemPrompt is the contract the LLM is held to — English text,
-// 2-3 sentences, three required ingredients (lead vs lag, entry signal,
-// risk note). The "Reply ONLY with the paragraph text" line is critical:
-// without it the LLM sometimes replies with "Sure! Here's the analysis: …"
-// which the frontend would then render as if it were the idea.
+// haikuIdeaTemperature is tuned down from the API default (1.0) so the
+// model sticks closer to the prompt's neutral observational tone. Lower
+// values also reduce the chance of hallucinated specifics (prices,
+// targets) that the bannedIdeaPattern would otherwise filter out.
+const haikuIdeaTemperature = 0.35
+
+// haikuIdeaSystemPrompt is the contract the model is held to. The hard
+// rule is: describe the NARRATIVE (theme, traction, attention stage,
+// reporting sources), NEVER the price action. The "FORBIDDEN" list is
+// deliberately long and explicit — every word in it has historically
+// leaked into output and tripped the DoD #11 legal review.
 //
-// The "Reply in English ONLY" line is what stops Haiku from mirroring the
-// language of the user message (snapshot.Reasons can carry Russian editorial
-// strings from the worker). Repeating "English" in both the role line and
-// the final imperative beats a single mention — Haiku obeys the last
-// instruction more reliably than the first.
-const haikuIdeaSystemPrompt = `You are a crypto trading copilot. Given a narrative + price context, ` +
-	`write ONE short paragraph in ENGLISH (2-3 sentences) covering: ` +
-	`1) which related token leads / which lags ` +
-	`2) one concrete entry signal a trader should watch (e.g. "JTO above $2.40") ` +
-	`3) brief risk note. ` +
-	`Be specific. Don't recommend buying outright. Use trader vocabulary ` +
-	`(volume, breakout, resistance, support, fade). ` +
+// The "Reply in English ONLY" line is what stops the upstream model from
+// mirroring the language of the user message (snapshot.Reasons can carry
+// Russian editorial strings from the worker). Repeating "English" in both
+// the role line and the final imperative beats a single mention — the
+// upstream obeys the last instruction more reliably than the first.
+//
+// Even with this prompt, the post-response bannedIdeaPattern is the
+// authoritative gate — if the model regresses, that regex kicks in and
+// returns "" so the frontend hides the block.
+const haikuIdeaSystemPrompt = `You write neutral analytical commentary about a crypto NARRATIVE. ` +
+	`Output 2-4 short sentences in ENGLISH. ` +
+	`ALLOWED: describe the theme, why it is gaining traction, what assets cluster around it, ` +
+	`what stage of attention it is in (early / trending / mainstream / declining), ` +
+	`and what kinds of sources are reporting on it. ` +
+	`FORBIDDEN — if you write any of these you fail the task: ` +
+	`specific dollar prices, price targets, support levels, resistance levels, breakout calls, ` +
+	`"buy", "sell", "entry", "stop loss", "take profit", "position", "long", "short", ` +
+	`"fade", "accumulation", "watch for", "momentum", and any technical-analysis terminology. ` +
+	`NEVER use the phrase "traders should" or any other imperative direction to the reader. ` +
+	`Speak about the NARRATIVE, not the price action. ` +
+	`Voice: observational, not advisory — like a research note, not a trade idea. ` +
 	`Reply in English ONLY — no Russian, no other languages. ` +
 	`Reply with the paragraph text only — no JSON, no preamble.`
 
-// haikuIdeaTimeout is the per-request HTTP timeout for the Haiku idea
-// endpoint. Longer than importance (10s) because the response is a 2-3
-// sentence English paragraph (~200-300 tokens decoded) vs the importance
-// schema's ~80-char JSON.
+// haikuIdeaTimeout is the per-request HTTP timeout for the idea endpoint.
+// 15s is generous for a 200-token reply but matches the upstream tail
+// latency budget.
 const haikuIdeaTimeout = 15 * time.Second
 
-// HaikuIdeaGenerator calls Anthropic's Messages API to generate the
-// Russian-paragraph trade idea. Safe for concurrent use (every Generate
+// bannedIdeaPattern is the post-response blacklist. Any match → return ""
+// from GenerateIdea so the caller skips caching and the frontend renders
+// the neutral static fallback. This is the BACKSTOP for the prompt
+// instructions; if the model regresses despite the explicit FORBIDDEN
+// list, this regex still keeps banned vocabulary off production.
+//
+// Patterns covered (all case-insensitive):
+//   - dollar-and-cents prices ("$2.40", "$ 0.05")
+//   - explicit support/resistance/breakout/target/entry/position vocabulary
+//   - "stop loss" / "take profit" / "stop-loss" (hyphen optional)
+//   - directional verbs (buy/sell/long/short/fade)
+//   - editorial imperatives ("watch for", "traders should")
+//   - "accumulation" / "momentum" (technical-analysis red flags per
+//     DoD #11)
+//
+// Word-boundary anchors (\b) prevent false positives like the substring
+// "long" inside "belong" or "short" inside "shortlist".
+var bannedIdeaPattern = regexp.MustCompile(`(?i)` +
+	`\$\s?[0-9]+\.[0-9]+` +
+	`|\bsupport\b` +
+	`|\bresistance\b` +
+	`|\bbreakout\b` +
+	`|\bposition\b` +
+	`|\bentry\b` +
+	`|\bstop[ -]?loss\b` +
+	`|\btake[ -]?profit\b` +
+	`|\btarget\b` +
+	`|\bwatch for\b` +
+	`|\bfade\b` +
+	`|\baccumulation\b` +
+	`|\bbuy\b` +
+	`|\bsell\b` +
+	`|\blong\b` +
+	`|\bshort\b` +
+	`|\btraders should\b` +
+	`|\bmomentum\b`)
+
+// HaikuIdeaGenerator is the backend transport for the AlphaVizor AI
+// narrative-commentary engine. (The struct name retains the historic
+// "Haiku" identifier purely for internal continuity — the public output
+// is branded AlphaVizor AI and the upstream vendor/model identifier is
+// never surfaced to the UI.) Safe for concurrent use (every Generate
 // call is a fresh HTTP request).
 type HaikuIdeaGenerator struct {
 	APIKey string
@@ -112,11 +175,14 @@ func (h *HaikuIdeaGenerator) GenerateIdea(ctx context.Context, narrativeSlug str
 	userMsg := buildIdeaUserMessage(narrativeSlug, snapshot, prices)
 
 	// Reuse the anthropicRequest shape from importance_haiku.go — same wire
-	// format, same headers, just different prompt + max_tokens.
+	// format, same headers, just a different prompt + max_tokens + a lower
+	// temperature (idea commentary should be tight & observational, not
+	// creative).
 	body, err := json.Marshal(anthropicRequest{
-		Model:     model,
-		MaxTokens: haikuIdeaMaxTokens,
-		System:    haikuIdeaSystemPrompt,
+		Model:       model,
+		MaxTokens:   haikuIdeaMaxTokens,
+		System:      haikuIdeaSystemPrompt,
+		Temperature: haikuIdeaTemperature,
 		Messages: []anthropicMessage{{
 			Role:    "user",
 			Content: userMsg,
@@ -130,19 +196,36 @@ func (h *HaikuIdeaGenerator) GenerateIdea(ctx context.Context, narrativeSlug str
 	// importance classifier, kept for symmetry so a transient blip resolves
 	// the same way for both prompts.
 	text, err := h.doOnce(ctx, httpClient, endpoint, body)
-	if err == nil {
-		return text, nil
+	if err != nil {
+		var retryable *retryableError
+		if !errors.As(err, &retryable) {
+			return "", err
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(haiku5xxBackoff):
+		}
+		text, err = h.doOnce(ctx, httpClient, endpoint, body)
+		if err != nil {
+			return "", err
+		}
 	}
-	var retryable *retryableError
-	if !errors.As(err, &retryable) {
-		return "", err
+
+	// Post-response blacklist. Even if the prompt was honoured perfectly,
+	// the regex is the AUTHORITATIVE gate for legal compliance (DoD #11
+	// bans specific prices, support/resistance, trade-direction
+	// vocabulary). On a match: return ("", nil) so the caller treats it
+	// as "no idea this hour" — the in-memory cache won't store an empty
+	// string (handler logic in narrative_handlers.go already short-
+	// circuits on err != nil; we deliberately return nil here so the
+	// empty string flows up cleanly), and the frontend falls back to its
+	// neutral placeholder.
+	if bannedIdeaPattern.MatchString(text) {
+		log.Printf("narrative/idea: response rejected by blacklist for slug=%s len=%d", narrativeSlug, len(text))
+		return "", nil
 	}
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case <-time.After(haiku5xxBackoff):
-	}
-	return h.doOnce(ctx, httpClient, endpoint, body)
+	return text, nil
 }
 
 // doOnce performs ONE HTTP round-trip. Returns a *retryableError for 5xx so
@@ -196,57 +279,40 @@ func (h *HaikuIdeaGenerator) doOnce(ctx context.Context, client *http.Client, en
 }
 
 // buildIdeaUserMessage assembles the user-side prompt from the narrative
-// slug, the latest snapshot, and the price snapshots. Format pinned in
-// tests to keep the prompt regression-safe — if you change the layout,
-// expect TestHaikuIdeaGenerator_PromptShape to flag it.
+// slug + snapshot context. The `prices` arg is accepted for interface
+// symmetry but DELIBERATELY UNUSED — feeding the upstream specific
+// dollar values used to encourage price-specific commentary (the exact
+// DoD #11 violation we are fixing). We now pass ONLY narrative-level
+// context (stage, sentiment label, mention reasons) so the model has
+// no per-token price to anchor on.
 //
 // All labels are English-only (Phase 1, May 2026). Prior versions used
-// "Нарратив:" as the lead label, which steered Haiku into mirroring the
-// user's language back as Russian even with an English system prompt;
+// "Нарратив:" as the lead label, which steered the upstream into mirroring
+// the user's language back as Russian even with an English system prompt;
 // switching the anchor to "Narrative:" lets the system prompt's
 // "English ONLY" instruction win uncontested.
-func buildIdeaUserMessage(narrativeSlug string, snapshot Snapshot, prices []TickerQuote) string {
+func buildIdeaUserMessage(narrativeSlug string, snapshot Snapshot, _ []TickerQuote) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Narrative: %s\n", narrativeSlug)
 	fmt.Fprintf(&sb, "Stage: %s, Trend: %d/100, Sentiment: %s\n",
 		string(snapshot.Stage), snapshot.TrendScore, string(snapshot.SentimentLabel))
-	if len(prices) > 0 {
-		assetsLine := formatPricesLine(prices)
-		fmt.Fprintf(&sb, "Related assets: %s\n", assetsLine)
-	} else {
-		// Fall back to plain ticker list when prices are unavailable so the
-		// LLM still has the candidate symbol set to reason about.
-		if len(snapshot.RelatedAssets) > 0 {
-			fmt.Fprintf(&sb, "Related assets: %s\n", strings.Join(snapshot.RelatedAssets, ", "))
-		}
+	// Related assets are passed as a bare ticker list — NO prices. The
+	// model is told to discuss what theme these assets cluster around,
+	// not to anchor recommendations to specific levels.
+	if len(snapshot.RelatedAssets) > 0 {
+		fmt.Fprintf(&sb, "Related assets: %s\n", strings.Join(snapshot.RelatedAssets, ", "))
 	}
-	// Reasons from the snapshot give the LLM the per-narrative editorial
+	// Reasons from the snapshot give the model the per-narrative editorial
 	// framing the worker already wrote (e.g. "Mentions up 35% vs prior 24h",
 	// "Stage: TRENDING"). Each line becomes one bullet in the prompt.
 	if len(snapshot.Reasons) > 0 {
-		fmt.Fprintf(&sb, "Importance reasons: %s\n", strings.Join(snapshot.Reasons, "; "))
+		fmt.Fprintf(&sb, "Context: %s\n", strings.Join(snapshot.Reasons, "; "))
 	}
 	// Third EN anchor at the user-message tail — if a future change adds a
 	// Russian Mention.Title or Reason, the closing instruction here keeps
-	// Haiku locked to English even when system-prompt anchors weaken.
-	sb.WriteString("Reply in English.\n")
+	// the upstream locked to English even when system-prompt anchors weaken.
+	sb.WriteString("Reply in English. Describe the narrative, not the price action.\n")
 	return sb.String()
-}
-
-// formatPricesLine renders a comma-separated "JTO $2.50 +12%, SOL $180 +3%"
-// list. Always 1-decimal % and 2-decimal price — the LLM is sensitive to
-// inconsistent formatting (e.g. some "$1" and some "$1.00" makes it think
-// the cheaper one is more interesting).
-func formatPricesLine(prices []TickerQuote) string {
-	parts := make([]string, 0, len(prices))
-	for _, p := range prices {
-		sign := "+"
-		if p.ChangePct < 0 {
-			sign = ""
-		}
-		parts = append(parts, fmt.Sprintf("%s $%.2f %s%.1f%%", p.Symbol, p.Price, sign, p.ChangePct))
-	}
-	return strings.Join(parts, ", ")
 }
 
 // cleanIdeaText trims whitespace and an optional surrounding markdown code

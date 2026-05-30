@@ -1,0 +1,73 @@
+{
+  "agent_name": "narrative_radar",
+  "agent_version": "1.0.0",
+  "timeframe": "48h",
+  "confidence": 78,
+  "risk": "medium",
+  "disclaimer": "Analytical observation of public market data. Not investment advice.",
+  "narratives": [
+    {
+      "id": "narr_ai_agents_sol_20260519",
+      "name": "AI agents on Solana",
+      "stage": "early",
+      "trend_score": 82,
+      "mention_growth_24h_pct": 340,
+      "mention_growth_48h_pct": 612,
+      "source_breadth": 4,
+      "sources_active": ["x", "reddit", "telegram", "onchain"],
+      "asset_examples": [
+        {"symbol": "GOAT", "rank_by_mentions": 1},
+        {"symbol": "AI16Z", "rank_by_mentions": 2},
+        {"symbol": "FARTCOIN", "rank_by_mentions": 3}
+      ],
+      "sentiment_polarity": 0.62,
+      "confidence": 78,
+      "first_detected_at": "2026-05-19T08:14:00Z",
+      "notes": "Mention surge concentrated in last 18h. Sentiment skews positive but noise level elevated."
+    },
+    {
+      "id": "narr_rwa_token_20260519",
+      "name": "RWA tokenization",
+      "stage": "trending",
+      "trend_score": 71,
+      "mention_growth_24h_pct": 88,
+      "mention_growth_48h_pct": 154,
+      "source_breadth": 5,
+      "sources_active": ["x", "reddit", "telegram", "onchain", "mainstream_media"],
+      "asset_examples": [
+        {"symbol": "ONDO", "rank_by_mentions": 1},
+        {"symbol": "MKR", "rank_by_mentions": 2},
+        {"symbol": "PENDLE", "rank_by_mentions": 3}
+      ],
+      "sentiment_polarity": 0.48,
+      "confidence": 74,
+      "first_detected_at": "2026-05-15T22:00:00Z",
+      "notes": "Cross-platform coverage broadening. Mainstream media coverage began ~12h ago."
+    },
+    {
+      "id": "narr_meme_rotation_q2_20260519",
+      "name": "Meme rotation Q2",
+      "stage": "declining",
+      "trend_score": 31,
+      "mention_growth_24h_pct": -42,
+      "mention_growth_48h_pct": -58,
+      "source_breadth": 2,
+      "sources_active": ["x", "telegram"],
+      "asset_examples": [
+        {"symbol": "WIF", "rank_by_mentions": 1},
+        {"symbol": "BONK", "rank_by_mentions": 2}
+      ],
+      "sentiment_polarity": -0.12,
+      "confidence": 65,
+      "first_detected_at": "2026-04-28T14:00:00Z",
+      "notes": "Mention velocity decelerating for 5 consecutive days. Narrative classified as exhausting."
+    }
+  ],
+  "historical_stats": {
+    "detections_30d": 142,
+    "early_stage_flagged_30d": 47,
+    "early_to_trending_conversion_pct": 38,
+    "avg_observation_window_hours": 56,
+    "data_freshness": "mock"
+  }
+}

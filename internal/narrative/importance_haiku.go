@@ -82,12 +82,16 @@ type HaikuClassifier struct {
 	APIBase string
 }
 
-// anthropicRequest mirrors only the fields we actually send.
+// anthropicRequest mirrors only the fields we actually send. Temperature
+// is omitempty so importance_haiku.go (which leaves it at zero / API
+// default of 1.0) doesn't broadcast a 0.0 that would make the model
+// greedy. idea_haiku.go sets it explicitly to haikuIdeaTemperature.
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system"`
-	Messages  []anthropicMessage `json:"messages"`
+	Model       string             `json:"model"`
+	MaxTokens   int                `json:"max_tokens"`
+	System      string             `json:"system"`
+	Messages    []anthropicMessage `json:"messages"`
+	Temperature float64            `json:"temperature,omitempty"`
 }
 
 type anthropicMessage struct {

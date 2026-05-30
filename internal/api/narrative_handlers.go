@@ -416,3 +416,101 @@ func generateIdeaCached(ctx context.Context, snap narrative.Snapshot, quotes []t
 	narrativeIdeaCache.Set(snap.Narrative, hourKey, idea)
 	return idea
 }
+
+// ── GET /api/v1/narratives/{slug}/mentions ──────────────────────────────
+//
+// Returns clickable article references for one narrative — used by the
+// Narrative Radar UI to turn the "cointelegraph · 2" source chip into a
+// list of real links. Public (no JWT) — same tier as /api/v1/narratives,
+// no per-user data is leaked.
+
+const (
+	// narrativeMentionsWindow is the look-back used for the mentions
+	// endpoint. 48h matches the Narrative Radar's "what's hot right now"
+	// framing — anything older is stale enough that surfacing it in the
+	// "click for sources" chip would actively mislead the user.
+	narrativeMentionsWindow = 48 * time.Hour
+
+	// narrativeMentionsDefaultLimit is the default page size when the
+	// caller omits ?limit. 5 matches the Radar UI's default chip count
+	// (we expand to 20 on "show more").
+	narrativeMentionsDefaultLimit = 5
+
+	// narrativeMentionsMaxLimit caps the per-request page size. 20 is
+	// generous for a chip list and bounds the row count returned per
+	// public request (no auth = anyone can hit this, so the cap matters).
+	narrativeMentionsMaxLimit = 20
+
+	// narrativeMentionsMinImportance is the importance_score floor. Rows
+	// with NULL importance_score still pass (see MentionsByNarrative
+	// docstring) — this only filters classified rows below the threshold.
+	// 50 is "moderately important and up" given the LLM's 0..100 scale.
+	narrativeMentionsMinImportance = 50
+)
+
+// handleNarrativeMentions serves GET /api/v1/narratives/{slug}/mentions.
+//
+// Response shape:
+//
+//	{
+//	  "narrative": "oracles",
+//	  "mentions": [
+//	    {
+//	      "title": "Chainlink launches CCIP v2 on Ethereum",
+//	      "url": "https://cointelegraph.com/news/...",
+//	      "source": "cointelegraph",
+//	      "posted_at": "2026-05-22T03:14:00Z",
+//	      "importance_score": 78
+//	    }
+//	  ]
+//	}
+//
+// When no mentions exist for the slug in the 48h window — whether the
+// slug is unknown or simply quiet — returns 200 with an empty mentions
+// slice. Frontend renders "no articles in last 48h" rather than a 404
+// chip, so a 404 here would be a UX regression.
+func handleNarrativeMentions(reader narrative.MentionReader) http.HandlerFunc {
+	type response struct {
+		Narrative string                 `json:"narrative"`
+		Mentions  []narrative.MentionRef `json:"mentions"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Slug is URL-decoded by net/http's pattern matcher before reaching
+		// PathValue, so "%20" → " " etc. are already normalised. Empty slug
+		// 404s here rather than running the query with a "" predicate —
+		// that's a route-shape bug, not a missing-narrative case.
+		slug := strings.TrimSpace(r.PathValue("slug"))
+		if slug == "" {
+			writeError(w, http.StatusNotFound, "narrative slug is required")
+			return
+		}
+
+		// limit: default 5, clamped to [1, 20]. Out-of-range / non-integer
+		// silently falls back to the default — matches the tolerance the
+		// /api/v1/narratives endpoint already applies to its query params.
+		limit := narrativeMentionsDefaultLimit
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= narrativeMentionsMaxLimit {
+				limit = n
+			}
+		}
+
+		since := time.Now().UTC().Add(-narrativeMentionsWindow)
+		mentions, err := reader.MentionsByNarrative(r.Context(), slug, since, limit, narrativeMentionsMinImportance)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load mentions")
+			return
+		}
+		// Defensive: empty slice (never nil) so the JSON renders `[]` not
+		// `null`. The Radar UI's `.map()` over the array depends on this.
+		if mentions == nil {
+			mentions = []narrative.MentionRef{}
+		}
+
+		writeJSON(w, response{
+			Narrative: slug,
+			Mentions:  mentions,
+		})
+	}
+}
