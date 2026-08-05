@@ -11,16 +11,24 @@ import (
 )
 
 type User struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	PasswordHash string    `json:"-"`
-	DisplayName  string    `json:"display_name"`
-	Role         string    `json:"role"`
+	ID           string `json:"id"`
+	Email        string `json:"email"`
+	PasswordHash string `json:"-"`
+	DisplayName  string `json:"display_name"`
+	Role         string `json:"role"`
 	// RiskTier drives ML prediction gating (Patch 2C).
 	// One of: conservative | balanced | aggressive. Default "balanced".
-	RiskTier  string    `json:"risk_tier" db:"risk_tier"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	RiskTier string `json:"risk_tier" db:"risk_tier"`
+	// Sub-chat C — account/consent state surfaced via GET /auth/me.
+	// EmailVerified gates the soft "verify your email" banner (login still
+	// works unverified). TermsAcceptedAt/Tier/Telegram* are display-only here.
+	EmailVerified    bool       `json:"email_verified"`
+	TermsAcceptedAt  *time.Time `json:"terms_accepted_at"`
+	Tier             string     `json:"tier"`
+	TelegramChatID   *int64     `json:"telegram_chat_id"`
+	TelegramLinkedAt *time.Time `json:"telegram_linked_at"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 var ErrUserExists = errors.New("user already exists")
@@ -44,9 +52,14 @@ func CreateUser(ctx context.Context, pool *pgxpool.Pool, email, password, displa
 		INSERT INTO users (email, password_hash, display_name, role)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, email, password_hash, COALESCE(display_name, ''), role,
-		         COALESCE(risk_tier, 'balanced'), created_at, updated_at
+		         COALESCE(risk_tier, 'balanced'),
+		         COALESCE(email_verified, false), terms_accepted_at,
+		         COALESCE(tier, 'free'), telegram_chat_id, telegram_linked_at,
+		         created_at, updated_at
 	`, email, hash, displayName, role).Scan(
-		&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.RiskTier, &u.CreatedAt, &u.UpdatedAt,
+		&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.RiskTier,
+		&u.EmailVerified, &u.TermsAcceptedAt, &u.Tier, &u.TelegramChatID, &u.TelegramLinkedAt,
+		&u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "users_email_key") {
@@ -63,9 +76,14 @@ func GetUserByEmail(ctx context.Context, pool *pgxpool.Pool, email string) (*Use
 	var u User
 	err := pool.QueryRow(ctx, `
 		SELECT id, email, password_hash, COALESCE(display_name, ''), role,
-		       COALESCE(risk_tier, 'balanced'), created_at, updated_at
+		       COALESCE(risk_tier, 'balanced'),
+		       COALESCE(email_verified, false), terms_accepted_at,
+		       COALESCE(tier, 'free'), telegram_chat_id, telegram_linked_at,
+		       created_at, updated_at
 		FROM users WHERE email = $1
-	`, email).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.RiskTier, &u.CreatedAt, &u.UpdatedAt)
+	`, email).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.RiskTier,
+		&u.EmailVerified, &u.TermsAcceptedAt, &u.Tier, &u.TelegramChatID, &u.TelegramLinkedAt,
+		&u.CreatedAt, &u.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, ErrUserNotFound
 	}
@@ -79,9 +97,14 @@ func GetUserByID(ctx context.Context, pool *pgxpool.Pool, id string) (*User, err
 	var u User
 	err := pool.QueryRow(ctx, `
 		SELECT id, email, password_hash, COALESCE(display_name, ''), role,
-		       COALESCE(risk_tier, 'balanced'), created_at, updated_at
+		       COALESCE(risk_tier, 'balanced'),
+		       COALESCE(email_verified, false), terms_accepted_at,
+		       COALESCE(tier, 'free'), telegram_chat_id, telegram_linked_at,
+		       created_at, updated_at
 		FROM users WHERE id = $1
-	`, id).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.RiskTier, &u.CreatedAt, &u.UpdatedAt)
+	`, id).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.RiskTier,
+		&u.EmailVerified, &u.TermsAcceptedAt, &u.Tier, &u.TelegramChatID, &u.TelegramLinkedAt,
+		&u.CreatedAt, &u.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, ErrUserNotFound
 	}

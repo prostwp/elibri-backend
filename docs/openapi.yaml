@@ -1,0 +1,2647 @@
+ openapi: 3.1.0
+info:
+  title: AlphaVizor Analytics API
+  version: 0.2.0
+  description: |
+    AlphaVizor is a market analytics platform for crypto and FX. The API serves
+    analytical signals, narrative and whale-flow feeds, macro sentiment, market
+    data, and a public catalog of trading scenarios. All outputs (signals,
+    scenarios, generated ideas, mood reads) are analytical observations of
+    public market data provided for informational purposes only — they are NOT
+    investment advice, NOT a recommendation to buy or sell any asset, and NOT a
+    guarantee of future performance. Trading involves substantial risk of loss.
+
+    ## Authentication
+
+    `POST /api/v1/auth/register` or `POST /api/v1/auth/login` returns
+    `{token, user}`. The token is an HS256 JWT, valid for **24 hours**, with
+    issuer `elibri-backend` (tokens carrying any other issuer are rejected).
+
+    Send it as `Authorization: Bearer <token>`. As a fallback, every route
+    also accepts the token via the `?token=<jwt>` query parameter — this
+    exists for the `/ws` WebSocket endpoint, where clients cannot set
+    headers, but the middleware checks it on all paths.
+
+    Endpoints marked `security: []` are public: anonymous requests are
+    served, and a valid Bearer token, when present, is still parsed to
+    attribute the request to a user (invalid tokens on public endpoints are
+    silently ignored). On protected endpoints, a missing token yields
+    `401 {"error":"missing authorization"}` and a bad token
+    `401 {"error":"invalid token"}` (see Error Handling for the content
+    type). Admin-only operations additionally return
+    `403 {"error":"admin access required"}` for non-admin roles.
+
+    ## Error Handling
+
+    Every error body is the same one-field envelope:
+
+        {"error": "<human-readable message>"}
+
+    There are, however, two emitting code paths with different
+    `Content-Type` headers (a known backend inconsistency — parse the body
+    as JSON regardless of the Content-Type header):
+
+    - Most handlers use a shared JSON writer: the envelope is sent with
+      `Content-Type: application/json`.
+    - The auth middleware (all 401s), the market-data, ML, crypto and
+      scenario runner-control handlers, and the Telegram-link handlers build
+      the same envelope through Go's `http.Error`, which stamps
+      `Content-Type: text/plain; charset=utf-8` and appends a trailing
+      newline.
+
+    Additionally, requests that miss the router entirely get Go's default
+    plain-text responses: `404 page not found` for unknown paths and
+    `Method Not Allowed` for unsupported methods on single-method routes.
+    Multi-method paths (follows, watchlist, notification-prefs,
+    telegram/link, strategies/{id}) return the JSON envelope with 405.
+
+    Request bodies are capped at 2 MB; oversized bodies fail JSON decoding
+    and surface as a 400.
+
+    ## Pagination
+
+    There is no unified limit/offset scheme. List endpoints take
+    per-endpoint query parameters with hard clamps; out-of-range or
+    non-numeric values silently fall back to the default (no 400):
+
+    | Endpoint | Parameter | Range | Default |
+    |---|---|---|---|
+    | `/api/v1/narratives` | `limit` | 1..100 | all items |
+    | `/api/v1/narratives/{slug}/mentions` | `limit` | 1..20 | 5 |
+    | `/api/v1/whale-flow` | `limit` (transfer feed) | 1..100 | 50 |
+    | `/api/v1/funding/liquidations` | `limit` | 1..200 | 40 |
+    | `/api/v1/alerts` | `limit` | 1..500 | 50 |
+    | `/api/v1/scenarios/public` | `page` (20 items/page) | 1..50 | 1 |
+    | `/api/v1/macrocal` | `hours` | 1..168 | 24 |
+    | `/api/v1/market/candles` | `limit` | source-dependent | 200 |
+
+    ## Time Format
+
+    Timestamps are mixed by design; each schema field documents its own
+    format. The two conventions in use:
+
+    - **RFC3339 UTC strings** (e.g. `2026-07-17T09:30:00Z`) — the default
+      for almost everything: `captured_at`, `created_at`, `published_at`,
+      `ts`, `posted_at`, `expires_at`, calendar `time`, `as_of`, etc.
+      Several feed timestamps use the empty string `""` as a "no data yet"
+      sentinel.
+    - **Unix seconds (integer)** — market candle `time`, quote `timestamp`,
+      alert `bar_time`, active-scenario `last_signal_bar_time`, and ticker
+      `last_updated_unix`.
+
+    ## Rate Limiting
+
+    No application-level rate limiting is currently enforced (neither in
+    the Go service nor in the nginx front proxy). The only 429 responses in
+    the API are the ML job-concurrency guards: `/api/v1/ml/train`,
+    `/api/v1/ml/backtest/run` and `/api/v1/ml/paper-trades/run` share a
+    single job slot and return 429 while a job is already running.
+
+    ## Versioning
+
+    All versioned endpoints live under `/api/v1`. Two stability tiers:
+
+    - **Public** — documented with full schemas and examples: system, auth,
+      agents, narratives, whale-flow, funding, macro, market, the public
+      scenario catalog and runner control, alerts.
+    - **Internal** (tags marked `x-internal: true`: ml, admin, strategies,
+      crypto, user-prefs, dashboard, billing) — used by the AlphaVizor
+      frontend; the contract may change without notice.
+
+    ## WebSocket
+
+    Live updates are served over a topic-based WebSocket hub at `/ws` —
+    see the `/ws` path entry for the full protocol (auth via `?token=`,
+    message envelope, subscribe/unsubscribe, ping/pong, keepalive).
+servers:
+  - url: http://84.247.144.41
+    description: Current production (HTTP, IP-only — TLS + domain pending). Versioned endpoints live under /api/v1.
+  - url: https://api.elibrifx.com
+    description: Planned — not yet live.
+security:
+  - bearerAuth: []
+tags:
+  - name: system
+    description: Health and readiness probes, WebSocket hub.
+  - name: auth
+    description: Registration, login, profile, email verification, password reset.
+  - name: agents
+    description: Public agent output previews.
+  - name: narratives
+    description: Narrative Radar — crypto narrative trend snapshots.
+  - name: whale-flow
+    description: Whale Flow — exchange in/outflow snapshots and large transfers.
+  - name: funding
+    description: Funding Rate — live liquidation feed and price-magnet zones.
+  - name: macro
+    description: Macro Sentiment regime and macro-economic calendar.
+  - name: market
+    description: Market data (candles, quotes, momentum, fear & greed, mood read).
+  - name: scenarios
+    description: Public scenario catalog and live scenario runner control.
+  - name: alerts
+    description: Signal alerts history and Telegram linking.
+  - name: ml
+    description: >-
+      ML prediction, training and backtesting. Internal API — used by the
+      AlphaVizor frontend; contract may change without notice. Training,
+      reload and job-runner operations are admin-only.
+    x-internal: true
+  - name: admin
+    description: >-
+      Admin-only user management. Internal API — used by the AlphaVizor
+      frontend; contract may change without notice.
+    x-internal: true
+  - name: strategies
+    description: >-
+      User strategy CRUD. Internal API — used by the AlphaVizor frontend;
+      contract may change without notice.
+    x-internal: true
+  - name: crypto
+    description: >-
+      Crypto scanners and aggregated news. Internal API — used by the
+      AlphaVizor frontend; contract may change without notice.
+    x-internal: true
+  - name: user-prefs
+    description: >-
+      Follows, watchlist, notification preferences. Internal API — used by
+      the AlphaVizor frontend; contract may change without notice.
+    x-internal: true
+  - name: dashboard
+    description: >-
+      Post-login dashboard aggregate. Internal API — used by the AlphaVizor
+      frontend; contract may change without notice.
+    x-internal: true
+  - name: billing
+    description: >-
+      Billing tier stub. Internal API — used by the AlphaVizor frontend;
+      contract may change without notice.
+    x-internal: true
+
+paths:
+  # ── System ────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [system]
+      summary: Liveness probe
+      description: Always returns 200 while the process is alive, even when the database is down.
+      security: []
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                  version: { type: string, examples: ["0.2.0"] }
+                  service: { type: string, const: elibri-backend }
+              example:
+                status: ok
+                version: "0.2.0"
+                service: elibri-backend
+
+  /ready:
+    get:
+      tags: [system]
+      summary: Readiness probe
+      description: Returns 503 when a required dependency (Postgres pool) is missing or unreachable.
+      security: []
+      responses:
+        "200":
+          description: Service is ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ready }
+                  ml_loaded:
+                    type: integer
+                    description: Number of loaded ML v2 models (advisory, not blocking).
+                  timestamp: { type: string, format: date-time }
+              example:
+                status: ready
+                ml_loaded: 4
+                timestamp: "2026-07-17T09:30:00Z"
+        "503":
+          description: Not ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: not_ready }
+                  reason: { type: string }
+              example:
+                status: not_ready
+                reason: database ping failed
+
+  /ws:
+    get:
+      tags: [system]
+      summary: WebSocket live-update hub
+      description: |
+        Topic-based WebSocket hub. Upgrade with a standard WebSocket
+        handshake. The endpoint is JWT-protected: pass the token via the
+        `token` query parameter (`/ws?token=<jwt>`), since WebSocket clients
+        cannot set the Authorization header. A missing or invalid token is
+        rejected with 401 before the upgrade.
+
+        **Message envelope** — a single JSON shape is used in both
+        directions:
+
+            {"type": "<string>", "topic": "<string>", "data": <any>, "topics": ["<string>"]}
+
+        Only `type` is always present; the other fields depend on the
+        message type.
+
+        **Client to server:**
+        - `{"type":"subscribe","topics":["<topic>", ...]}` — subscribe to topics.
+        - `{"type":"unsubscribe","topics":["<topic>", ...]}` — unsubscribe.
+        - `{"type":"ping"}` — the server replies `{"type":"pong"}`.
+        - Any other type, or an unparsable frame, is silently ignored.
+
+        **Server to client:**
+        - `{"type":"data","topic":"<topic>","data":<payload>}` — published
+          to subscribers of the topic.
+        - Note: no backend worker currently publishes to the hub, so
+          subscriptions are accepted but no `data` messages are emitted yet.
+          The topic vocabulary will be documented when publishers land.
+
+        **Keepalive and limits:**
+        - The server sends a protocol-level WebSocket PING every 54 seconds;
+          the client's PONG (automatic in browsers) resets a 60-second read
+          deadline. A client that stops responding is disconnected.
+        - Inbound messages are capped at 4096 bytes.
+        - Each client has a 256-message outbound buffer; messages to a slow
+          consumer are skipped, not queued indefinitely.
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          description: HS256 JWT (the same token the Authorization header uses).
+          schema: { type: string }
+      responses:
+        "101":
+          description: Switching protocols (WebSocket upgrade).
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ── Auth ──────────────────────────────────────────────────────────────────
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: Register a new user
+      description: >
+        Creates an account and returns a JWT. The consent checkbox
+        (`accepted_terms`) MUST be true. New users start with an unverified
+        email; a verification email is sent best-effort.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, accepted_terms]
+              properties:
+                email: { type: string, format: email }
+                password:
+                  type: string
+                  minLength: 6
+                display_name: { type: string }
+                accepted_terms:
+                  type: boolean
+                  description: Must be true — single checkbox covering Terms + Privacy + Risk disclosure.
+                terms_version:
+                  type: string
+                  description: Terms revision the user agreed to. Empty falls back to the server default.
+            example:
+              email: trader@example.com
+              password: s3curepass
+              display_name: BTC Trader
+              accepted_terms: true
+      responses:
+        "200":
+          description: Account created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+              example:
+                token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiN2UyYTFjNCJ9.signature
+                user:
+                  id: b7e2a1c4-5d6f-4e8a-9b0c-1d2e3f4a5b6c
+                  email: trader@example.com
+                  display_name: BTC Trader
+                  role: user
+                  risk_tier: balanced
+                  email_verified: false
+                  terms_accepted_at: "2026-07-17T09:29:58Z"
+                  tier: free
+                  telegram_chat_id: null
+                  telegram_linked_at: null
+                  created_at: "2026-07-17T09:29:58Z"
+                  updated_at: "2026-07-17T09:29:58Z"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: Email already registered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: email already registered }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Log in
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+            example:
+              email: trader@example.com
+              password: s3curepass
+      responses:
+        "200":
+          description: Authenticated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+              example:
+                token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiN2UyYTFjNCJ9.signature
+                user:
+                  id: b7e2a1c4-5d6f-4e8a-9b0c-1d2e3f4a5b6c
+                  email: trader@example.com
+                  display_name: BTC Trader
+                  role: user
+                  risk_tier: balanced
+                  email_verified: true
+                  terms_accepted_at: "2026-06-01T12:00:00Z"
+                  tier: free
+                  telegram_chat_id: null
+                  telegram_linked_at: null
+                  created_at: "2026-06-01T12:00:00Z"
+                  updated_at: "2026-07-17T09:30:00Z"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: Invalid credentials.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: invalid credentials }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/auth/me:
+    get:
+      tags: [auth]
+      summary: Get the authenticated user's profile
+      responses:
+        "200":
+          description: Current user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+              example:
+                id: b7e2a1c4-5d6f-4e8a-9b0c-1d2e3f4a5b6c
+                email: trader@example.com
+                display_name: BTC Trader
+                role: user
+                risk_tier: balanced
+                email_verified: true
+                terms_accepted_at: "2026-06-01T12:00:00Z"
+                tier: free
+                telegram_chat_id: 987654321
+                telegram_linked_at: "2026-06-15T18:22:00Z"
+                created_at: "2026-06-01T12:00:00Z"
+                updated_at: "2026-07-17T09:30:00Z"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: user not found }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+    patch:
+      tags: [auth]
+      summary: Update the authenticated user's profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name:
+                  type: string
+                  maxLength: 100
+                risk_tier:
+                  type: string
+                  enum: [conservative, balanced, aggressive]
+            example:
+              display_name: BTC Trader
+              risk_tier: balanced
+      responses:
+        "200":
+          description: Updated user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+              example:
+                id: b7e2a1c4-5d6f-4e8a-9b0c-1d2e3f4a5b6c
+                email: trader@example.com
+                display_name: BTC Trader
+                role: user
+                risk_tier: balanced
+                email_verified: true
+                terms_accepted_at: "2026-06-01T12:00:00Z"
+                tier: free
+                telegram_chat_id: 987654321
+                telegram_linked_at: "2026-06-15T18:22:00Z"
+                created_at: "2026-06-01T12:00:00Z"
+                updated_at: "2026-07-17T09:31:12Z"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/auth/verify-email:
+    post:
+      tags: [auth]
+      summary: Consume an email-verification token
+      description: Token is single-use; invalid/expired/used tokens all return the same 400 (anti-probe).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+            example:
+              token: 3f2c9a1e77d84b0f9c6d1a2b3c4d5e6f
+      responses:
+        "200": { $ref: "#/components/responses/StatusOK" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/auth/resend-verification:
+    post:
+      tags: [auth]
+      summary: Re-send the verification email for the authenticated user
+      responses:
+        "200": { $ref: "#/components/responses/StatusOK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: Email already verified.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: email already verified }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/auth/forgot-password:
+    post:
+      tags: [auth]
+      summary: Request a password-reset email
+      description: >
+        Anti-enumeration — always returns 200 for a well-formed request,
+        whether or not the email maps to an account.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+            example:
+              email: trader@example.com
+      responses:
+        "200": { $ref: "#/components/responses/StatusOK" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/auth/reset-password:
+    post:
+      tags: [auth]
+      summary: Reset password with a reset token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, new_password]
+              properties:
+                token: { type: string }
+                new_password:
+                  type: string
+                  minLength: 6
+            example:
+              token: 3f2c9a1e77d84b0f9c6d1a2b3c4d5e6f
+              new_password: n3wpassword
+      responses:
+        "200": { $ref: "#/components/responses/StatusOK" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  # ── Agents ────────────────────────────────────────────────────────────────
+  /api/v1/agents/{slug}/output:
+    get:
+      tags: [agents]
+      summary: Live output preview for a public agent
+      description: >
+        Returns the canonical "what does this agent emit" JSON used by the
+        catalog detail page. Currently only slug `narrative_radar` exists; the
+        payload is a static sample with time-sensitive fields
+        (`generated_at`, `window_start`, `window_end`, `next_refresh_at`)
+        stamped per request.
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [narrative_radar]
+      responses:
+        "200":
+          description: Agent output envelope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentOutput" }
+              example:
+                agent_name: narrative_radar
+                agent_version: "1.0.0"
+                timeframe: 48h
+                confidence: 78
+                risk: medium
+                disclaimer: Analytical observation of public market data. Not investment advice.
+                generated_at: "2026-07-17T09:30:00Z"
+                window_start: "2026-07-15T09:30:00Z"
+                window_end: "2026-07-17T09:30:00Z"
+                next_refresh_at: "2026-07-17T10:00:00Z"
+                narratives:
+                  - id: narr_ai_agents_sol_20260519
+                    name: AI agents on Solana
+                    stage: early
+                    trend_score: 82
+                    mention_growth_24h_pct: 340
+                    mention_growth_48h_pct: 612
+                    source_breadth: 4
+                    sources_active: [x, reddit, telegram, onchain]
+                    asset_examples:
+                      - { symbol: GOAT, rank_by_mentions: 1 }
+                      - { symbol: AI16Z, rank_by_mentions: 2 }
+                    sentiment_polarity: 0.62
+                    confidence: 78
+                    first_detected_at: "2026-05-19T08:14:00Z"
+                    notes: Mention surge concentrated in last 18h. Sentiment skews positive but noise level elevated.
+                historical_stats:
+                  detections_30d: 142
+                  early_stage_flagged_30d: 47
+                  early_to_trending_conversion_pct: 38
+                  avg_observation_window_hours: 56
+                  data_freshness: mock
+        "404":
+          description: Unknown agent slug.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: agent not found }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  # ── Narratives ────────────────────────────────────────────────────────────
+  /api/v1/narratives:
+    get:
+      tags: [narratives]
+      summary: Latest narrative snapshots
+      description: >
+        Latest snapshot per crypto narrative, sorted by trend_score DESC.
+        Returns 200 with an empty list and captured_at="" before the worker's
+        first tick. The top narrative may carry a `generated_idea` paragraph.
+      security: []
+      parameters:
+        - name: limit
+          in: query
+          description: Cap the result to the first N items (1..100). Invalid values are ignored.
+          schema: { type: integer, minimum: 1, maximum: 100 }
+        - name: min_trend
+          in: query
+          description: Drop items with trend_score below this value (applied before limit).
+          schema: { type: integer, minimum: 0, maximum: 100 }
+      responses:
+        "200":
+          description: Narrative list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  captured_at:
+                    type: string
+                    description: RFC3339 timestamp of the newest snapshot, or "" when the store is empty.
+                  narratives:
+                    type: array
+                    items: { $ref: "#/components/schemas/NarrativeSnapshot" }
+              example:
+                captured_at: "2026-07-17T09:15:00Z"
+                narratives:
+                  - narrative: ai-agents
+                    captured_at: "2026-07-17T09:15:00Z"
+                    mention_count_24h: 412
+                    mention_count_prev_24h: 118
+                    growth_pct: 249.2
+                    trend_score: 84
+                    stage: trending
+                    sentiment_score: 0.42
+                    sentiment_label: bull
+                    confidence: 71
+                    related_assets: [FET, RENDER, TAO]
+                    sources_breakdown: { reddit: 233, rss: 179 }
+                    reasons:
+                      - Mentions up 249% vs prior 24h
+                      - Covered by 2 independent source types
+                    is_new_theme: false
+                    related_assets_quotes:
+                      - symbol: FET
+                        price: 1.284
+                        change_pct_24h: 6.1
+                        last_updated_unix: 1784281500
+                    generated_idea: >-
+                      Mentions of AI-agent tokens more than tripled over the
+                      last 24h with positive sentiment skew; historically this
+                      stage preceded elevated volatility in related assets.
+                      Analytical observation, not investment advice.
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/narratives/{slug}/mentions:
+    get:
+      tags: [narratives]
+      summary: Clickable article references for one narrative
+      description: >
+        Article references from the last 48h with importance_score >= 50
+        (unscored rows also pass). Unknown or quiet slugs return 200 with an
+        empty list, not 404.
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          description: Page size (1..20, default 5). Invalid values fall back to the default.
+          schema: { type: integer, minimum: 1, maximum: 20, default: 5 }
+      responses:
+        "200":
+          description: Mention references.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  narrative: { type: string }
+                  mentions:
+                    type: array
+                    items: { $ref: "#/components/schemas/MentionRef" }
+              example:
+                narrative: ai-agents
+                mentions:
+                  - title: AI agent tokens rally as new framework ships
+                    url: https://www.coindesk.com/markets/2026/07/17/ai-agent-tokens-rally
+                    source: coindesk
+                    posted_at: "2026-07-17T07:42:00Z"
+                    importance_score: 74
+                  - title: "Discussion: are agent tokens the next rotation?"
+                    url: https://www.reddit.com/r/CryptoCurrency/comments/1m9xyz
+                    source: reddit
+                    posted_at: "2026-07-16T22:10:00Z"
+                    importance_score: null
+        "404":
+          description: Empty slug (route-shape error).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: narrative slug is required }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  # ── Whale Flow ────────────────────────────────────────────────────────────
+  /api/v1/whale-flow:
+    get:
+      tags: [whale-flow]
+      summary: Latest whale-flow snapshots and live transfer feed
+      description: >
+        Latest snapshot per asset (sorted by |net_flow_usd_24h| DESC) plus the
+        recent large-transfer feed (newest first). Returns 200 with empty
+        arrays and captured_at="" before the worker's first tick.
+      security: []
+      parameters:
+        - name: limit
+          in: query
+          description: Number of transfers in the feed (1..100, default 50).
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: Whale flow payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  captured_at:
+                    type: string
+                    description: RFC3339 timestamp of the newest snapshot, or "".
+                  flows:
+                    type: array
+                    items: { $ref: "#/components/schemas/WhaleSnapshot" }
+                  transfers:
+                    type: array
+                    items: { $ref: "#/components/schemas/WhaleTransfer" }
+              example:
+                captured_at: "2026-07-17T09:20:00Z"
+                flows:
+                  - asset: ETH
+                    captured_at: "2026-07-17T09:20:00Z"
+                    net_flow_usd_24h: -18400000
+                    net_flow_prev_24h: -6200000
+                    flow_pct: 196.8
+                    direction: outflow
+                    inflow_usd_24h: 9100000
+                    outflow_usd_24h: 27500000
+                    tx_count_24h: 37
+                    confidence: 64
+                    exchange_breakdown: { Binance: 21, Coinbase: 16 }
+                    reasons:
+                      - Net outflow of $18.4M over 24h across labeled wallets
+                    is_new_spike: false
+                    source: etherscan
+                    partial: true
+                transfers:
+                  - chain: ETH
+                    tx_hash: "0x9f1c2ab34cd56ef7890a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abc"
+                    timestamp: "2026-07-17T09:12:41Z"
+                    from_addr: "0x28c6c06298d514db089934071355e5743bf21d60"
+                    to_addr: "0x5a3bd0e21f0c31f16d5a1e8f3a97fa2b48d0cc11"
+                    asset: ETH
+                    amount_native: 2150.5
+                    amount_usd: 7480000
+                    direction: outflow
+                    exchange: Binance
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  # ── Funding ───────────────────────────────────────────────────────────────
+  /api/v1/funding/liquidations:
+    get:
+      tags: [funding]
+      summary: Live liquidation feed and price-magnet zones
+      description: >
+        Force-order (liquidation) feed from the exchange WebSocket worker plus
+        aggregated price-magnet zones. Empty store returns 200 with empty
+        arrays; captured_at="" means the worker was never wired, a timestamp
+        with an empty feed means "live but quiet".
+      security: []
+      parameters:
+        - name: limit
+          in: query
+          description: Number of liquidations in the feed (1..200, default 40).
+          schema: { type: integer, minimum: 1, maximum: 200, default: 40 }
+      responses:
+        "200":
+          description: Liquidation payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  captured_at:
+                    type: string
+                    description: Server time the response was assembled (RFC3339 UTC), or "" when the store is not wired.
+                  feed:
+                    type: array
+                    items: { $ref: "#/components/schemas/FundingLiquidation" }
+                  zones:
+                    type: array
+                    items: { $ref: "#/components/schemas/FundingZone" }
+              example:
+                captured_at: "2026-07-17T09:31:04Z"
+                feed:
+                  - symbol: BTCUSDT
+                    side: long_liq
+                    qty: 0.842
+                    price: 118240.5
+                    usd_value: 99558.5
+                    ts: "2026-07-17T09:30:58Z"
+                  - symbol: ETHUSDT
+                    side: short_liq
+                    qty: 12.4
+                    price: 3481.2
+                    usd_value: 43166.9
+                    ts: "2026-07-17T09:30:12Z"
+                zones:
+                  - symbol: BTCUSDT
+                    price_band: 118200-118250
+                    total_usd: 412000
+                    count: 9
+                    side: long_liq
+
+  # ── Macro ─────────────────────────────────────────────────────────────────
+  /api/v1/macro:
+    get:
+      tags: [macro]
+      summary: Macro Sentiment regime
+      description: >
+        Risk-on/off regime of the big-money markets — 5 index "lamps" (DXY,
+        US 10Y, VIX, S&P 500, Gold), BTC-tradfin correlations, crypto Fear &
+        Greed, a rule-based diagnosis line, and an embedded top-5 macro
+        calendar. Always 200; degrades to a valid payload with empty values
+        before the first worker cycle.
+      security: []
+      responses:
+        "200":
+          description: Macro sentiment payload.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MacroResponse" }
+              example:
+                regime: mixed
+                composite: 54
+                tradfin_market_open: true
+                tradfin_as_of: "2026-07-17T09:25:00Z"
+                captured_at: "2026-07-17T09:30:00Z"
+                lamps:
+                  - { key: dxy, label: US Dollar Index, value: 103.42, delta_pct: -0.18, status: tailwind, as_of: "2026-07-17T09:25:00Z" }
+                  - { key: rates, label: US 10Y Yield, value: 4.21, delta_pct: 0.35, status: headwind, as_of: "2026-07-17T09:25:00Z" }
+                  - { key: vix, label: VIX, value: 14.8, delta_pct: -1.2, status: tailwind, as_of: "2026-07-17T09:25:00Z" }
+                  - { key: spx, label: S&P 500, value: 6412.3, delta_pct: 0.22, status: tailwind, as_of: "2026-07-17T09:25:00Z" }
+                  - { key: gold, label: Gold, value: 2694.1, delta_pct: 0.05, status: neutral, as_of: "2026-07-17T09:25:00Z" }
+                correlations:
+                  - { pair: btc_spx, coef: 0.61, label: moving like stocks, window: "3h (52 points)" }
+                  - { pair: btc_gold, coef: 0.12, label: weak link, window: "3h (52 points)" }
+                  - { pair: btc_dxy, coef: -0.44, label: inverse to the dollar, window: "3h (52 points)" }
+                fng: { value: 63, label: Greed, ok: true }
+                generated_idea: >-
+                  Dollar softening while equities grind higher — a mildly
+                  supportive backdrop for risk assets, tempered by rising
+                  yields.
+                calendar:
+                  - { country: US, event: CPI YoY, impact: high, time: "2026-07-18T12:30:00Z" }
+                  - { country: US, event: Initial Jobless Claims, impact: medium, time: "2026-07-17T12:30:00Z" }
+
+  /api/v1/macrocal:
+    get:
+      tags: [macro]
+      summary: Macro-economic blackout calendar
+      description: >
+        Upcoming high-impact macro events the scenario runner respects for
+        signal blackouts, plus the current blackout state.
+      parameters:
+        - name: hours
+          in: query
+          description: Look-ahead window in hours (1..168, default 24).
+          schema: { type: integer, minimum: 1, maximum: 168, default: 24 }
+      responses:
+        "200":
+          description: Calendar and blackout state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/MacroCalEvent" }
+                  blackout_active: { type: boolean }
+                  blackout_event:
+                    type: string
+                    description: Name of the release that triggered the blackout, or "".
+                  blackout_minutes:
+                    type: integer
+                    description: Signed minutes relative to the event — negative = before, positive = after.
+                  config:
+                    type: object
+                    properties:
+                      enabled: { type: boolean }
+                      before_minutes: { type: integer }
+                      after_minutes: { type: integer }
+                      min_impact: { type: string }
+                  last_fetch:
+                    type: string
+                    format: date-time
+                    description: When the calendar cache was last refreshed from the upstream provider.
+              example:
+                events:
+                  - country: US
+                    event: CPI YoY
+                    impact: high
+                    time: "2026-07-18T12:30:00Z"
+                    estimate: 2.6
+                    actual: 0
+                    prev: 2.7
+                blackout_active: false
+                blackout_event: ""
+                blackout_minutes: 0
+                config:
+                  enabled: true
+                  before_minutes: 30
+                  after_minutes: 30
+                  min_impact: high
+                last_fetch: "2026-07-17T09:00:00Z"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ── Market ────────────────────────────────────────────────────────────────
+  /api/v1/market/candles:
+    get:
+      tags: [market]
+      summary: Historical OHLCV candles
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          schema: { type: string }
+          description: Instrument symbol (exchange-native, e.g. BTCUSDT for Binance).
+        - name: source
+          in: query
+          schema:
+            type: string
+            enum: [moex, binance]
+          description: Data source. Defaults to MOEX when omitted.
+        - name: interval
+          in: query
+          schema: { type: string }
+          description: Candle interval (Binance only, e.g. 1h, 4h, 1d; default 1d).
+        - name: limit
+          in: query
+          schema: { type: integer, default: 200 }
+      responses:
+        "200":
+          description: Candle series.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  candles:
+                    type: array
+                    items: { $ref: "#/components/schemas/OHLCVCandle" }
+                  source:
+                    type: string
+                    enum: [moex, binance]
+                  symbol: { type: string }
+              example:
+                candles:
+                  - { time: 1784260800, open: 117820.0, high: 118460.0, low: 117510.0, close: 118240.5, volume: 5321.7 }
+                  - { time: 1784275200, open: 118240.5, high: 118610.0, low: 117990.0, close: 118402.1, volume: 4876.2 }
+                source: binance
+                symbol: BTCUSDT
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/market/quotes:
+    get:
+      tags: [market]
+      summary: Current quotes for a list of symbols
+      parameters:
+        - name: symbols
+          in: query
+          required: true
+          schema: { type: string }
+          description: Comma-separated symbol list.
+        - name: source
+          in: query
+          schema:
+            type: string
+            enum: [moex, binance]
+          description: Data source. Defaults to MOEX when omitted.
+      responses:
+        "200":
+          description: Quotes keyed by symbol.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  quotes:
+                    type: object
+                    additionalProperties: { $ref: "#/components/schemas/StockQuote" }
+                  source:
+                    type: string
+                    enum: [moex, binance]
+              example:
+                quotes:
+                  BTCUSDT:
+                    symbol: BTCUSDT
+                    price: 118402.1
+                    change: 582.1
+                    changePercent: 0.49
+                    high: 118610.0
+                    low: 117510.0
+                    open: 117820.0
+                    prevClose: 117820.0
+                    marketCap: 0
+                    timestamp: 1784281800
+                source: binance
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/market/momentum:
+    get:
+      tags: [market]
+      summary: Relative strength vs BTC and volume trend
+      description: >
+        Relative-strength (1d/7d/30d vs BTC) plus a volume-trend read per
+        requested symbol, for the Crypto Sentiment liquidity panel. Windows
+        with too little history are omitted from the item.
+      security: []
+      parameters:
+        - name: symbols
+          in: query
+          required: true
+          schema: { type: string }
+          description: Comma-separated bare tickers, no USDT suffix (e.g. ETH,SOL). Capped at 20; BTC itself is skipped (it is the baseline).
+      responses:
+        "200":
+          description: Momentum items keyed by symbol.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  baseline:
+                    type: string
+                    description: Baseline symbol the relative strength is computed against.
+                    examples: [BTC]
+                  items:
+                    type: object
+                    additionalProperties: { $ref: "#/components/schemas/Momentum" }
+              example:
+                baseline: BTC
+                items:
+                  ETH: { rs_1d: 1.8, rs_7d: -2.4, rs_30d: 5.1, vol_growth_pct: 12.3 }
+                  SOL: { rs_1d: -0.6, rs_7d: 3.9, rs_30d: 14.7, vol_growth_pct: -4.8 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "502":
+          description: Upstream (exchange) unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: momentum upstream unavailable }
+
+  /api/v1/market/fear-greed:
+    get:
+      tags: [market]
+      summary: Crypto Fear & Greed index (proxy)
+      description: Server-side proxy + cache for the CoinMarketCap Fear & Greed index (CMC blocks browser CORS).
+      security: []
+      responses:
+        "200":
+          description: Current index value.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value: { type: integer, minimum: 0, maximum: 100 }
+                  label: { type: string, examples: [Greed] }
+                  source: { type: string, const: coinmarketcap }
+              example:
+                value: 63
+                label: Greed
+                source: coinmarketcap
+        "502":
+          description: Upstream unavailable and no cached value.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: fear-greed upstream unavailable }
+
+  /api/v1/market/mood-read:
+    get:
+      tags: [market]
+      summary: AlphaVizor AI market-mood paragraph
+      description: >
+        A 2-3 sentence neutral, observational English paragraph describing the
+        overall crypto market mood, generated by AlphaVizor AI and passed
+        through a safe-output filter. Always 200 — an empty `read` means the
+        frontend should hide the block. Cached for 10 minutes.
+      security: []
+      responses:
+        "200":
+          description: Mood read.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  read:
+                    type: string
+                    description: The generated paragraph, or "" when generation is unavailable.
+                  source: { type: string, const: alphavizor-ai }
+              example:
+                read: >-
+                  The crypto market is drifting upward on moderate volume,
+                  with sentiment leaning greedy but not euphoric. Majors are
+                  outperforming small caps, and liquidation activity remains
+                  subdued.
+                source: alphavizor-ai
+
+  /api/v1/market/fundamentals:
+    get:
+      tags: [market]
+      summary: Market fundamentals (not implemented)
+      description: 'Stub — always returns {"status":"not_implemented"}.'
+      responses:
+        "200":
+          description: Stub response.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: not_implemented }
+              example:
+                status: not_implemented
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ── Scenarios ─────────────────────────────────────────────────────────────
+  /api/v1/scenarios/featured:
+    get:
+      tags: [scenarios]
+      summary: Featured public scenarios
+      description: Up to 6 curated cards (is_featured AND is_public), ordered by clone_count then published_at.
+      security: []
+      responses:
+        "200":
+          description: Featured cards.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/PublicScenarioCard" }
+              example:
+                items:
+                  - id: 4c1f6a02-2b9e-4d3a-8f21-7f5f0b6f9d10
+                    slug: macromind
+                    name: Macro Regime Rider
+                    author_slug: macromind
+                    author_name: MacroMind
+                    author_theme: crypto
+                    author_style: macro
+                    author_bio: Trades BTC around macro regime shifts and liquidity cycles.
+                    preview_chip: Risk-on confirmed
+                    risk_tier: balanced
+                    interval: 4h
+                    selected_pair: BTCUSDT
+                    is_premium: false
+                    is_featured: true
+                    clone_count: 128
+                    published_at: "2026-06-02T10:00:00Z"
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/scenarios/public:
+    get:
+      tags: [scenarios]
+      summary: Paginated public scenario catalog
+      description: >
+        Filters by theme and style (closed enums; invalid values are silently
+        dropped) and a free-text search over name and author_name. Pages beyond
+        the available range return 200 with empty items.
+      security: []
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 1 }
+        - name: theme
+          in: query
+          schema:
+            type: string
+            enum: [gold_silver, currencies, indices, oil_gas, crypto, multi, casino, betting]
+        - name: style
+          in: query
+          schema:
+            type: string
+            enum: [technical, news, levels, derivatives, discovery, macro, onchain, sentiment, fundamental, astro]
+        - name: q
+          in: query
+          description: Free-text search over scenario name and author name (max 80 chars).
+          schema: { type: string, maxLength: 80 }
+      responses:
+        "200":
+          description: Catalog page (20 items per page).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/PublicScenarioCard" }
+                  page: { type: integer }
+                  total_pages: { type: integer }
+              example:
+                items:
+                  - id: 4c1f6a02-2b9e-4d3a-8f21-7f5f0b6f9d10
+                    slug: macromind
+                    name: Macro Regime Rider
+                    author_slug: macromind
+                    author_name: MacroMind
+                    author_theme: crypto
+                    author_style: macro
+                    author_bio: Trades BTC around macro regime shifts and liquidity cycles.
+                    preview_chip: Risk-on confirmed
+                    risk_tier: balanced
+                    interval: 4h
+                    selected_pair: BTCUSDT
+                    is_premium: false
+                    is_featured: true
+                    clone_count: 128
+                    published_at: "2026-06-02T10:00:00Z"
+                page: 1
+                total_pages: 3
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/scenarios/public/{slug}:
+    get:
+      tags: [scenarios]
+      summary: Public scenario detail
+      description: >
+        Single public scenario by author slug. The graph blobs (nodes_json /
+        edges_json) are omitted unless ?include=graph is set. Anonymous views
+        are allowed; a valid Bearer token, if present, attributes the view.
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+        - name: include
+          in: query
+          description: Set to "graph" to include nodes_json and edges_json.
+          schema:
+            type: string
+            enum: [graph]
+      responses:
+        "200":
+          description: Scenario detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicScenarioDetail" }
+              example:
+                id: 4c1f6a02-2b9e-4d3a-8f21-7f5f0b6f9d10
+                slug: macromind
+                name: Macro Regime Rider
+                author_slug: macromind
+                author_name: MacroMind
+                author_theme: crypto
+                author_style: macro
+                author_bio: Trades BTC around macro regime shifts and liquidity cycles.
+                preview_chip: Risk-on confirmed
+                risk_tier: balanced
+                interval: 4h
+                selected_pair: BTCUSDT
+                is_premium: false
+                is_featured: true
+                clone_count: 128
+                published_at: "2026-06-02T10:00:00Z"
+                segment: pro
+        "404":
+          description: Scenario not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: scenario not found }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/scenarios/{slug}/clone:
+    post:
+      tags: [scenarios]
+      summary: Clone a public scenario into the user's own strategies
+      description: >
+        Copies the scenario with author/public/featured/premium flags reset;
+        the clone starts inactive. Atomically increments the source's
+        clone_count.
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Clone created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  strategy_id:
+                    type: string
+                    description: ID of the newly created strategy row.
+              example:
+                strategy_id: 8e2d5c74-0a1b-4f6e-9c3d-2b7a8f4e1d09
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Scenario not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: scenario not found }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/scenarios/active:
+    get:
+      tags: [scenarios]
+      summary: The user's active scenarios with runtime status
+      responses:
+        "200":
+          description: Active scenarios.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scenarios:
+                    type: array
+                    items: { $ref: "#/components/schemas/ActiveScenario" }
+              example:
+                scenarios:
+                  - id: 8e2d5c74-0a1b-4f6e-9c3d-2b7a8f4e1d09
+                    name: Macro Regime Rider (copy)
+                    symbol: BTCUSDT
+                    interval: 4h
+                    risk_tier: balanced
+                    is_active: true
+                    last_signal_bar_time: 1784260800
+                    last_signal_direction: long
+                    running: true
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/scenarios/{id}/start:
+    post:
+      tags: [scenarios]
+      summary: Activate a scenario (start the live runner loop)
+      description: >
+        Marks the strategy active and asks the runner to spawn its loop.
+        Subject to the per-user active-scenario quota and the global
+        kill-switch. If the runner fails, the strategy is still active in the
+        DB and the response carries `status: active_in_db` with a
+        `runner_error`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Started (or active in DB with a runner error).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [started, active_in_db]
+                  id: { type: string }
+                  runner_error: { type: string }
+              example:
+                status: started
+                id: 8e2d5c74-0a1b-4f6e-9c3d-2b7a8f4e1d09
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Scenario not found or not owned by the user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: not found }
+        "409":
+          description: Max active scenarios reached.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: max active scenarios reached }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503":
+          description: Runner disabled (kill switch) or database unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: scenario runner temporarily disabled }
+
+  /api/v1/scenarios/{id}/stop:
+    post:
+      tags: [scenarios]
+      summary: Deactivate a scenario (stop the live runner loop)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Stopped.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: stopped }
+                  id: { type: string }
+              example:
+                status: stopped
+                id: 8e2d5c74-0a1b-4f6e-9c3d-2b7a8f4e1d09
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Scenario not found or not owned by the user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: not found }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  # ── Alerts & Telegram ─────────────────────────────────────────────────────
+  /api/v1/alerts:
+    get:
+      tags: [alerts]
+      summary: Signal alerts history for the authenticated user
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - name: strategy_id
+          in: query
+          description: Filter to alerts from one strategy.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Alerts, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts:
+                    type: array
+                    items: { $ref: "#/components/schemas/Alert" }
+              example:
+                alerts:
+                  - id: f4b9d3a1-6e2c-48d0-b5a7-1c9e8d7f6a54
+                    strategy_id: 8e2d5c74-0a1b-4f6e-9c3d-2b7a8f4e1d09
+                    symbol: BTCUSDT
+                    interval: 4h
+                    direction: long
+                    label: Momentum breakout
+                    confidence: 0.71
+                    entry_price: 118240.5
+                    stop_loss: 116800.0
+                    take_profit: 121500.0
+                    position_size_usd: 250
+                    bar_time: 1784260800
+                    created_at: "2026-07-17T08:00:05Z"
+                    telegram_sent_at: "2026-07-17T08:00:07Z"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/telegram/link:
+    post:
+      tags: [alerts]
+      summary: Issue a short-lived Telegram link code
+      description: The user types `/link <code>` in the bot (or follows the deeplink) to bind their Telegram account.
+      responses:
+        "200":
+          description: Link code issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string }
+                  expires_at: { type: string, format: date-time }
+                  bot_username: { type: string }
+                  deeplink:
+                    type: string
+                    description: t.me deeplink; present only when the bot username is configured.
+              example:
+                code: A7K2M9
+                expires_at: "2026-07-17T09:45:00Z"
+                bot_username: alphavizor_bot
+                deeplink: https://t.me/alphavizor_bot?start=A7K2M9
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+    delete:
+      tags: [alerts]
+      summary: Unlink the user's Telegram account
+      responses:
+        "200":
+          description: Unlinked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: unlinked }
+              example:
+                status: unlinked
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  # ── Dashboard / billing (internal) ────────────────────────────────────────
+  /api/v1/dashboard/summary:
+    get:
+      tags: [dashboard]
+      summary: Post-login dashboard summary
+      description: Single round-trip payload — strategies count, up to 10 recent alerts, featured scenario cards.
+      responses:
+        "200":
+          description: Dashboard summary.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/billing:
+    get:
+      tags: [billing]
+      summary: Billing tier stub
+      description: Returns the user's tier (default "free"); billing integration is a stub.
+      responses:
+        "200":
+          description: Billing info.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  # ── ML (internal) ─────────────────────────────────────────────────────────
+  /api/v1/ml/predict:
+    post:
+      tags: [ml]
+      summary: ML prediction (v2 model)
+      responses:
+        "200":
+          description: Prediction result.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/ml/predict/multi:
+    post:
+      tags: [ml]
+      summary: Multi-symbol ML prediction
+      responses:
+        "200":
+          description: Predictions.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/ml/predict/legacy:
+    post:
+      tags: [ml]
+      summary: Legacy ML prediction
+      responses:
+        "200":
+          description: Prediction result.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/ml/models:
+    get:
+      tags: [ml]
+      summary: List loaded ML models
+      responses:
+        "200":
+          description: Model list.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/ml/train:
+    post:
+      tags: [ml]
+      summary: Trigger ML training (admin-only)
+      responses:
+        "200":
+          description: Training started.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/MLJobBusy" }
+
+  /api/v1/ml/reload:
+    post:
+      tags: [ml]
+      summary: Reload ML models from disk (admin-only)
+      responses:
+        "200":
+          description: Reload status.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/ml/backtest:
+    get:
+      tags: [ml]
+      summary: Backtest results
+      responses:
+        "200":
+          description: Backtest data.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/ml/backtest/strategy:
+    get:
+      tags: [ml]
+      summary: Strategy backtest results
+      responses:
+        "200":
+          description: Backtest data.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/ml/backtest/run:
+    post:
+      tags: [ml]
+      summary: Run a backtest (admin-only)
+      responses:
+        "200":
+          description: Run status.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/MLJobBusy" }
+
+  /api/v1/ml/paper-trades:
+    get:
+      tags: [ml]
+      summary: Paper-trade history
+      responses:
+        "200":
+          description: Paper trades.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/ml/paper-trades/run:
+    post:
+      tags: [ml]
+      summary: Run the paper-trade loop (admin-only)
+      responses:
+        "200":
+          description: Run status.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/MLJobBusy" }
+
+  /api/v1/ml/paper/status:
+    get:
+      tags: [ml]
+      summary: Paper-trading status
+      responses:
+        "200":
+          description: Status.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ── Admin (internal) ──────────────────────────────────────────────────────
+  /api/v1/admin/users:
+    get:
+      tags: [admin]
+      summary: List users (admin role required)
+      responses:
+        "200":
+          description: User list.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/admin/users/{id}/reset-password:
+    post:
+      tags: [admin]
+      summary: Reset a user's password (admin role required)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Reset result.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  # ── Strategies (internal) ─────────────────────────────────────────────────
+  /api/v1/strategies:
+    get:
+      tags: [strategies]
+      summary: List the user's strategies
+      responses:
+        "200":
+          description: Strategy list.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+    post:
+      tags: [strategies]
+      summary: Create a strategy
+      responses:
+        "200":
+          description: Created strategy.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/strategies/{id}:
+    get:
+      tags: [strategies]
+      summary: Get a strategy by id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Strategy.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+    put:
+      tags: [strategies]
+      summary: Update a strategy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated strategy.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+    delete:
+      tags: [strategies]
+      summary: Delete a strategy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { type: object }
+              example: { status: deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  # ── Crypto / news (internal) ──────────────────────────────────────────────
+  /api/v1/crypto/scan:
+    get:
+      tags: [crypto]
+      summary: Crypto market scan
+      responses:
+        "200":
+          description: Scan results.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/crypto/listings:
+    get:
+      tags: [crypto]
+      summary: Crypto listings
+      responses:
+        "200":
+          description: Listings.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/news/fundamental:
+    get:
+      tags: [crypto]
+      summary: Fundamental news feed
+      description: Aggregated news from Finnhub, CoinDesk RSS, Cointelegraph RSS, Alpha Vantage.
+      responses:
+        "200":
+          description: News items.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  # ── User prefs (internal) ─────────────────────────────────────────────────
+  /api/v1/follows:
+    get:
+      tags: [user-prefs]
+      summary: List followed public scenarios
+      responses:
+        "200":
+          description: Follows list.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+    post:
+      tags: [user-prefs]
+      summary: Follow (bookmark) a public scenario
+      responses:
+        "200":
+          description: Follow created.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/follows/{strategy_id}:
+    delete:
+      tags: [user-prefs]
+      summary: Unfollow a public scenario
+      parameters:
+        - name: strategy_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Unfollowed.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/watchlist:
+    get:
+      tags: [user-prefs]
+      summary: Get the user's watchlist
+      responses:
+        "200":
+          description: Watchlist.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+    put:
+      tags: [user-prefs]
+      summary: Replace the user's watchlist
+      responses:
+        "200":
+          description: Updated watchlist.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+  /api/v1/notification-prefs:
+    get:
+      tags: [user-prefs]
+      summary: Get notification preferences
+      responses:
+        "200":
+          description: Preferences.
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+    put:
+      tags: [user-prefs]
+      summary: Update notification preferences
+      responses:
+        "200":
+          description: Updated preferences.
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/DBUnavailable" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        HS256 JWT issued by /api/v1/auth/register or /api/v1/auth/login, valid
+        for 24 hours (issuer "elibri-backend"). Send as
+        `Authorization: Bearer <token>`. As a fallback (used by the WebSocket
+        endpoint), the token is also accepted via the `token` query parameter
+        on every route. Public endpoints accept anonymous requests; a valid
+        token, when present, is still parsed to attribute the request to a
+        user. Invalid tokens on public endpoints are silently ignored.
+
+  responses:
+    StatusOK:
+      description: Operation accepted.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status: { type: string, const: ok }
+          example:
+            status: ok
+    BadRequest:
+      description: >-
+        Malformed request or failed validation. Body is the standard
+        {"error": ...} envelope; a subset of handlers (market, ML, crypto,
+        scenario runner control, telegram) emits it via Go's http.Error with
+        Content-Type text/plain; charset=utf-8 — parse the body as JSON
+        regardless of Content-Type (see the Error Handling guide).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: invalid JSON }
+    Unauthorized:
+      description: >-
+        Missing or invalid JWT. Emitted by the auth middleware via Go's
+        http.Error — the body is the standard {"error": ...} envelope but the
+        Content-Type is text/plain; charset=utf-8 (known inconsistency; parse
+        the body as JSON regardless of Content-Type).
+      content:
+        text/plain:
+          schema:
+            type: string
+            description: JSON-shaped error envelope delivered as plain text.
+          example: '{"error":"missing authorization"}'
+    Forbidden:
+      description: Authenticated but not an admin.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: admin access required }
+    NotFound:
+      description: Resource not found (or not owned by the authenticated user).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: not found }
+    MethodNotAllowed:
+      description: >-
+        HTTP method not supported on this path. Multi-method paths return the
+        JSON envelope; single-method routes get Go's plain-text
+        "Method Not Allowed" from the router instead.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: method not allowed }
+    MLJobBusy:
+      description: >-
+        An ML job (training, backtest or paper-trade run) is already in
+        progress — the service has a single job slot. Retry later. Emitted
+        via Go's http.Error (Content-Type text/plain; charset=utf-8).
+      content:
+        text/plain:
+          schema:
+            type: string
+            description: JSON-shaped error envelope delivered as plain text.
+          example: '{"error":"ML job already in progress"}'
+    InternalError:
+      description: >-
+        Internal server error. Body is the standard {"error": ...} envelope;
+        a subset of handlers emits it via Go's http.Error with Content-Type
+        text/plain; charset=utf-8 (see the Error Handling guide).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: internal error }
+    DBUnavailable:
+      description: >-
+        Database unavailable. Body is the standard {"error": ...} envelope;
+        the scenario/telegram handlers emit it via Go's http.Error with
+        Content-Type text/plain; charset=utf-8 (see the Error Handling
+        guide).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: database unavailable }
+
+  schemas:
+    Error:
+      type: object
+      description: >-
+        Shared error envelope — every error response in the API carries this
+        single-field body. Note the Content-Type inconsistency: most handlers
+        send it as application/json, but the auth middleware (all 401s) and
+        the market/ML/crypto/scenario-runner/telegram handlers build the same
+        body via Go's http.Error, which stamps text/plain; charset=utf-8.
+        Clients should parse the body as JSON regardless of Content-Type.
+      properties:
+        error: { type: string }
+      required: [error]
+
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        role:
+          type: string
+          enum: [user, admin]
+        risk_tier:
+          type: string
+          enum: [conservative, balanced, aggressive]
+        email_verified: { type: boolean }
+        terms_accepted_at:
+          type: [string, "null"]
+          format: date-time
+        tier:
+          type: string
+          description: Billing tier (default "free").
+        telegram_chat_id:
+          type: [integer, "null"]
+        telegram_linked_at:
+          type: [string, "null"]
+          format: date-time
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: HS256 JWT, valid 24 hours.
+        user: { $ref: "#/components/schemas/User" }
+
+    OHLCVCandle:
+      type: object
+      properties:
+        time:
+          type: integer
+          description: Unix timestamp (seconds).
+        open: { type: number }
+        high: { type: number }
+        low: { type: number }
+        close: { type: number }
+        volume: { type: number }
+
+    StockQuote:
+      type: object
+      properties:
+        symbol: { type: string }
+        price: { type: number }
+        change: { type: number }
+        changePercent: { type: number }
+        high: { type: number }
+        low: { type: number }
+        open: { type: number }
+        prevClose: { type: number }
+        marketCap: { type: number }
+        timestamp:
+          type: integer
+          description: Unix timestamp (seconds).
+
+    Momentum:
+      type: object
+      description: Relative-strength vs BTC. Windows with too little history are omitted.
+      properties:
+        rs_1d: { type: number }
+        rs_7d: { type: number }
+        rs_30d: { type: number }
+        vol_growth_pct: { type: number }
+
+    NarrativeSnapshot:
+      type: object
+      description: One narrative's latest snapshot, enriched with per-asset quotes and (top narrative only) a generated idea.
+      properties:
+        narrative: { type: string }
+        captured_at: { type: string, format: date-time }
+        mention_count_24h: { type: integer }
+        mention_count_prev_24h: { type: integer }
+        growth_pct:
+          type: number
+          description: Mention growth %, capped at ±999 (±999 is the "new theme" sentinel).
+        trend_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        stage:
+          type: string
+          enum: [early, trending, mainstream, declining]
+        sentiment_score:
+          type: number
+          minimum: -1
+          maximum: 1
+        sentiment_label:
+          type: string
+          enum: [bull, neutral, bear]
+        confidence:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Data-quality score (volume, source diversity, consistency) — NOT a prediction-strength score.
+        related_assets:
+          type: array
+          items: { type: string }
+        sources_breakdown:
+          type: object
+          additionalProperties: { type: integer }
+        reasons:
+          type: array
+          items: { type: string }
+        is_new_theme: { type: boolean }
+        related_assets_quotes:
+          type: array
+          description: Binance 24h quotes for related tickers; empty when Binance failed or no tickers.
+          items: { $ref: "#/components/schemas/TickerQuote" }
+        generated_idea:
+          type: string
+          description: AI-generated paragraph — present on the top narrative only. Analytical observation, not investment advice.
+
+    TickerQuote:
+      type: object
+      properties:
+        symbol:
+          type: string
+          description: Bare ticker, no exchange suffix (e.g. "JTO").
+        price: { type: number }
+        change_pct_24h: { type: number }
+        last_updated_unix:
+          type: integer
+          description: Unix seconds (exchange ticker timestamp).
+
+    MentionRef:
+      type: object
+      properties:
+        title: { type: string }
+        url: { type: string, format: uri }
+        source: { type: string }
+        posted_at: { type: string, format: date-time }
+        importance_score:
+          type: [integer, "null"]
+          description: 0..100; null for rows not yet classified.
+
+    WhaleSnapshot:
+      type: object
+      properties:
+        asset: { type: string }
+        captured_at: { type: string, format: date-time }
+        net_flow_usd_24h:
+          type: number
+          description: inflow_usd - outflow_usd. >0 = net inflow to exchanges; <0 = net outflow.
+        net_flow_prev_24h: { type: number }
+        flow_pct:
+          type: number
+          description: Change vs the prior 24h window, capped at ±999 (±999 = "new spike" sentinel).
+        direction:
+          type: string
+          enum: [inflow, outflow, neutral]
+        inflow_usd_24h: { type: number }
+        outflow_usd_24h: { type: number }
+        tx_count_24h: { type: integer }
+        confidence:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Data-quality score; 0 = "too little data" sentinel.
+        exchange_breakdown:
+          type: object
+          additionalProperties: { type: integer }
+        reasons:
+          type: array
+          items: { type: string }
+        is_new_spike: { type: boolean }
+        source:
+          type: string
+          enum: [etherscan, mempool, sample]
+          description: Honest data-origin badge.
+        partial:
+          type: boolean
+          description: True when the netflow is an estimate over labeled wallets (free-tier data), not a full exchange total.
+
+    WhaleTransfer:
+      type: object
+      properties:
+        chain:
+          type: string
+          enum: [ETH, BTC]
+        tx_hash: { type: string }
+        timestamp: { type: string, format: date-time }
+        from_addr: { type: string }
+        to_addr: { type: string }
+        asset: { type: string }
+        amount_native:
+          type: number
+          description: Already scaled by 10^decimals (wei/1e18 for ETH, sats/1e8 for BTC).
+        amount_usd:
+          type: number
+          description: 0 when the spot price was unavailable.
+        direction:
+          type: string
+          enum: [inflow, outflow, neutral]
+        exchange:
+          type: string
+          description: Labeled counterparty ("Binance", "Coinbase", ...) or "" when unknown.
+
+    FundingLiquidation:
+      type: object
+      properties:
+        symbol: { type: string }
+        side:
+          type: string
+          enum: [long_liq, short_liq]
+        qty: { type: number }
+        price:
+          type: number
+          description: Average fill price.
+        usd_value:
+          type: number
+          description: price * qty; 0 when the price was unavailable.
+        ts:
+          type: string
+          format: date-time
+          description: Event time (UTC RFC3339).
+
+    FundingZone:
+      type: object
+      properties:
+        symbol: { type: string }
+        price_band:
+          type: string
+          description: Human-readable range, e.g. "9900-9950".
+        total_usd: { type: number }
+        count: { type: integer }
+        side:
+          type: string
+          enum: [long_liq, short_liq]
+          description: Dominant side (by summed USD) in the band.
+
+    MacroResponse:
+      type: object
+      properties:
+        regime:
+          type: string
+          enum: [risk_on, mixed, risk_off]
+        composite:
+          type: [integer, "null"]
+          description: 0..100; null when 3 or more lamps have no data.
+        tradfin_market_open:
+          type: boolean
+          description: False on weekends / off-hours (staleness-based).
+        tradfin_as_of:
+          type: string
+          description: RFC3339 of the freshest tradfin quote, or "".
+        captured_at: { type: string, format: date-time }
+        lamps:
+          type: array
+          description: Exactly 5 lamps (dxy, rates, vix, spx, gold), in render order.
+          items: { $ref: "#/components/schemas/MacroLamp" }
+        correlations:
+          type: array
+          description: Exactly 3 correlations (btc_spx, btc_gold, btc_dxy).
+          items: { $ref: "#/components/schemas/MacroCorrelation" }
+        fng:
+          oneOf:
+            - $ref: "#/components/schemas/FearGreedCheck"
+            - type: "null"
+        generated_idea:
+          type: string
+          description: Rule-based diagnosis line; "" when it failed the safety filter.
+        calendar:
+          type: array
+          description: Top-5 medium+high-impact events in the next 72h.
+          items: { $ref: "#/components/schemas/MacroCalSlimEvent" }
+
+    MacroLamp:
+      type: object
+      properties:
+        key:
+          type: string
+          enum: [dxy, rates, vix, spx, gold]
+        label: { type: string }
+        value:
+          type: [number, "null"]
+          description: Null when no data.
+        delta_pct:
+          type: [number, "null"]
+          description: Session change % (Close - Open); null when no data.
+        status:
+          type: string
+          enum: [tailwind, neutral, headwind, ""]
+          description: Empty on no-data or unknown direction.
+        as_of:
+          type: string
+          description: RFC3339, or "" on no-data.
+
+    MacroCorrelation:
+      type: object
+      properties:
+        pair:
+          type: string
+          enum: [btc_spx, btc_gold, btc_dxy]
+        coef:
+          type: [number, "null"]
+          description: Null while the rolling window is still building.
+        label:
+          type: string
+          description: Human label ("moving like stocks" etc.); "" when coef is null.
+        window:
+          type: string
+          description: Human description of the window, e.g. "≈3h (52 points)".
+
+    FearGreedCheck:
+      type: object
+      properties:
+        value: { type: integer, minimum: 0, maximum: 100 }
+        label: { type: string }
+        ok: { type: boolean }
+
+    MacroCalSlimEvent:
+      type: object
+      properties:
+        country: { type: string }
+        event: { type: string }
+        impact:
+          type: string
+          enum: [high, medium]
+        time: { type: string, format: date-time }
+
+    MacroCalEvent:
+      type: object
+      description: Full calendar event as served by /api/v1/macrocal.
+      properties:
+        country: { type: string }
+        event: { type: string }
+        impact:
+          type: string
+          enum: [low, medium, high]
+        time: { type: string, format: date-time }
+        estimate: { type: number }
+        actual: { type: number }
+        prev: { type: number }
+
+    PublicScenarioCard:
+      type: object
+      properties:
+        id: { type: string }
+        slug:
+          type: string
+          description: Public slug (the author_slug).
+        name: { type: string }
+        author_slug: { type: string }
+        author_name: { type: string }
+        author_theme: { type: string }
+        author_style: { type: string }
+        author_bio: { type: string }
+        preview_chip: { type: string }
+        risk_tier:
+          type: string
+          enum: [conservative, balanced, aggressive]
+        interval: { type: string }
+        selected_pair: { type: string }
+        is_premium: { type: boolean }
+        is_featured: { type: boolean }
+        clone_count: { type: integer }
+        published_at:
+          type: string
+          format: date-time
+
+    PublicScenarioDetail:
+      allOf:
+        - $ref: "#/components/schemas/PublicScenarioCard"
+        - type: object
+          properties:
+            segment:
+              type: string
+              description: UI segment (e.g. "pro").
+            nodes_json:
+              description: Strategy graph nodes — present only with ?include=graph. Shape is frontend-defined JSON.
+            edges_json:
+              description: Strategy graph edges — present only with ?include=graph. Shape is frontend-defined JSON.
+
+    ActiveScenario:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        symbol: { type: string }
+        interval: { type: string }
+        risk_tier: { type: string }
+        is_active: { type: boolean }
+        paused_until:
+          type: string
+          description: Present only while the scenario is paused (e.g. macro blackout).
+        last_signal_bar_time:
+          type: integer
+          description: Unix bar time of the last signal, 0 if none.
+        last_signal_direction:
+          type: string
+          description: Omitted when no signal has fired yet.
+        running:
+          type: boolean
+          description: True when the runner goroutine is live (vs merely active in DB).
+
+    Alert:
+      type: object
+      properties:
+        id: { type: string }
+        strategy_id: { type: string }
+        symbol: { type: string }
+        interval: { type: string }
+        direction: { type: string }
+        label: { type: string }
+        confidence: { type: number }
+        entry_price: { type: number }
+        stop_loss: { type: number }
+        take_profit: { type: number }
+        position_size_usd: { type: number }
+        bar_time:
+          type: integer
+          description: Unix bar time.
+        created_at: { type: string, format: date-time }
+        telegram_sent_at:
+          type: string
+          description: Present only when the alert was delivered to Telegram.
+
+    AgentOutput:
+      type: object
+      description: >
+        Agent output envelope (currently the narrative_radar sample). Static
+        fields come from a versioned sample document; the four time fields are
+        computed per request. Field set may evolve with the agent spec.
+      properties:
+        agent_name: { type: string, examples: [narrative_radar] }
+        agent_version: { type: string }
+        timeframe: { type: string, examples: [48h] }
+        confidence: { type: integer }
+        risk: { type: string, examples: [medium] }
+        disclaimer:
+          type: string
+          description: Legal framing — analytical observation, not investment advice.
+        generated_at: { type: string, format: date-time }
+        window_start: { type: string, format: date-time }
+        window_end: { type: string, format: date-time }
+        next_refresh_at: { type: string, format: date-time }
+        narratives:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              stage:
+                type: string
+                enum: [early, trending, mainstream, declining]
+              trend_score: { type: integer }
+              mention_growth_24h_pct: { type: number }
+              mention_growth_48h_pct: { type: number }
+              source_breadth: { type: integer }
+              sources_active:
+                type: array
+                items: { type: string }
+              asset_examples:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    symbol: { type: string }
+                    rank_by_mentions: { type: integer }
+              sentiment_polarity: { type: number }
+              confidence: { type: integer }
+              first_detected_at: { type: string, format: date-time }
+              notes: { type: string }
+        historical_stats:
+          type: object
+          properties:
+            detections_30d: { type: integer }
+            early_stage_flagged_30d: { type: integer }
+            early_to_trending_conversion_pct: { type: integer }
+            avg_observation_window_hours: { type: integer }
+            data_freshness: { type: string, examples: [mock] }

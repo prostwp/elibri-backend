@@ -48,6 +48,7 @@ func runMigrations() {
 		"internal/store/migrations/010_narrative_importance.sql",
 		"internal/store/migrations/011_public_scenarios.sql",
 		"internal/store/migrations/013_whale_flow.sql",
+		"internal/store/migrations/014_auth_dashboard.sql",
 	}
 
 	for _, f := range files {

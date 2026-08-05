@@ -38,6 +38,24 @@ func NewRouter(cfg *config.Config) http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/me", handleMe)
 	mux.HandleFunc("PATCH /api/v1/auth/me", handleUpdateMe)
 
+	// Auth — email verification + password reset (sub-chat C). verify-email,
+	// forgot-password, reset-password are public (allowlisted in jwt.go);
+	// resend-verification is protected (reads the authed user).
+	mux.HandleFunc("POST /api/v1/auth/verify-email", handleVerifyEmail)
+	mux.HandleFunc("POST /api/v1/auth/resend-verification", handleResendVerification(cfg))
+	mux.HandleFunc("POST /api/v1/auth/forgot-password", handleForgotPassword(cfg))
+	mux.HandleFunc("POST /api/v1/auth/reset-password", handleResetPassword)
+
+	// Follows — bookmark public scenarios (sub-chat C, all protected).
+	// POST/GET on the collection path, DELETE on the {strategy_id} subpath.
+	mux.HandleFunc("/api/v1/follows", handleFollowsRouter)
+	mux.HandleFunc("DELETE /api/v1/follows/{strategy_id}", handleUnfollow)
+
+	// Watchlist + notification prefs (sub-chat C, protected). Method-switch
+	// routers handle GET/PUT on each path.
+	mux.HandleFunc("/api/v1/watchlist", handleWatchlistRouter)
+	mux.HandleFunc("/api/v1/notification-prefs", handleNotificationPrefsRouter)
+
 	// Strategies (protected)
 	mux.HandleFunc("GET /api/v1/strategies", handleStrategiesList)
 	mux.HandleFunc("POST /api/v1/strategies", handleStrategiesCreate)
@@ -122,6 +140,27 @@ func NewRouter(cfg *config.Config) http.Handler {
 	// first tick). Public — allowlisted in internal/auth/jwt.go publicPaths.
 	mux.HandleFunc("GET /api/v1/whale-flow", handleWhaleFlowList(whale.NewStore(store.Pool)))
 
+	// Funding Rate liquidations — live force-order feed + price-magnet zones.
+	// Unlike whale-flow (a poolbacked store built inline here), the funding
+	// store is a process-singleton the WS worker writes to and this handler
+	// reads; it's threaded in from cmd/server/main.go via api.SetFundingStore.
+	// The handler reads the package global, so the route is a plain reference.
+	// Public — allowlisted via the "/api/v1/funding/" prefix in
+	// internal/auth/jwt.go publicPrefixes. Returns {captured_at:"",feed:[],
+	// zones:[]} cleanly before the WS has delivered anything (or if the store
+	// was never wired).
+	mux.HandleFunc("GET /api/v1/funding/liquidations", handleFundingLiquidations)
+
+	// Macro Sentiment — risk-on/off regime of the big-money markets (stooq
+	// indices + crypto Fear&Greed + BTC↔tradfin correlations + an embedded
+	// macrocal calendar). The stooq worker writes to a process-singleton store
+	// (api.SetMacroStore from cmd/server/main.go); this handler reads it. Returns
+	// a valid (degraded) payload even before the first worker cycle / with no DB.
+	// Public — allowlisted by EXACT match "/api/v1/macro" in
+	// internal/auth/jwt.go publicPaths. NOT the same route as /api/v1/macrocal
+	// (the blackout calendar, registered above) — distinct exact paths.
+	mux.HandleFunc("GET /api/v1/macro", handleMacro)
+
 	// Public agent output (MVP-mock). Returns the canonical "what does this
 	// agent emit" JSON for the catalog detail page's Live Output Preview.
 	// Slug is the agent's public id (e.g. "narrative_radar"); 404 if unknown.
@@ -187,9 +226,9 @@ func handleReady(w http.ResponseWriter, r *http.Request) {
 	}
 	// ML models optional — report as advisory, not blocking.
 	writeJSON(w, map[string]any{
-		"status":     "ready",
-		"ml_loaded":  ml.V2Health().NModels,
-		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		"status":    "ready",
+		"ml_loaded": ml.V2Health().NModels,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 }
 

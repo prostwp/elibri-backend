@@ -2,19 +2,33 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/prostwp/elibri-backend/internal/auth"
 	"github.com/prostwp/elibri-backend/internal/config"
+	"github.com/prostwp/elibri-backend/internal/email"
 	"github.com/prostwp/elibri-backend/internal/ml"
 	"github.com/prostwp/elibri-backend/internal/store"
 )
+
+// defaultTermsVersion is the backend fallback stamped on consent when the
+// client sends an empty terms_version. The frontend's TERMS_VERSION
+// (src/lib/legalVersion.ts) is the canonical source; this only guards the
+// "client omitted it" path so the column is never silently NULL on consent.
+const defaultTermsVersion = "2026-06"
 
 type registerReq struct {
 	Email       string `json:"email"`
 	Password    string `json:"password"`
 	DisplayName string `json:"display_name"`
+	// Sub-chat C — consent gate. AcceptedTerms MUST be true (one checkbox
+	// covering Terms + Privacy + Risk). TermsVersion records which revision
+	// the user agreed to; empty falls back to defaultTermsVersion.
+	AcceptedTerms bool   `json:"accepted_terms"`
+	TermsVersion  string `json:"terms_version"`
 }
 
 type authResponse struct {
@@ -39,6 +53,17 @@ func handleRegister(cfg *config.Config) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "email and password (min 6 chars) required")
 			return
 		}
+		// Consent gate (sub-chat C): the single Terms+Privacy+Risk checkbox
+		// must be ticked. We reject BEFORE creating the user so a declined
+		// consent never leaves a half-registered row.
+		if !req.AcceptedTerms {
+			writeError(w, http.StatusBadRequest, "you must accept the terms")
+			return
+		}
+		termsVersion := strings.TrimSpace(req.TermsVersion)
+		if termsVersion == "" {
+			termsVersion = defaultTermsVersion
+		}
 
 		role := "user"
 		for _, a := range adminEmails {
@@ -48,6 +73,8 @@ func handleRegister(cfg *config.Config) http.HandlerFunc {
 			}
 		}
 
+		// New users start unverified (email_verified defaults FALSE in the
+		// schema). Login still works — the frontend shows a "verify" banner.
 		u, err := auth.CreateUser(r.Context(), store.Pool, req.Email, req.Password, req.DisplayName, role)
 		if err == auth.ErrUserExists {
 			writeError(w, http.StatusConflict, "email already registered")
@@ -56,6 +83,34 @@ func handleRegister(cfg *config.Config) http.HandlerFunc {
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create user")
 			return
+		}
+
+		// Record consent separately so CreateUser's signature stays untouched
+		// (it is called from other paths). Best-effort: a failed consent write
+		// is logged but does not abort registration — the account exists and
+		// the user can re-consent later if we ever surface it.
+		if _, err := store.Pool.Exec(r.Context(),
+			`UPDATE users SET terms_accepted_at = NOW(), terms_version = $1, updated_at = NOW() WHERE id = $2`,
+			termsVersion, u.ID,
+		); err != nil {
+			log.Printf("WARN: failed to record consent for user %s: %v", u.ID, err)
+		} else {
+			// Reflect the consent in the response object the client gets back.
+			now := time.Now()
+			u.TermsAcceptedAt = &now
+		}
+
+		// Issue an email-verification token and fire the Resend email. A send
+		// failure is NON-FATAL: log WARN and still return 200 — the user can
+		// hit /auth/resend-verification. Dev mode (no RESEND_API_KEY) logs the
+		// link to stdout instead of calling the API.
+		if rawTok, terr := auth.IssueAuthToken(r.Context(), store.Pool, u.ID, auth.PurposeEmailVerify, auth.EmailVerifyTTL); terr != nil {
+			log.Printf("WARN: failed to issue verify token for user %s: %v", u.ID, terr)
+		} else {
+			subject, html := email.VerifyEmailHTML(cfg.AppBaseURL, rawTok)
+			if serr := email.SendEmail(r.Context(), cfg.ResendAPIKey, cfg.ResendFrom, u.Email, subject, html); serr != nil {
+				log.Printf("WARN: failed to send verification email to %s: %v", u.Email, serr)
+			}
 		}
 
 		token, err := auth.IssueToken(cfg.JWTSecret, u.ID, u.Email, u.Role)

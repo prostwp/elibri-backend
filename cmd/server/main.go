@@ -15,6 +15,8 @@ import (
 
 	"github.com/prostwp/elibri-backend/internal/api"
 	"github.com/prostwp/elibri-backend/internal/config"
+	"github.com/prostwp/elibri-backend/internal/funding"
+	"github.com/prostwp/elibri-backend/internal/macro"
 	"github.com/prostwp/elibri-backend/internal/macrocal"
 	"github.com/prostwp/elibri-backend/internal/ml"
 	"github.com/prostwp/elibri-backend/internal/narrative"
@@ -90,6 +92,59 @@ func main() {
 	// Pass AlertsMaxPerDayPerUser so deliver() enforces per-user quota.
 	alertQ := telegram.NewAlertQueue(tgBot, store.Pool, cfg.AlertsMaxPerDayPerUser)
 	go alertQ.Run(ctx)
+
+	// Funding Rate liquidations worker — a long-lived WS consumer of Binance
+	// Futures' public all-market force-order stream (!forceOrder@arr). It
+	// accumulates a ~1h in-memory rolling window and aggregates price-magnet
+	// zones; the /api/v1/funding/liquidations handler reads that same store
+	// (wired via api.SetFundingStore). Deliberately OUTSIDE the store.Pool
+	// guard below: funding needs NO Postgres, so the feed works even on a
+	// DB-less boot. Best-effort — any WS error is logged + retried with backoff,
+	// never fatal; if the socket never connects the endpoint just serves an
+	// empty feed and the frontend section degrades on its own.
+	fundingStore := funding.NewStore()
+	api.SetFundingStore(fundingStore)
+	fundingWorker := &funding.Worker{
+		Store: fundingStore,
+		// Logger nil → uses log.Default() (stdout/stderr).
+		// URL "" → the public wss://fstream.binance.com/ws/!forceOrder@arr.
+	}
+	go func() {
+		// Tolerate both Canceled (SIGTERM via signal.NotifyContext) and
+		// DeadlineExceeded — both are clean exits, not bugs.
+		if err := fundingWorker.Run(ctx); err != nil &&
+			!errors.Is(err, context.Canceled) &&
+			!errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("funding liquidations worker exited: %v", err)
+		}
+	}()
+	log.Println("Funding liquidations worker started (WS !forceOrder@arr)")
+
+	// Macro Sentiment worker — an HTTP poller of 6 stooq series (S&P/VIX/DXY/
+	// Gold/US10Y + BTC) plus alternative.me Fear&Greed. It accumulates a
+	// latest-per-symbol snapshot + a rolling ring for BTC↔SPX/Gold/DXY
+	// correlations; /api/v1/macro reads that same store (wired via
+	// api.SetMacroStore). Deliberately OUTSIDE the store.Pool guard below: macro
+	// is in-memory, no Postgres. Best-effort — any cycle error is logged, never
+	// fatal; before the first cycle the endpoint serves a degraded-but-valid
+	// payload and the frontend renders its skeleton/empty states.
+	macroStore := macro.NewStore()
+	api.SetMacroStore(macroStore)
+	macroWorker := &macro.Worker{
+		Store: macroStore,
+		// Logger nil → log.Default(); HTTPClient/Interval/URLs nil → public
+		// stooq + F&G endpoints at a 3-min cadence.
+	}
+	go func() {
+		// Tolerate both Canceled (SIGTERM via signal.NotifyContext) and
+		// DeadlineExceeded — both are clean exits, not bugs.
+		if err := macroWorker.Run(ctx); err != nil &&
+			!errors.Is(err, context.Canceled) &&
+			!errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("macro sentiment worker exited: %v", err)
+		}
+	}()
+	log.Println("Macro Sentiment worker started (stooq 6 symbols + F&G, poll 3 min)")
 
 	// Narrative Radar worker — periodically pulls news from Reddit + RSS feeds,
 	// classifies into narratives, and writes snapshots to narrative_snapshots.

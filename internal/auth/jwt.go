@@ -128,6 +128,14 @@ var publicPaths = []string{
 	"/ready",
 	"/api/v1/auth/register",
 	"/api/v1/auth/login",
+	// Email verification + password reset (sub-chat C). These run pre-auth:
+	// the user clicks a link from an email and has no Bearer token. The token
+	// in the request body is the credential. resend-verification is NOT here
+	// (it reads the authenticated user). follows/watchlist/notification-prefs
+	// are NOT here either — they are per-user and stay protected.
+	"/api/v1/auth/verify-email",
+	"/api/v1/auth/forgot-password",
+	"/api/v1/auth/reset-password",
 	// Public catalog (Sprint 2 v3 SaaS redesign). Featured + list are exact
 	// matches; detail uses prefix matching below because it carries a slug.
 	"/api/v1/scenarios/featured",
@@ -150,6 +158,11 @@ var publicPaths = []string{
 	// per-user data; same public tier as the Narrative Radar feed. Used by
 	// the scenario detail page and guest landing.
 	"/api/v1/whale-flow",
+	// Macro Sentiment regime — no per-user data; same public tier as whale-flow
+	// and narratives. Exact match (leaf path, no slug). The macro calendar is
+	// embedded in the response, so one allowlist line suffices. Distinct from
+	// "/api/v1/macrocal" (the blackout calendar) — that resolves to its own route.
+	"/api/v1/macro",
 }
 
 // publicPrefixes lets unauth GETs through when the path STARTS WITH one of
@@ -164,6 +177,11 @@ var publicPrefixes = []string{
 	// Same public tier as /api/v1/narratives itself — no per-user data,
 	// just article references for the Radar UI's source chips.
 	"/api/v1/narratives/",
+	// Funding Rate liquidations feed (.../funding/liquidations). No per-user
+	// data; same public tier as whale-flow. Prefix form because the path
+	// extends past the prefix with "liquidations" (the len>prefix check below
+	// then lets the unauth GET through).
+	"/api/v1/funding/",
 }
 
 func isPublicPath(path string) bool {
