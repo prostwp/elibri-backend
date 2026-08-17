@@ -1,0 +1,59 @@
+package demobot
+
+// Agent keys used by the priority rule and command router.
+const (
+	keyMacro    = "macro"
+	keyWhale    = "whale"
+	keyFunding  = "funding"
+	keyMomentum = "momentum"
+	keyTrend    = "trend"
+	keySR       = "sr"
+	keyVol      = "vol"
+	keyDigest   = "digest"
+	keyTop      = "top"
+	keyRisk     = "risk"
+	keyFX       = "fx"
+)
+
+// signalOrder is the fixed tie-break order of the "hook" rule. Only these
+// three compete for the top slot when macro is not RISK-OFF.
+var signalOrder = []string{keyFunding, keyMomentum, keyTrend}
+
+// pickTop implements the deterministic prioritization rule for /digest and
+// /top:
+//
+//  1. If the macro regime is "risk_off", macro is always the top signal —
+//     a hostile big-money backdrop outranks any single crypto signal.
+//  2. Otherwise the winner is the agent with the highest deviation-from-
+//     neutral (0..100) among funding, momentum and trend. Agents whose data
+//     source failed are simply absent from `deviations`.
+//  3. Ties are broken by the fixed order funding > momentum > trend
+//     (strict `>` while scanning in signalOrder keeps the earlier agent).
+//  4. If none of the three produced data, fall back to macro — the caller
+//     renders whatever macro state it has, including an honest offline card.
+//
+// FX in v1: FX assets do NOT compete for the top slot. The priority trio is
+// crypto-only — the momentum agent's deviation is computed from its
+// Binance-sourced reads (BTC/ETH) exclusively, and the /fx overview appears
+// in /digest as an informational block below the crypto one-liners.
+func pickTop(macroRegime string, deviations map[string]int) string {
+	if macroRegime == "risk_off" {
+		return keyMacro
+	}
+	best := ""
+	bestDev := -1
+	for _, k := range signalOrder {
+		d, ok := deviations[k]
+		if !ok {
+			continue
+		}
+		if d > bestDev {
+			best = k
+			bestDev = d
+		}
+	}
+	if best == "" {
+		return keyMacro
+	}
+	return best
+}
