@@ -32,6 +32,10 @@ type Card struct {
 	Deviation  int    // 0..100 deviation-from-neutral used by the priority rule
 	Offline    bool   // true when the data source was unreachable
 	SourceNote string // extra footer note, e.g. "data: Yahoo Finance"
+	// AIHTML is a pre-rendered AI block ("<b>AI idea:</b> <i>…</i>") appended
+	// after the facts and confidence bar. Builders MUST esc() every dynamic
+	// value when composing it — RenderHTML writes it verbatim.
+	AIHTML string
 }
 
 func esc(s string) string { return html.EscapeString(s) }
@@ -42,6 +46,7 @@ func esc(s string) string { return html.EscapeString(s) }
 //	<b>{Verdict}</b>
 //	• fact …
 //	Confidence: ■■■□□ 60%          (only when Confidence != nil)
+//	<b>AI …:</b> <i>…</i>          (only when AIHTML != "")
 //
 //	<i>Analytics, not financial advice · AlphaVizor · {UTC time}</i>
 func (c Card) RenderHTML() string {
@@ -80,6 +85,10 @@ func (c Card) renderBody() string {
 		b.WriteString(" ")
 		b.WriteString(strconv.Itoa(v))
 		b.WriteString("%\n")
+	}
+	if c.AIHTML != "" {
+		b.WriteString(c.AIHTML)
+		b.WriteString("\n")
 	}
 	return b.String()
 }

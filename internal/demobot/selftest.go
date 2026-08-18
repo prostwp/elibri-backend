@@ -28,6 +28,7 @@ func SelfTest(ag *Agents) {
 	section("/macro (regime="+regime+")", macro.RenderHTML())
 	section("/whale", ag.WhaleCard(ctx).RenderHTML())
 	section("/funding", ag.FundingCard(ctx).RenderHTML())
+	section("/news", ag.NewsCard(ctx).RenderHTML())
 	section("/fx", ag.FXCard(ctx).RenderHTML())
 	section("/momentum", ag.MomentumCard(ctx).RenderHTML())
 	section("/trend", ag.TrendCard(ctx, btcSpec).RenderHTML())

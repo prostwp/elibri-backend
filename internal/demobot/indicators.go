@@ -290,6 +290,35 @@ func supportResistance(candles []types.OHLCVCandle, wing int, tolPct float64) (s
 	return supports, resistances
 }
 
+// dayRange returns the last close's position inside the trailing-24h
+// high-low range: 0 = at the low, 1 = at the high. The window is anchored
+// on the last CLOSED bar's open time, so weekend session gaps mean "the
+// last trading day". ok=false on an empty series or a degenerate range.
+func dayRange(candles []types.OHLCVCandle) (float64, bool) {
+	if len(candles) == 0 {
+		return 0, false
+	}
+	last := candles[len(candles)-1]
+	cutoff := last.Time - 86400
+	hi, lo := math.Inf(-1), math.Inf(1)
+	for i := len(candles) - 1; i >= 0; i-- {
+		if candles[i].Time <= cutoff {
+			break
+		}
+		if candles[i].High > hi {
+			hi = candles[i].High
+		}
+		if candles[i].Low < lo {
+			lo = candles[i].Low
+		}
+	}
+	if !(hi > lo) {
+		return 0, false
+	}
+	pos := (last.Close - lo) / (hi - lo)
+	return math.Max(0, math.Min(1, pos)), true
+}
+
 // macdLast returns MACD(12,26,9) line, signal and histogram for the last
 // bar; ok=false under 35 bars (26 for the slow EMA + 9 for the signal).
 func macdLast(closes []float64) (line, signal, hist float64, ok bool) {

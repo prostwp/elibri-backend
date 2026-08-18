@@ -98,10 +98,13 @@ type fxRead struct {
 	RSI          float64
 	DayChangePct float64
 	HasDay       bool      // false when no bar ~24h back exists to diff against
+	DayPos       float64   // 0..1 position of the last close inside the 24h range
+	HasRange     bool      // false when the trailing 24h range is degenerate
 	CloseAt      time.Time // close time of the last CLOSED bar used
 }
 
-// fxLine renders one overview line: "🟢 EURUSD: up · RSI 58.3 · +0.24% 24h".
+// fxLine renders one overview line:
+// "🟢 EURUSD: up · RSI 58.3 · +0.24% 24h · near day high".
 func fxLine(r fxRead) string {
 	if r.Insufficient {
 		return emojiNeutral + " " + r.Pair + ": insufficient history"
@@ -120,7 +123,23 @@ func fxLine(r fxRead) string {
 	if r.HasDay {
 		line += fmt.Sprintf(" · %+.2f%% 24h", r.DayChangePct)
 	}
+	if r.HasRange {
+		line += " · " + dayRangeLabel(r.DayPos)
+	}
 	return line
+}
+
+// dayRangeLabel words a 0..1 day-range position: top 20% = near day high,
+// bottom 20% = near day low, everything else mid-range.
+func dayRangeLabel(pos float64) string {
+	switch {
+	case pos >= 0.8:
+		return "near day high"
+	case pos <= 0.2:
+		return "near day low"
+	default:
+		return "mid-range"
+	}
 }
 
 // fxOverviewCard assembles the /fx card from computed reads (pure —

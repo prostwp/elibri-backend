@@ -47,7 +47,7 @@ func TestMenuCardGolden(t *testing.T) {
 		{{"🐋 Whale", "cmd|whale"}, {"💸 Funding", "cmd|funding"}},
 		{{"⚡ Momentum", "cmd|momentum"}, {"📈 Trend", "cmd|trend"}},
 		{{"🎯 Levels", "cmd|sr"}, {"🌪 Volatility", "cmd|vol"}},
-		{{"🧮 Risk", "cmd|risk"}, {"ℹ️ Help", "cmd|help"}},
+		{{"🧮 Risk", "cmd|risk"}, {"📰 News", "cmd|news"}},
 	}
 	if len(kb.InlineKeyboard) != len(wantGrid) {
 		t.Fatalf("grid rows: got %d, want %d", len(kb.InlineKeyboard), len(wantGrid))
@@ -103,7 +103,10 @@ func TestCmdCallbackRoutingTable(t *testing.T) {
 	bot := testBot(srv.URL)
 	ctx := context.Background()
 
-	menuCmds := []string{"digest", "top", "fx", "macro", "whale", "funding", "momentum", "trend", "sr", "vol", "risk", "help"}
+	// The 12 grid commands (help swapped for news) plus help itself — old
+	// menu cards in chat history still carry cmd|help buttons, and the
+	// typed /help must keep working.
+	menuCmds := []string{"digest", "top", "fx", "macro", "whale", "funding", "momentum", "trend", "sr", "vol", "risk", "news", "help"}
 	for i, cmd := range menuCmds {
 		// Reference: the typed-command path.
 		wantText, _ := bot.buildReply(ctx, cmd, nil)
@@ -263,8 +266,22 @@ func TestStartupSetsCommandMenu(t *testing.T) {
 	}
 	body := f.request("setMyCommands", 0)
 	cmds, _ := body["commands"].([]any)
-	if len(cmds) != 12 {
-		t.Fatalf("command menu entries: got %d, want 12", len(cmds))
+	if len(cmds) != 14 {
+		t.Fatalf("command menu entries: got %d, want 14", len(cmds))
+	}
+	// /news and /help must be reachable from the native "/" menu — news is
+	// new, help lost its grid button to it.
+	found := map[string]bool{}
+	for _, raw := range cmds {
+		entry, _ := raw.(map[string]any)
+		if cmd, _ := entry["command"].(string); cmd != "" {
+			found[cmd] = true
+		}
+	}
+	for _, want := range []string{"news", "help"} {
+		if !found[want] {
+			t.Errorf("native menu missing /%s", want)
+		}
 	}
 	// Every entry must have a command and a non-empty English description.
 	for i, raw := range cmds {

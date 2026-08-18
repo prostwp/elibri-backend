@@ -75,6 +75,29 @@ func TestRenderHTMLEscapesDynamicContent(t *testing.T) {
 	}
 }
 
+// ── Golden: AI block renders after facts/confidence, before the footer ───────
+
+func TestRenderHTMLWithAIBlock(t *testing.T) {
+	c := Card{
+		Emoji:      "🟢",
+		Agent:      "Narrative Radar",
+		Verdict:    "Top narrative: ai-agents — trending, trend score 84/100",
+		Facts:      []string{"1. ai-agents — trending · score 84 · 412 mentions/24h"},
+		Confidence: intPtr(71),
+		AIHTML:     "<b>AI idea:</b> <i>Mentions tripled in 24h.</i>",
+		DataTime:   goldenTime,
+	}
+	want := "🟢 <b>Narrative Radar</b>\n" +
+		"<b>Top narrative: ai-agents — trending, trend score 84/100</b>\n" +
+		"• 1. ai-agents — trending · score 84 · 412 mentions/24h\n" +
+		"Confidence: ■■■■□ 71%\n" +
+		"<b>AI idea:</b> <i>Mentions tripled in 24h.</i>\n" +
+		"\n<i>Analytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC</i>"
+	if got := c.RenderHTML(); got != want {
+		t.Fatalf("AI-block card mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 // ── Confidence bar mapping 0-100 → 5 blocks ──────────────────────────────────
 
 func TestConfidenceBar(t *testing.T) {

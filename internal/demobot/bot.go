@@ -243,13 +243,15 @@ func parseCommand(text string) (string, []string) {
 
 // ── Zero-typing navigation ───────────────────────────────────────────────────
 
-// botCommands fills the native Telegram "/" menu (setMyCommands). Exactly 12
-// entries: /start is the platform's own entry point and /help lives in the
-// grid, so neither needs a slash-menu slot.
+// botCommands fills the native Telegram "/" menu (setMyCommands). Exactly 14
+// entries: /start is the platform's own entry point and needs no slot;
+// /help lost its grid button to 📰 News, so it lives here (and stays a typed
+// command), alongside the new /news.
 var botCommands = []BotCommand{
 	{Command: "menu", Description: "Button navigation"},
 	{Command: "digest", Description: "All agents, prioritized"},
 	{Command: "top", Description: "Top signal right now"},
+	{Command: "news", Description: "Narrative radar + AI idea"},
 	{Command: "fx", Description: "Forex overview"},
 	{Command: "macro", Description: "Risk-on/off regime"},
 	{Command: "whale", Description: "Large BTC transfers"},
@@ -259,6 +261,7 @@ var botCommands = []BotCommand{
 	{Command: "sr", Description: "Support/resistance levels"},
 	{Command: "vol", Description: "Volatility expansion check"},
 	{Command: "risk", Description: "Position-size calculator"},
+	{Command: "help", Description: "Command list & usage"},
 }
 
 const menuText = "<b>AlphaVizor Demo Bot</b> 🛰\n" +
@@ -276,7 +279,7 @@ func menuKeyboard() *InlineKeyboardMarkup {
 		{btn("🐋 Whale", keyWhale), btn("💸 Funding", keyFunding)},
 		{btn("⚡ Momentum", keyMomentum), btn("📈 Trend", keyTrend)},
 		{btn("🎯 Levels", keySR), btn("🌪 Volatility", keyVol)},
-		{btn("🧮 Risk", keyRisk), btn("ℹ️ Help", "help")},
+		{btn("🧮 Risk", keyRisk), btn("📰 News", keyNews)},
 	}}
 }
 
@@ -317,6 +320,8 @@ func (b *Bot) buildReply(ctx context.Context, cmd string, args []string) (string
 		return b.ag.FundingCard(ctx).RenderHTML(), cardKeyboard(keyFunding, true)
 	case keyFX:
 		return b.ag.FXCard(ctx).RenderHTML(), cardKeyboard(keyFX, true)
+	case keyNews:
+		return b.ag.NewsCard(ctx).RenderHTML(), cardKeyboard(keyNews, true)
 	case keyMomentum:
 		if len(args) == 0 {
 			return b.ag.MomentumCard(ctx).RenderHTML(), cardKeyboard(keyMomentum, true)
@@ -380,14 +385,24 @@ func (b *Bot) riskReply(args []string) (string, *InlineKeyboardMarkup) {
 	}
 	vals := make([]float64, 4)
 	for i, tok := range args {
-		clean := strings.Trim(strings.ReplaceAll(tok, ",", ""), "$%")
-		v, err := strconv.ParseFloat(clean, 64)
+		v, err := parseMoney(tok)
 		if err != nil {
-			return b.ag.RiskCard(nil, false, fmt.Errorf("%q is not a number", tok)).RenderHTML(), cardKeyboard(keyRisk, false)
+			return b.ag.RiskCard(nil, false, err).RenderHTML(), cardKeyboard(keyRisk, false)
 		}
 		vals[i] = v
 	}
 	return b.ag.RiskCard(vals, false, nil).RenderHTML(), cardKeyboard(keyRisk, false)
+}
+
+// parseMoney parses one user-typed number, tolerating $ / % decoration and
+// thousands commas — shared by the /risk command and the HTTP risk endpoint.
+func parseMoney(tok string) (float64, error) {
+	clean := strings.Trim(strings.ReplaceAll(tok, ",", ""), "$%")
+	v, err := strconv.ParseFloat(clean, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a number", tok)
+	}
+	return v, nil
 }
 
 // gathered is one concurrent sweep across every agent + context sources.
@@ -397,12 +412,17 @@ type gathered struct {
 	fx      []fxRead // /fx one-liners for the digest FX block
 	fxAnyOK bool
 	extras  []string // narrative / mood one-liners (best-effort)
+	// Raw feed values for the ALPHAVIZOR AI payload — the extras above are
+	// Telegram-escaped render strings, the AI prompt needs the raw data.
+	topNarr *NarrativeSnapshot
+	mood    string
 }
 
 // digestOrder is the render order of the one-liner section.
 var digestOrder = []string{keyMacro, keyWhale, keyFunding, keyMomentum, keyTrend, keySR, keyVol}
 
-func (b *Bot) gather(ctx context.Context) gathered {
+// gather lives on Agents (not Bot) so the HTTP API runs the exact same sweep.
+func (a *Agents) gather(ctx context.Context) gathered {
 	ctx, cancel := context.WithTimeout(ctx, digestBudget)
 	defer cancel()
 
@@ -422,20 +442,20 @@ func (b *Bot) gather(ctx context.Context) gathered {
 		}()
 	}
 	run(func() {
-		card, regime := b.ag.MacroCard(ctx)
+		card, regime := a.MacroCard(ctx)
 		mu.Lock()
 		g.regime = regime
 		mu.Unlock()
 		put(keyMacro, card)
 	})
-	run(func() { put(keyWhale, b.ag.WhaleCard(ctx)) })
-	run(func() { put(keyFunding, b.ag.FundingCard(ctx)) })
-	run(func() { put(keyMomentum, b.ag.MomentumCard(ctx)) })
-	run(func() { put(keyTrend, b.ag.TrendCard(ctx, btcSpec)) })
-	run(func() { put(keySR, b.ag.SRCard(ctx, btcSpec)) })
-	run(func() { put(keyVol, b.ag.VolCard(ctx, btcSpec)) })
+	run(func() { put(keyWhale, a.WhaleCard(ctx)) })
+	run(func() { put(keyFunding, a.FundingCard(ctx)) })
+	run(func() { put(keyMomentum, a.MomentumCard(ctx)) })
+	run(func() { put(keyTrend, a.TrendCard(ctx, btcSpec)) })
+	run(func() { put(keySR, a.SRCard(ctx, btcSpec)) })
+	run(func() { put(keyVol, a.VolCard(ctx, btcSpec)) })
 	run(func() { // FX block — informational, never competes for the top slot
-		reads := b.ag.fxReads(ctx)
+		reads := a.fxReads(ctx)
 		mu.Lock()
 		g.fx = reads
 		for _, r := range reads {
@@ -447,17 +467,19 @@ func (b *Bot) gather(ctx context.Context) gathered {
 		mu.Unlock()
 	})
 	run(func() { // context lines — skipped silently when unavailable
-		if n, err := b.ag.api.Narratives(ctx); err == nil && len(n.Narratives) > 0 {
+		if n, err := a.api.Narratives(ctx); err == nil && len(n.Narratives) > 0 {
 			top := pickTopNarrative(n.Narratives)
 			mu.Lock()
+			g.topNarr = &top
 			g.extras = append(g.extras, fmt.Sprintf("📖 <b>Narrative</b>: %s (%s, score %d)",
 				esc(top.Narrative), esc(top.Stage), top.TrendScore))
 			mu.Unlock()
 		}
 	})
 	run(func() {
-		if m, err := b.ag.api.MoodRead(ctx); err == nil && strings.TrimSpace(m.Read) != "" {
+		if m, err := a.api.MoodRead(ctx); err == nil && strings.TrimSpace(m.Read) != "" {
 			mu.Lock()
+			g.mood = strings.TrimSpace(m.Read)
 			g.extras = append(g.extras, "🧠 <i>"+esc(truncate(firstSentence(m.Read), 160))+"</i>")
 			mu.Unlock()
 		}
@@ -479,14 +501,24 @@ func (g gathered) deviations() map[string]int {
 }
 
 func (b *Bot) digestReply(ctx context.Context) string {
-	g := b.gather(ctx)
-	winner := pickTop(g.regime, g.deviations())
-	top, ok := g.cards[winner]
-	if !ok {
-		top = g.cards[keyMacro]
-	}
+	g := b.ag.gather(ctx)
+	return renderDigestHTML(g, b.ag.aiBrief(ctx, g))
+}
+
+// renderDigestHTML is the pure digest renderer: one gather sweep plus an
+// optional AI brief → the exact Telegram HTML message. Shared verbatim by the
+// Telegram /digest command and the HTTP /agents/digest endpoint.
+func renderDigestHTML(g gathered, brief string) string {
+	winner, top := topSelection(g)
 
 	var sb strings.Builder
+	// ALPHAVIZOR AI brief on top — styled like the site's diagnosis boxes.
+	// Empty (no key / failure) → the digest opens with its own header as before.
+	if brief != "" {
+		sb.WriteString("<b>ALPHAVIZOR AI</b>\n<i>")
+		sb.WriteString(esc(brief))
+		sb.WriteString("</i>\n\n")
+	}
 	sb.WriteString("<b>AlphaVizor Digest</b> — top signal first\n\n")
 	sb.WriteString(top.renderBody())
 	sb.WriteString("\n<b>Everything else</b>\n")
@@ -527,13 +559,40 @@ func (b *Bot) digestReply(ctx context.Context) string {
 }
 
 func (b *Bot) topReply(ctx context.Context) string {
-	g := b.gather(ctx)
-	winner := pickTop(g.regime, g.deviations())
-	card, ok := g.cards[winner]
-	if !ok {
-		card = g.cards[keyMacro]
+	g := b.ag.gather(ctx)
+	winner, card := topSelection(g)
+	brief, why := b.ag.aiTopTexts(ctx, winner, g)
+	return renderTopHTML(card, brief, why)
+}
+
+// mergeTopWhy folds the AI why-line into the card's AI block (after any
+// existing block, e.g. the macro mood read) so it renders above the footer.
+// Value receiver-style: the caller's card is never mutated.
+func mergeTopWhy(card Card, why string) Card {
+	if why == "" {
+		return card
 	}
-	return "<b>Top signal right now</b>\n\n" + card.RenderHTML()
+	if card.AIHTML != "" {
+		card.AIHTML += "\n"
+	}
+	card.AIHTML += "<b>AI why:</b> <i>" + esc(why) + "</i>"
+	return card
+}
+
+// renderTopHTML is the pure /top renderer: winner card plus optional AI
+// strings → the exact Telegram HTML message. Shared verbatim by the Telegram
+// /top command and the HTTP /agents/top endpoint.
+func renderTopHTML(card Card, brief, why string) string {
+	card = mergeTopWhy(card, why)
+	var sb strings.Builder
+	if brief != "" {
+		sb.WriteString("<b>ALPHAVIZOR AI</b>\n<i>")
+		sb.WriteString(esc(brief))
+		sb.WriteString("</i>\n\n")
+	}
+	sb.WriteString("<b>Top signal right now</b>\n\n")
+	sb.WriteString(card.RenderHTML())
+	return sb.String()
 }
 
 // pickTopNarrative: highest trend score wins; ties break on mention count,
@@ -567,6 +626,7 @@ Live market agents from the AlphaVizor platform:
 /whale — large on-chain BTC transfers, net flow
 /funding — perp funding pressure &amp; liquidations
 /fx — forex overview: EURUSD, GBPUSD, USDJPY, XAUUSD
+/news — trending crypto narratives (48h) with an AI idea
 /momentum — RSI/MACD reads for BTC, ETH &amp; gold
 /trend — trend state machine (default BTC 4h)
 /sr — key support/resistance levels

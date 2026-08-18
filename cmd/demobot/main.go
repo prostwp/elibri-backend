@@ -12,6 +12,12 @@
 //	                        or http://localhost:8080)
 //	-selftest               build every card once against live sources,
 //	                        print them to stdout and exit (no Telegram)
+//	ANTHROPIC_API_KEY       enables the ALPHAVIZOR AI briefs on /digest and
+//	                        /top (same key the backend narrative worker
+//	                        uses). Empty → AI blocks silently omitted.
+//	DEMOBOT_HTTP_ADDR       listen address of the read-only HTTP JSON API
+//	                        that runs alongside long polling (default
+//	                        127.0.0.1:8090) — see docs/demobot-http.md.
 package main
 
 import (
@@ -22,6 +28,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/prostwp/elibri-backend/internal/demobot"
 )
@@ -38,6 +45,12 @@ func main() {
 	flag.Parse()
 
 	agents := demobot.NewAgents(demobot.NewBackendClient(*backend))
+	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		agents.EnableAI(key)
+		log.Printf("[demobot] ALPHAVIZOR AI briefs: enabled")
+	} else {
+		log.Printf("[demobot] ALPHAVIZOR AI briefs: disabled (ANTHROPIC_API_KEY empty)")
+	}
 
 	if *selftest {
 		demobot.SelfTest(agents)
@@ -56,10 +69,33 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Read-only HTTP JSON API — runs alongside long polling on the SAME
+	// Agents instance (shared kline cache + AI memo). A bind failure is
+	// fatal: a half-up process that looks alive but serves nothing is worse
+	// than a clean crash launchd can restart.
+	httpAddr := os.Getenv("DEMOBOT_HTTP_ADDR")
+	if httpAddr == "" {
+		httpAddr = demobot.DefaultHTTPAddr
+	}
+	httpSrv := demobot.NewHTTPServer(httpAddr, agents)
+	if err := httpSrv.Start(); err != nil {
+		log.Fatalf("[demobot] HTTP API cannot bind %s: %v — is another demobot instance running? Set DEMOBOT_HTTP_ADDR to move it.", httpAddr, err)
+	}
+
 	log.Printf("[demobot] starting · backend=%s", *backend)
 	bot := demobot.NewBot(token, agents)
-	if err := bot.Run(ctx); err != nil {
-		log.Fatalf("[demobot] fatal: %v", err)
+	runErr := bot.Run(ctx)
+
+	// Same SIGTERM path as long polling: Run has returned (signal or fatal
+	// poll error) — drain in-flight HTTP requests before exiting.
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[demobot] HTTP API shutdown: %v", err)
+	}
+	cancelShutdown()
+
+	if runErr != nil {
+		log.Fatalf("[demobot] fatal: %v", runErr)
 	}
 	log.Printf("[demobot] stopped cleanly")
 }

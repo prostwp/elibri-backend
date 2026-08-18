@@ -13,6 +13,7 @@ const (
 	keyTop      = "top"
 	keyRisk     = "risk"
 	keyFX       = "fx"
+	keyNews     = "news"
 )
 
 // signalOrder is the fixed tie-break order of the "hook" rule. Only these
@@ -56,4 +57,18 @@ func pickTop(macroRegime string, deviations map[string]int) string {
 		return keyMacro
 	}
 	return best
+}
+
+// topSelection applies pickTop to one gather sweep and resolves the winning
+// card, falling back to macro when the winner produced no card (belt and
+// braces — deviations only contains keys present in g.cards, and gather
+// always stores a macro card). Shared by /digest, /top and the HTTP API.
+func topSelection(g gathered) (string, Card) {
+	winner := pickTop(g.regime, g.deviations())
+	card, ok := g.cards[winner]
+	if !ok {
+		winner = keyMacro
+		card = g.cards[keyMacro]
+	}
+	return winner, card
 }

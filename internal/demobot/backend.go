@@ -94,6 +94,10 @@ type WhaleFlow struct {
 	Confidence    int     `json:"confidence"` // 0 = "too little data" sentinel
 	Partial       bool    `json:"partial"`
 	Source        string  `json:"source"`
+	// Baseline pair — pointers so a payload without them (older snapshots)
+	// is distinguishable from a genuine zero and no fake baseline renders.
+	NetFlowPrev24h *float64 `json:"net_flow_prev_24h"`
+	FlowPct        *float64 `json:"flow_pct"` // % change vs prior 24h, ±999 sentinel-capped
 }
 
 type WhaleTransfer struct {
@@ -215,10 +219,13 @@ func (c *BackendClient) MoodRead(ctx context.Context) (*MoodResp, error) {
 type NarrativeSnapshot struct {
 	Narrative      string `json:"narrative"`
 	TrendScore     int    `json:"trend_score"`
-	Stage          string `json:"stage"`
+	Stage          string `json:"stage"` // early | trending | mainstream | declining
 	SentimentLabel string `json:"sentiment_label"`
 	MentionCount   int    `json:"mention_count_24h"`
 	Confidence     int    `json:"confidence"`
+	// GeneratedIdea is the Haiku-written analytical paragraph the API
+	// attaches to the TOP narrative only (omitempty on the wire).
+	GeneratedIdea string `json:"generated_idea"`
 }
 
 type NarrativesResp struct {

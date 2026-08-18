@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 type Agents struct {
 	api    *BackendClient
 	klines *klineCache
+	ai     *aiClient // nil until EnableAI — every AI block silently omitted
 }
 
 func NewAgents(api *BackendClient) *Agents {
@@ -122,6 +124,7 @@ var howTexts = map[string]string{
 	keyFX:       "EMA50 vs EMA200 direction, RSI(14) and 24h change on 1h Yahoo Finance data for EURUSD, GBPUSD, USDJPY, XAUUSD. Weekend closures (Fri 21:00–Sun 21:00 UTC) are flagged, never hidden.",
 	keyDigest:   "Deterministic priority: RISK-OFF macro always tops; otherwise the strongest deviation from neutral among funding, momentum, trend. Ties break funding > momentum > trend.",
 	keyTop:      "Deterministic priority: RISK-OFF macro always tops; otherwise the strongest deviation from neutral among funding, momentum, trend. Ties break funding > momentum > trend.",
+	keyNews:     "Crypto themes ranked by 48h mention growth across news/Reddit. Stage: early/trending/mainstream/declining; trend score 0-100. The top narrative carries an AI-generated observation.",
 }
 
 // ── Macro ────────────────────────────────────────────────────────────────────
@@ -181,6 +184,13 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 		c.Confidence = m.Composite
 		c.Deviation = clampInt(abs(*m.Composite-50)*2, 0, 100)
 	}
+	// ALPHAVIZOR AI mood read (backend Haiku, 10-min server cache) — appended
+	// when available, silently omitted otherwise. Never blocks the card.
+	if mood, err := a.api.MoodRead(ctx); err == nil {
+		if txt := strings.TrimSpace(mood.Read); txt != "" {
+			c.AIHTML = "<b>AI read:</b> <i>" + esc(truncateAtSentence(txt, 400)) + "</i>"
+		}
+	}
 	return c, m.Regime
 }
 
@@ -223,13 +233,22 @@ func (a *Agents) WhaleCard(ctx context.Context) Card {
 			flowLine += " — partial data, labeled wallets only"
 		}
 		c.Facts = append(c.Facts, flowLine)
+		// Baseline comparison — only when the payload actually carries a
+		// prior-24h figure (a zero baseline means "no snapshot to compare").
+		if btc.NetFlowPrev24h != nil && *btc.NetFlowPrev24h != 0 {
+			base := fmt.Sprintf("Prior 24h net flow: %s", usd(*btc.NetFlowPrev24h))
+			if btc.FlowPct != nil {
+				base += fmt.Sprintf(" → %+.0f%% change", *btc.FlowPct)
+			}
+			c.Facts = append(c.Facts, base)
+		}
 		if btc.Confidence > 0 {
 			conf := btc.Confidence
 			c.Confidence = &conf
 		}
 	}
 
-	// Top BTC transfers of the last 24h by USD size.
+	// Top-3 BTC transfers of the last 24h by USD size.
 	cutoff := time.Now().Add(-24 * time.Hour)
 	var recent []WhaleTransfer
 	for _, t := range w.Transfers {
@@ -242,7 +261,7 @@ func (a *Agents) WhaleCard(ctx context.Context) Card {
 		c.Facts = append(c.Facts, "No large BTC transfers in the last 24h")
 	}
 	for i, t := range recent {
-		if i == 2 {
+		if i == 3 {
 			break
 		}
 		where := t.Exchange
@@ -251,6 +270,66 @@ func (a *Agents) WhaleCard(ctx context.Context) Card {
 		}
 		c.Facts = append(c.Facts, fmt.Sprintf("%s BTC ≈ %s · %s · %s",
 			trimFloat(t.AmountNative), usd(t.AmountUSD), t.Direction, where))
+	}
+	return c
+}
+
+// ── Narrative Radar (/news) ──────────────────────────────────────────────────
+
+// NewsCard renders the top-3 crypto narratives from the backend radar (48h
+// mention window) plus the backend's AI-generated idea for the leading one.
+// The server sorts by trend_score DESC and attaches generated_idea to the
+// top narrative only.
+func (a *Agents) NewsCard(ctx context.Context) Card {
+	n, err := a.api.Narratives(ctx)
+	if err != nil {
+		return offlineCard("Narrative Radar", "Narrative", "", keyNews, howTexts[keyNews])
+	}
+	c := Card{
+		Agent:      "Narrative Radar",
+		ShortName:  "Narrative",
+		Command:    keyNews,
+		HowItWorks: howTexts[keyNews],
+		DataTime:   parseWhen(n.CapturedAt),
+		SourceNote: "48h mention window",
+	}
+	if len(n.Narratives) == 0 {
+		c.Emoji = emojiNeutral
+		c.Verdict = "No narrative snapshots yet — radar warming up"
+		c.Short = "no data"
+		c.Offline = true // "not enough data" is not a signal
+		return c
+	}
+	top := n.Narratives[0]
+	switch top.SentimentLabel {
+	case "bull":
+		c.Emoji = emojiBull
+	case "bear":
+		c.Emoji = emojiBear
+	default:
+		c.Emoji = emojiNeutral
+	}
+	c.Verdict = fmt.Sprintf("Top narrative: %s — %s, trend score %d/100", top.Narrative, top.Stage, top.TrendScore)
+	c.Short = fmt.Sprintf("%s (%s)", top.Narrative, top.Stage)
+	if top.Confidence > 0 {
+		conf := top.Confidence
+		c.Confidence = &conf
+	}
+	for i, item := range n.Narratives {
+		if i == 3 {
+			break
+		}
+		line := fmt.Sprintf("%d. %s — %s · score %d · %d mentions/24h", i+1, item.Narrative, item.Stage, item.TrendScore, item.MentionCount)
+		if item.SentimentLabel != "" {
+			line += " · " + item.SentimentLabel
+		}
+		c.Facts = append(c.Facts, line)
+	}
+	for _, item := range n.Narratives {
+		if idea := strings.TrimSpace(item.GeneratedIdea); idea != "" {
+			c.AIHTML = "<b>AI idea:</b> <i>" + esc(truncateAtSentence(idea, 500)) + "</i>"
+			break
+		}
 	}
 	return c
 }
@@ -331,13 +410,91 @@ func (a *Agents) FundingCard(ctx context.Context) Card {
 				shortUSD += l.USDValue
 			}
 		}
-		c.Facts = append(c.Facts, fmt.Sprintf("Liquidations 1h: %s longs vs %s shorts", usd(longUSD), usd(shortUSD)))
+		line := fmt.Sprintf("Liquidations 1h: %s longs vs %s shorts", usd(longUSD), usd(shortUSD))
+		if skew := liqSkew(longUSD, shortUSD); skew != "" {
+			line += " — " + skew
+		}
+		c.Facts = append(c.Facts, line)
 		if len(liq.Zones) > 0 {
 			z := liq.Zones[0]
+			// Prefer the BTC zone nearest to the live BTC price when the
+			// kline cache can supply one; otherwise keep the served order.
+			if btcPrice := a.lastBTCClose(ctx); btcPrice > 0 {
+				z = nearestZone(liq.Zones, "BTCUSDT", btcPrice)
+			}
 			c.Facts = append(c.Facts, fmt.Sprintf("Magnet zone: %s %s (%s, %d hits)", z.Symbol, z.PriceBand, usd(z.TotalUSD), z.Count))
 		}
 	}
 	return c
+}
+
+// liqSkew words which side the 1h liquidation flow is punishing. "" when
+// the window saw no volume.
+func liqSkew(longUSD, shortUSD float64) string {
+	total := longUSD + shortUSD
+	if total <= 0 {
+		return ""
+	}
+	longShare := longUSD / total
+	switch {
+	case longShare >= 0.65:
+		return fmt.Sprintf("longs taking %d%% of the pain", int(math.Round(longShare*100)))
+	case longShare <= 0.35:
+		return fmt.Sprintf("shorts taking %d%% of the pain", int(math.Round((1-longShare)*100)))
+	default:
+		return "both sides roughly balanced"
+	}
+}
+
+// bandMid parses a "118200-118250" price band into its midpoint.
+func bandMid(band string) (float64, bool) {
+	parts := strings.Split(band, "-")
+	if len(parts) != 2 {
+		return 0, false
+	}
+	lo, err1 := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	hi, err2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err1 != nil || err2 != nil {
+		return 0, false
+	}
+	return (lo + hi) / 2, true
+}
+
+// nearestZone picks the magnet zone for `symbol` whose band midpoint sits
+// closest to price. Falls back to the first served zone when price is
+// unknown or no band parses — exactly the pre-depth behavior.
+func nearestZone(zones []LiqZone, symbol string, price float64) LiqZone {
+	if price <= 0 {
+		return zones[0]
+	}
+	best := -1
+	bestDist := math.MaxFloat64
+	for i, z := range zones {
+		if z.Symbol != symbol {
+			continue
+		}
+		mid, ok := bandMid(z.PriceBand)
+		if !ok {
+			continue
+		}
+		if d := math.Abs(mid - price); d < bestDist {
+			bestDist, best = d, i
+		}
+	}
+	if best < 0 {
+		return zones[0]
+	}
+	return zones[best]
+}
+
+// lastBTCClose returns the last closed BTC 4h close from the kline cache,
+// 0 when unavailable — callers must treat 0 as "price unknown".
+func (a *Agents) lastBTCClose(ctx context.Context) float64 {
+	candles, err := a.candlesFor(ctx, btcSpec)
+	if err != nil || len(candles) == 0 {
+		return 0
+	}
+	return candles[len(candles)-1].Close
 }
 
 // ── Momentum ─────────────────────────────────────────────────────────────────
@@ -365,11 +522,10 @@ type momentumRead struct {
 	closeAt time.Time // close time of the last closed bar used
 }
 
-func (a *Agents) momentumReadFor(ctx context.Context, spec assetSpec) (momentumRead, error) {
-	candles, err := a.candlesFor(ctx, spec)
-	if err != nil {
-		return momentumRead{}, err
-	}
+// momentumReadFromCandles computes one asset's snapshot from an already
+// fetched series, so a read and any derived facts (volume line) always come
+// from the SAME bars — a transient refetch can't produce a half-coherent card.
+func momentumReadFromCandles(spec assetSpec, candles []types.OHLCVCandle) (momentumRead, error) {
 	closes := closesOf(candles)
 	rsi, okRSI := rsiWilder(closes, 14)
 	_, _, hist, okMACD := macdLast(closes)
@@ -384,6 +540,14 @@ func (a *Agents) momentumReadFor(ctx context.Context, spec assetSpec) (momentumR
 		source:  spec.Source,
 		closeAt: closeTimeOf(candles, spec.Interval),
 	}, nil
+}
+
+func (a *Agents) momentumReadFor(ctx context.Context, spec assetSpec) (momentumRead, error) {
+	candles, err := a.candlesFor(ctx, spec)
+	if err != nil {
+		return momentumRead{}, err
+	}
+	return momentumReadFromCandles(spec, candles)
 }
 
 func momentumEmoji(verdict string) string {
@@ -410,12 +574,21 @@ func (a *Agents) MomentumCard(ctx context.Context) Card {
 	}
 	var reads []momentumRead
 	var insufficientLines []string
+	var btcCandles []types.OHLCVCandle // the exact series the BTC read used
 	for _, key := range []string{"btc", "eth"} {
-		r, err := a.momentumReadFor(ctx, assetTable[key])
+		spec := assetTable[key]
+		candles, err := a.candlesFor(ctx, spec)
+		if err != nil {
+			continue // hard fetch failure — the asset simply drops out (pre-existing contract)
+		}
+		if key == "btc" {
+			btcCandles = candles
+		}
+		r, rerr := momentumReadFromCandles(spec, candles)
 		switch {
-		case err == nil:
+		case rerr == nil:
 			reads = append(reads, r)
-		case errors.Is(err, errInsufficientHistory):
+		case errors.Is(rerr, errInsufficientHistory):
 			insufficientLines = append(insufficientLines, r.name+": insufficient history for RSI/MACD")
 		}
 	}
@@ -472,18 +645,56 @@ func (a *Agents) MomentumCard(ctx context.Context) Card {
 	c.Short = strings.ToLower(lead)
 	c.Deviation = maxDev
 
+	// Volume read from the SAME series the BTC read used — no refetch, so
+	// the volume line can never contradict a missing BTC line.
+	if ratio, ok := volRatio20(btcCandles); ok {
+		c.Facts = append(c.Facts, fmt.Sprintf("BTC 4h volume: %.2f× its 20-bar average", ratio))
+	}
+
 	// Relative strength vs BTC from the backend (secondary, best-effort).
 	if rs, err := a.api.MomentumRS(ctx, []string{"ETH"}); err == nil {
-		if item, ok := rs.Items["ETH"]; ok && item.RS7D != nil {
-			c.Facts = append(c.Facts, fmt.Sprintf("ETH vs BTC 7d: %+.1f%%", *item.RS7D))
+		if item, ok := rs.Items["ETH"]; ok {
+			var parts []string
+			if item.RS7D != nil {
+				parts = append(parts, fmt.Sprintf("7d %+.1f%%", *item.RS7D))
+			}
+			if item.RS30D != nil {
+				parts = append(parts, fmt.Sprintf("30d %+.1f%%", *item.RS30D))
+			}
+			if len(parts) > 0 {
+				c.Facts = append(c.Facts, "ETH vs BTC relative strength: "+strings.Join(parts, " · "))
+			}
 		}
 	}
 	return c
 }
 
+// volRatio20 compares the last closed bar's volume to the mean of the 20
+// bars before it. ok=false under 21 bars or on a dead baseline — a short or
+// zero series is stated by omission, never rendered as a fake ratio.
+func volRatio20(candles []types.OHLCVCandle) (float64, bool) {
+	n := len(candles)
+	if n < 21 {
+		return 0, false
+	}
+	var sum float64
+	for _, c := range candles[n-21 : n-1] {
+		sum += c.Volume
+	}
+	avg := sum / 20
+	if avg <= 0 {
+		return 0, false
+	}
+	return candles[n-1].Volume / avg, true
+}
+
 // MomentumAssetCard is the single-asset form: /momentum eurusd.
 func (a *Agents) MomentumAssetCard(ctx context.Context, spec assetSpec) Card {
-	r, err := a.momentumReadFor(ctx, spec)
+	candles, err := a.candlesFor(ctx, spec)
+	if err != nil {
+		return assetOffline(spec, "Momentum Agent", "Momentum", keyMomentum, howTexts[keyMomentum])
+	}
+	r, err := momentumReadFromCandles(spec, candles)
 	if errors.Is(err, errInsufficientHistory) {
 		return insufficientCard(spec, "Momentum Agent", "Momentum", keyMomentum, howTexts[keyMomentum], "RSI(14)/MACD")
 	}
@@ -509,6 +720,13 @@ func (a *Agents) MomentumAssetCard(ctx context.Context, spec assetSpec) Card {
 		fmt.Sprintf("MACD histogram: %+.4g", r.hist),
 		fmt.Sprintf("Rule: RSI 55+/45- with matching MACD sign · %s candles", spec.Interval),
 	)
+	// Binance assets get the volume read from the SAME series as the RSI/MACD
+	// math. Yahoo FX volume is null throughout, so no line over a fake 0×.
+	if spec.Source == srcBinance {
+		if ratio, ok := volRatio20(candles); ok {
+			c.Facts = append(c.Facts, fmt.Sprintf("Volume: %.2f× its 20-bar average (%s)", ratio, spec.Interval))
+		}
+	}
 	if spec.Source == srcYahoo {
 		decorateFX(&c)
 	}
@@ -554,6 +772,9 @@ func (a *Agents) fxReads(ctx context.Context) []fxRead {
 				r.Dir = "down"
 			default:
 				r.Dir = "flat"
+			}
+			if pos, ok := dayRange(candles); ok {
+				r.DayPos, r.HasRange = pos, true
 			}
 			lastBar := candles[len(candles)-1]
 			for j := len(candles) - 2; j >= 0; j-- {
@@ -733,6 +954,9 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 		Verdict:    fmt.Sprintf("Key levels around %s", trimFloat(last)),
 	}
 	c.Facts = append(c.Facts, "Resistance: "+srLine(res), "Support: "+srLine(sup))
+	if nl := nearestLevelLine(sup, res, last); nl != "" {
+		c.Facts = append(c.Facts, nl)
+	}
 	c.Facts = append(c.Facts, fmt.Sprintf("Method: swing clusters over %d×%s candles", len(candles), spec.Interval))
 	short := "no clear levels"
 	if len(res) > 0 && len(sup) > 0 {
@@ -757,6 +981,30 @@ func srLevelLabel(l SRLevel) string {
 	default:
 		return fmt.Sprintf("%.4f", l.Raw)
 	}
+}
+
+// nearestLevelLine names the level closest to the last price with its
+// conventional label (S1..S3 / R1..R3 = position in the strength-sorted
+// list) and the percent distance: "Price 1.3% above S1 (61200)". "" when no
+// levels or no price. Supports sit below price, resistances above, so the
+// direction word is fixed per side.
+func nearestLevelLine(sup, res []SRLevel, last float64) string {
+	if last <= 0 {
+		return ""
+	}
+	best := ""
+	bestDist := math.MaxFloat64
+	consider := func(prefix, rel string, levels []SRLevel) {
+		for i, l := range levels {
+			if d := math.Abs(last - l.Raw); d < bestDist {
+				bestDist = d
+				best = fmt.Sprintf("Price %.1f%% %s %s%d (%s)", d/last*100, rel, prefix, i+1, srLevelLabel(l))
+			}
+		}
+	}
+	consider("S", "above", sup)
+	consider("R", "below", res)
+	return best
 }
 
 func srLine(levels []SRLevel) string {
