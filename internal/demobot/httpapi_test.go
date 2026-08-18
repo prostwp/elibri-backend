@@ -67,7 +67,7 @@ func TestHTTPEnvelopeGolden(t *testing.T) {
 		Emoji:      "🟢",
 		Agent:      "Momentum Agent",
 		Asset:      "BTC",
-		Verdict:    "BUY — bulls in control",
+		Verdict:    "BULLISH — bulls in control",
 		Facts:      []string{"RSI(14): 62.4", "MACD hist: +120.50"},
 		Confidence: intPtr(60),
 		AIHTML:     "<b>AI read:</b> <i>Calm &amp; greedy.</i>",
@@ -77,7 +77,7 @@ func TestHTTPEnvelopeGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"agent":"Momentum Agent","asset":"BTC","verdict":"BUY — bulls in control","semaphore":"bullish","facts":["RSI(14): 62.4","MACD hist: +120.50"],"confidence":60,"ai_text":"AI read: Calm & greedy.","data_as_of":"2026-08-18T06:00:00Z","disclaimer":"Analytics, not financial advice","card_html":"🟢 <b>Momentum Agent</b> · BTC\n<b>BUY — bulls in control</b>\n• RSI(14): 62.4\n• MACD hist: +120.50\nConfidence: ■■■□□ 60%\n<b>AI read:</b> <i>Calm &amp; greedy.</i>\n\n<i>Analytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC</i>"}`
+	want := `{"agent":"Momentum Agent","asset":"BTC","verdict":"BULLISH — bulls in control","semaphore":"bullish","facts":["RSI(14): 62.4","MACD hist: +120.50"],"confidence":60,"ai_text":"AI read: Calm & greedy.","data_as_of":"2026-08-18T06:00:00Z","disclaimer":"Analytics, not financial advice","card_html":"🟢 <b>Momentum Agent</b> · BTC\n<b>BULLISH — bulls in control</b>\n• RSI(14): 62.4\n• MACD hist: +120.50\nConfidence: ■■■□□ 60%\n<b>AI read:</b> <i>Calm &amp; greedy.</i>\n\n<i>Analytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC</i>"}`
 	if g := strings.TrimRight(string(got), "\n"); g != want {
 		t.Fatalf("envelope golden mismatch:\ngot:  %s\nwant: %s", g, want)
 	}
@@ -378,8 +378,21 @@ func TestHTTPRiskEnvelope(t *testing.T) {
 	if env.Agent != "Risk Calculator" || env.Semaphore != "neutral" {
 		t.Errorf("agent/semaphore: %q/%q", env.Agent, env.Semaphore)
 	}
-	if !strings.Contains(env.Verdict, "LONG") {
-		t.Errorf("verdict must resolve direction: %q", env.Verdict)
+	// Batch-2: pure sizing math — no direction labels anywhere in the envelope.
+	if !strings.Contains(env.Verdict, "Position size:") {
+		t.Errorf("verdict must lead with the size: %q", env.Verdict)
+	}
+	if strings.Contains(env.Verdict, "LONG") || strings.Contains(env.Verdict, "SHORT") {
+		t.Errorf("direction label leaked into the verdict: %q", env.Verdict)
+	}
+	disclaimer := false
+	for _, f := range env.Facts {
+		if strings.Contains(f, "not a trade suggestion") {
+			disclaimer = true
+		}
+	}
+	if !disclaimer {
+		t.Errorf("sizing-only disclaimer missing from facts: %v", env.Facts)
 	}
 	if env.Confidence != nil || env.AIText != nil {
 		t.Errorf("risk card has no confidence/AI: %v %v", env.Confidence, env.AIText)

@@ -85,7 +85,7 @@ func fakeGathered() gathered {
 			keyMacro:    {ShortName: "Macro", Agent: "Macro Agent", Command: keyMacro, Verdict: "RISK-ON — big money leaning into risk", Facts: []string{"Lamps: 3 tailwind / 1 headwind / 1 neutral", "Crypto Fear & Greed: 63 — Greed"}, Confidence: &comp},
 			keyWhale:    {ShortName: "Whale", Agent: "Whale Flow Agent", Command: keyWhale, Verdict: "Net OUTFLOW from exchanges — accumulation read", Facts: []string{"Net flow 24h: -$18.40M (37 large tx)"}},
 			keyFunding:  {ShortName: "Funding", Agent: "Funding Agent", Command: keyFunding, Verdict: "Funding balanced — no crowd to punish", Facts: []string{"Widest skew: SOLUSDT +0.0100%/8h (longs pay shorts)"}},
-			keyMomentum: {ShortName: "Momentum", Agent: "Momentum Agent", Command: keyMomentum, Verdict: "BTC: BUY · ETH: NEUTRAL", Facts: []string{"BTC: RSI(14) 62.0 · MACD hist +120 → buy"}},
+			keyMomentum: {ShortName: "Momentum", Agent: "Momentum Agent", Command: keyMomentum, Verdict: "BTC: BULLISH · ETH: NEUTRAL", Facts: []string{"BTC: RSI(14) 62.0 · MACD hist +120 → bullish"}},
 			keyTrend:    {ShortName: "Trend", Agent: "Trend Agent", Command: keyTrend, Verdict: "Confirmed UPTREND", Facts: []string{"ADX(14): 31.2 · RSI(14): 62.0"}},
 			keySR:       {ShortName: "S/R", Agent: "S/R Agent", Command: keySR, Verdict: "Key levels around 118000", Facts: []string{"Resistance: 119000 (3 touches)", "Support: 117000 (4 touches)"}},
 			keyVol:      {ShortName: "Volatility", Agent: "Volatility Agent", Command: keyVol, Verdict: "Volatility NORMAL — no expansion signal"},
@@ -153,7 +153,7 @@ func TestAIRequestShape(t *testing.T) {
 	if mt, _ := body["max_tokens"].(float64); mt != 400 {
 		t.Errorf("max_tokens: got %v, want 400", body["max_tokens"])
 	}
-	wantSystem := "You are AlphaVizor AI, a market analyst. Write a tight, factual brief for traders based ONLY on the data provided. No advice, no hedging boilerplate, no emoji. End with the single most important thing to watch next."
+	wantSystem := "You are AlphaVizor AI, a market analyst. Write a tight, factual brief for traders based ONLY on the data provided. No advice, no hedging boilerplate, no emoji. Use analytical language only: 'bullish/bearish reading', never 'BUY/SELL verdict', never 'edge available to traders', never imperatives to enter or exit. End with the single most important thing to watch next."
 	if s, _ := body["system"].(string); s != wantSystem {
 		t.Errorf("system prompt drifted:\ngot:  %q\nwant: %q", s, wantSystem)
 	}
@@ -346,6 +346,45 @@ func TestSanitizeAI(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("sanitizeAI lost %q: %q", want, got)
 		}
+	}
+}
+
+// Batch-2 regulatory backstop: advice-words in model output become analytical
+// readings; factual mechanics and lowercase prose survive untouched.
+func TestSanitizeAdviceLanguage(t *testing.T) {
+	cases := map[string]string{
+		// The two verdict-noun forms.
+		"Momentum shows a BUY verdict on BTC.":  "Momentum shows a bullish reading on BTC.",
+		"The SELL verdict on ETH strengthened.": "The bearish reading on ETH strengthened.",
+		// Standalone ALL-CAPS verdict tokens.
+		"BTC flipped to BUY while ETH stays neutral.": "BTC flipped to bullish while ETH stays neutral.",
+		"Funding leans SELL across majors.":           "Funding leans bearish across majors.",
+		// Factual mechanics and lowercase prose stay intact.
+		"Longs pay shorts while selling pressure builds and buyers step back.": "Longs pay shorts while selling pressure builds and buyers step back.",
+		"Net inflow reads as potential sell pressure.":                         "Net inflow reads as potential sell pressure.",
+		// Mixed-case words never match the caps-only token rule.
+		"Buyback chatter and Sellafield news are unrelated.": "Buyback chatter and Sellafield news are unrelated.",
+	}
+	for in, want := range cases {
+		if got := sanitizeAdviceLanguage(in); got != want {
+			t.Errorf("sanitizeAdviceLanguage(%q):\ngot:  %q\nwant: %q", in, got, want)
+		}
+	}
+}
+
+// End-to-end: an advice-flavored model reply reaches Telegram as analytics.
+func TestAIBriefAdviceLanguageSanitized(t *testing.T) {
+	_, client := newAIStub(t, func(n int, body map[string]any) (int, string) {
+		return 200, aiEnvelope("Momentum prints a BUY verdict on BTC. Overall tone: BUY. Watch funding next.")
+	})
+	ag := deadAgents(t)
+	ag.ai = client
+	got := ag.aiBrief(context.Background(), fakeGathered())
+	if strings.Contains(got, "BUY") || strings.Contains(got, "SELL") {
+		t.Fatalf("advice-words leaked through the brief: %q", got)
+	}
+	if !strings.Contains(got, "bullish reading on BTC") || !strings.Contains(got, "Overall tone: bullish.") {
+		t.Fatalf("targeted replacements mangled the text: %q", got)
 	}
 }
 

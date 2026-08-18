@@ -40,7 +40,7 @@ func TestParseStooqCSV(t *testing.T) {
 		}
 	})
 
-	t.Run("Close=N/D → OK:false, nil err", func(t *testing.T) {
+	t.Run("Close=N/D → OK:false, nil err, DATE SURVIVES", func(t *testing.T) {
 		body := []byte("Symbol,Date,Time,Open,High,Low,Close,Volume\n^VIX,2026-05-29,23:00:00,N/D,N/D,N/D,N/D,N/D\n")
 		q, err := ParseStooqCSV(body)
 		if err != nil {
@@ -49,9 +49,30 @@ func TestParseStooqCSV(t *testing.T) {
 		if q.OK {
 			t.Errorf("OK = true, want false on N/D close")
 		}
+		// The row still carried a date → it must ship on the N/D quote (the
+		// lamp's as_of shows the last known session, not "").
+		wantTime := time.Date(2026, 5, 29, 23, 0, 0, 0, time.UTC)
+		if !q.AsOf.Equal(wantTime) {
+			t.Errorf("AsOf = %v, want %v (date survives an N/D close)", q.AsOf, wantTime)
+		}
 	})
 
-	t.Run("fully empty N/D row → OK:false, no panic", func(t *testing.T) {
+	t.Run("Close=N/D with N/D time, valid date → date-only AsOf", func(t *testing.T) {
+		body := []byte("Symbol,Date,Time,Open,High,Low,Close,Volume\n^VIX,2026-05-29,N/D,N/D,N/D,N/D,N/D,N/D\n")
+		q, err := ParseStooqCSV(body)
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if q.OK {
+			t.Errorf("OK = true, want false")
+		}
+		wantTime := time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC)
+		if !q.AsOf.Equal(wantTime) {
+			t.Errorf("AsOf = %v, want %v (midnight of the known date)", q.AsOf, wantTime)
+		}
+	})
+
+	t.Run("fully empty N/D row → OK:false, zero AsOf, no panic", func(t *testing.T) {
 		// stooq emits "<sym>,N/D,N/D,N/D,N/D,N/D,N/D,N/D" for a dead symbol.
 		body := []byte("Symbol,Date,Time,Open,High,Low,Close,Volume\n10USY.B,N/D,N/D,N/D,N/D,N/D,N/D,N/D\n")
 		q, err := ParseStooqCSV(body)
@@ -60,6 +81,9 @@ func TestParseStooqCSV(t *testing.T) {
 		}
 		if q.OK {
 			t.Errorf("OK = true, want false on all-N/D row")
+		}
+		if !q.AsOf.IsZero() {
+			t.Errorf("AsOf = %v, want zero (no date on the row)", q.AsOf)
 		}
 	})
 

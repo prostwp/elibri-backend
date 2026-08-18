@@ -237,6 +237,11 @@ func (w *Worker) logger() *log.Logger {
 // valid "no data" response, not a parse failure. A malformed Close float also
 // yields OK:false (no panic). An error is returned only when the body has no
 // usable data row at all.
+//
+// The row DATE survives an N/D close: stooq often keeps the last session's
+// date on a value-less row, and that date is a real fact ("last time this
+// symbol had data") — it ships as the lamp's as_of even when the value is N/D,
+// so the frontend/bot can say HOW stale instead of showing nothing.
 func ParseStooqCSV(data []byte) (Quote, error) {
 	// Strip CR first so a CRLF body's trailing "\r" can't survive on the last
 	// field (Volume) or split a line oddly; then trim surrounding whitespace.
@@ -262,18 +267,33 @@ func ParseStooqCSV(data []byte) (Quote, error) {
 	openStr := strings.TrimSpace(fields[3])
 	closeStr := strings.TrimSpace(fields[6])
 
-	// N/D sentinel anywhere that matters → "no data", not an error.
+	q := Quote{Symbol: symbol}
+	// Timestamp best-effort FIRST, so an N/D-close row still carries its date.
+	// stooq is UTC. An N/D time next to a valid date degrades to midnight of
+	// that date (still an honest "last known" stamp); an unparseable ts leaves
+	// AsOf zero.
+	if !isND(dateStr) {
+		if t, terr := time.ParseInLocation("2006-01-02 15:04:05", dateStr+" "+timeStr, time.UTC); terr == nil {
+			q.AsOf = t
+		} else if t, terr := time.ParseInLocation("2006-01-02", dateStr, time.UTC); terr == nil {
+			q.AsOf = t
+		}
+	}
+
+	// N/D sentinel on the close (or a fully dated-out row) → "no data" value,
+	// not an error — but the parsed date above stays on the quote.
 	if isND(dateStr) || isND(closeStr) {
-		return Quote{Symbol: symbol, OK: false}, nil
+		return q, nil
 	}
 
 	price, perr := strconv.ParseFloat(closeStr, 64)
 	if perr != nil {
 		// Unparseable close → treat as N/D (honest "—"), not a hard error.
-		return Quote{Symbol: symbol, OK: false}, nil
+		return q, nil
 	}
 
-	q := Quote{Symbol: symbol, Price: price, OK: true}
+	q.Price = price
+	q.OK = true
 	// Open: the session baseline for the lamp delta. Same N/D + float tolerance
 	// as Close — an N/D or unparseable Open leaves Open=0 (the handler then emits
 	// delta_pct:null rather than fabricating a move). A valid Close with a bad
@@ -282,11 +302,6 @@ func ParseStooqCSV(data []byte) (Quote, error) {
 		if o, oerr := strconv.ParseFloat(openStr, 64); oerr == nil {
 			q.Open = o
 		}
-	}
-	// Parse the timestamp best-effort; an unparseable ts leaves AsOf zero but
-	// keeps OK (the close is still valid). stooq is UTC.
-	if t, terr := time.ParseInLocation("2006-01-02 15:04:05", dateStr+" "+timeStr, time.UTC); terr == nil {
-		q.AsOf = t
 	}
 	return q, nil
 }

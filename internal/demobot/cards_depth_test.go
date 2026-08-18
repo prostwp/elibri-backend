@@ -147,6 +147,104 @@ func TestNewsCardEscapesFeedText(t *testing.T) {
 	}
 }
 
+// Batch-2 silence threshold: below newsMinMentions 24h mentions on the TOP
+// narrative, scores are noise and must not present as findings — the card
+// says "warming up" and lists themes as name + mentions only.
+func TestNewsCardBelowMentionThreshold(t *testing.T) {
+	fixture := `{"captured_at":"2026-08-18T06:00:00Z","narratives":[
+	  {"narrative":"zk","trend_score":72,"stage":"early","sentiment_label":"bull","mention_count_24h":3,"confidence":61,
+	   "generated_idea":"zk chatter tripled off a tiny base."},
+	  {"narrative":"rwa","trend_score":50,"stage":"early","sentiment_label":"neutral","mention_count_24h":2,"confidence":40}]}`
+	ag := newStubBackend(t, map[string]string{"/api/v1/narratives": fixture})
+	c := ag.NewsCard(context.Background())
+
+	if c.Offline {
+		t.Fatal("thin data is an honest 200 card, not an offline state")
+	}
+	if c.Emoji != emojiNeutral {
+		t.Errorf("emoji: got %q, want neutral (no finding to color)", c.Emoji)
+	}
+	wantVerdict := "Radar warming up — top theme 'zk' has only 3 mentions in 24h; not enough to score"
+	if c.Verdict != wantVerdict {
+		t.Errorf("verdict:\ngot:  %q\nwant: %q", c.Verdict, wantVerdict)
+	}
+	if c.Short != "warming up" {
+		t.Errorf("short: got %q", c.Short)
+	}
+	// Facts: name + mentions ONLY — no scores, no stages.
+	wantFacts := []string{"1. zk — 3 mentions/24h", "2. rwa — 2 mentions/24h"}
+	if len(c.Facts) != len(wantFacts) {
+		t.Fatalf("facts: got %v, want %v", c.Facts, wantFacts)
+	}
+	for i, want := range wantFacts {
+		if c.Facts[i] != want {
+			t.Errorf("fact[%d]: got %q, want %q", i, c.Facts[i], want)
+		}
+	}
+	joined := strings.Join(c.Facts, "|")
+	for _, banned := range []string{"score", "trending", "early"} {
+		if strings.Contains(joined, banned) {
+			t.Errorf("score emphasis %q leaked into warming facts: %v", banned, c.Facts)
+		}
+	}
+	// No confidence bar, no AI idea: nothing below the threshold is a finding.
+	if c.Confidence != nil {
+		t.Errorf("confidence must be absent, got %v", c.Confidence)
+	}
+	if c.AIHTML != "" {
+		t.Errorf("AI idea must not render on thin data, got %q", c.AIHTML)
+	}
+	// Singular wording at exactly one mention.
+	one := `{"captured_at":"2026-08-18T06:00:00Z","narratives":[
+	  {"narrative":"zk","trend_score":9,"stage":"early","sentiment_label":"neutral","mention_count_24h":1,"confidence":5}]}`
+	ag2 := newStubBackend(t, map[string]string{"/api/v1/narratives": one})
+	if v := ag2.NewsCard(context.Background()).Verdict; !strings.Contains(v, "only 1 mention in 24h") {
+		t.Errorf("singular mention wording: got %q", v)
+	}
+	// At the threshold (5) the scored card returns.
+	at := `{"captured_at":"2026-08-18T06:00:00Z","narratives":[
+	  {"narrative":"zk","trend_score":72,"stage":"early","sentiment_label":"bull","mention_count_24h":5,"confidence":61}]}`
+	ag3 := newStubBackend(t, map[string]string{"/api/v1/narratives": at})
+	if v := ag3.NewsCard(context.Background()).Verdict; !strings.Contains(v, "trend score 72/100") {
+		t.Errorf("at-threshold card must score again: %q", v)
+	}
+}
+
+// The digest's narrative extra obeys the same threshold: no scored 📖 line
+// (and no AI-payload narrative) off a thin mention base.
+func TestDigestNarrativeExtraBelowThreshold(t *testing.T) {
+	stubExternalBases(t)
+	thin := `{"captured_at":"2026-08-18T06:00:00Z","narratives":[
+	  {"narrative":"zk","trend_score":72,"stage":"early","sentiment_label":"bull","mention_count_24h":3,"confidence":61}]}`
+	ag := newStubBackend(t, map[string]string{"/api/v1/narratives": thin})
+	g := ag.gather(context.Background())
+	if g.topNarr != nil {
+		t.Errorf("thin narrative must not enter the AI payload: %+v", g.topNarr)
+	}
+	for _, ex := range g.extras {
+		if strings.Contains(ex, "📖") {
+			t.Errorf("thin narrative rendered a scored digest extra: %q", ex)
+		}
+	}
+
+	rich := `{"captured_at":"2026-08-18T06:00:00Z","narratives":[
+	  {"narrative":"ai-agents","trend_score":84,"stage":"trending","sentiment_label":"bull","mention_count_24h":412,"confidence":71}]}`
+	ag2 := newStubBackend(t, map[string]string{"/api/v1/narratives": rich})
+	g2 := ag2.gather(context.Background())
+	if g2.topNarr == nil {
+		t.Fatal("rich narrative must flow into the payload")
+	}
+	found := false
+	for _, ex := range g2.extras {
+		if strings.Contains(ex, "📖") && strings.Contains(ex, "ai-agents") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("rich narrative must render the digest extra: %v", g2.extras)
+	}
+}
+
 func TestNewsCardEmptyAndOffline(t *testing.T) {
 	ag := newStubBackend(t, map[string]string{"/api/v1/narratives": `{"captured_at":"","narratives":[]}`})
 	c := ag.NewsCard(context.Background())
@@ -389,6 +487,75 @@ func TestMomentumCardRSAndVolume(t *testing.T) {
 	if !strings.Contains(joined, "BTC 4h volume: 1.50× its 20-bar average") {
 		t.Errorf("volume line missing: %v", c.Facts)
 	}
+	// Batch-2 language + thresholds: analytical verdict words only, and one
+	// compact rule line documents what flips them.
+	if strings.Contains(c.Verdict, "BUY") || strings.Contains(c.Verdict, "SELL") {
+		t.Errorf("advice-words leaked into the momentum verdict: %q", c.Verdict)
+	}
+	if !strings.Contains(c.Verdict, "BULLISH") {
+		t.Errorf("uptrending stub must read BULLISH: %q", c.Verdict)
+	}
+	if !strings.Contains(joined, "→ bullish") {
+		t.Errorf("per-asset lines must use analytical words: %v", c.Facts)
+	}
+	if !strings.Contains(joined, "Rule: RSI 55+/45- with matching MACD sign") {
+		t.Errorf("driving-threshold rule line missing: %v", c.Facts)
+	}
+}
+
+// ── /trend: invalidation level + ADX threshold beside the number ─────────────
+
+func TestTrendCardInvalidationAndADXThreshold(t *testing.T) {
+	stubBinanceKlines(t, 250, func(i int) float64 { return 100 })
+	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
+	c := ag.TrendCard(context.Background(), btcSpec)
+
+	joined := strings.Join(c.Facts, "|")
+	// ADX drives the verdict → its confirm threshold rides beside the number.
+	if !strings.Contains(joined, "(trend confirms above 25)") {
+		t.Errorf("ADX threshold missing from facts: %v", c.Facts)
+	}
+	// The invalidation line: exact wording, a plausible integer level for a
+	// BTC-scale price (trimFloat renders %.0f above 1000).
+	var invLine string
+	for _, f := range c.Facts {
+		if strings.HasPrefix(f, "Invalidation: below ") {
+			invLine = f
+		}
+	}
+	if invLine == "" {
+		t.Fatalf("invalidation line missing: %v", c.Facts)
+	}
+	if !strings.HasSuffix(invLine, "the structure is broken (1 ATR under the EMA cluster)") {
+		t.Errorf("invalidation wording: %q", invLine)
+	}
+	var level float64
+	if _, err := fmt.Sscanf(invLine, "Invalidation: below %f the structure is broken", &level); err != nil {
+		t.Fatalf("cannot parse level from %q: %v", invLine, err)
+	}
+	// The stub trends 60050→72500 with ±100 wicks; the level must sit below
+	// the last close but in the same price region (EMA cluster − 1 ATR).
+	if level <= 60000 || level >= 72500 {
+		t.Errorf("invalidation level %v out of the series' price region", level)
+	}
+}
+
+// ── /sr: strength threshold beside the touch counts ──────────────────────────
+
+func TestSRCardStrengthThreshold(t *testing.T) {
+	stubBinanceKlines(t, 250, func(i int) float64 { return 100 })
+	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
+	c := ag.SRCard(context.Background(), btcSpec)
+
+	found := false
+	for _, f := range c.Facts {
+		if strings.HasPrefix(f, "Method: ") && strings.Contains(f, "strength = touch count (strong from 7 touches)") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("method line must document the strength threshold: %v", c.Facts)
+	}
 }
 
 func TestMomentumAssetCardVolume(t *testing.T) {
@@ -500,13 +667,18 @@ func TestDayRangeLabelAndFXLine(t *testing.T) {
 		}
 	}
 	line := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "up", RSI: 58.3, DayChangePct: 0.24, HasDay: true, DayPos: 0.9, HasRange: true})
-	want := "🟢 EURUSD: up · RSI 58.3 · +0.24% 24h · near day high"
+	want := "🟢 EURUSD: 1h up · 24h +0.24% · RSI(1h) 58.3 · near day high"
 	if line != want {
 		t.Errorf("fxLine with range: got %q, want %q", line, want)
 	}
-	// Without range data the line stays exactly as before.
-	old := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "up", RSI: 58.3, DayChangePct: 0.24, HasDay: true})
-	if old != "🟢 EURUSD: up · RSI 58.3 · +0.24% 24h" {
-		t.Errorf("fxLine without range regressed: %q", old)
+	// Without range data the labeled horizons stay.
+	noRange := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "up", RSI: 58.3, DayChangePct: 0.24, HasDay: true})
+	if noRange != "🟢 EURUSD: 1h up · 24h +0.24% · RSI(1h) 58.3" {
+		t.Errorf("fxLine without range regressed: %q", noRange)
+	}
+	// The spec's own sample shape (near day low, negative day).
+	sample := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "up", RSI: 44.5, DayChangePct: -0.15, HasDay: true, DayPos: 0.1, HasRange: true})
+	if sample != "🟢 EURUSD: 1h up · 24h -0.15% · RSI(1h) 44.5 · near day low" {
+		t.Errorf("fxLine sample shape: got %q", sample)
 	}
 }

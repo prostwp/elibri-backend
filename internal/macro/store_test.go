@@ -53,6 +53,51 @@ func TestStore_SetQuoteOverwritesWithND(t *testing.T) {
 	}
 }
 
+// TestStore_SetQuoteCarriesLastKnownDate: a date-less overwrite (date-less N/D
+// row or the worker's network-failure sentinel) keeps the previous quote's
+// AsOf — "last time this symbol had data" is a fact that survives the source
+// going dark. Values/OK are never carried (that would fake freshness), and an
+// incoming quote WITH its own date always wins.
+func TestStore_SetQuoteCarriesLastKnownDate(t *testing.T) {
+	friday := time.Date(2026, 8, 14, 20, 55, 0, 0, time.UTC)
+	saturday := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
+
+	s := NewStore()
+	s.SetQuote(Quote{Symbol: SymSPX, Price: 7580.1, AsOf: friday, OK: true})
+
+	// Date-less N/D overwrite → OK flips false, the Friday date survives.
+	s.SetQuote(Quote{Symbol: SymSPX, OK: false})
+	q := s.Latest()[SymSPX]
+	if q.OK {
+		t.Fatalf("OK = true, want false (N/D overwrote valid)")
+	}
+	if q.Price != 0 {
+		t.Errorf("Price = %v, want 0 (value never carried forward)", q.Price)
+	}
+	if !q.AsOf.Equal(friday) {
+		t.Errorf("AsOf = %v, want %v (last known date carried forward)", q.AsOf, friday)
+	}
+
+	// The carried date survives REPEATED date-less overwrites (every poll
+	// cycle on a dead weekend feed).
+	s.SetQuote(Quote{Symbol: SymSPX, OK: false})
+	if q := s.Latest()[SymSPX]; !q.AsOf.Equal(friday) {
+		t.Errorf("AsOf after 2nd N/D = %v, want %v", q.AsOf, friday)
+	}
+
+	// An N/D quote that carries its OWN date wins over the carried one.
+	s.SetQuote(Quote{Symbol: SymSPX, OK: false, AsOf: saturday})
+	if q := s.Latest()[SymSPX]; !q.AsOf.Equal(saturday) {
+		t.Errorf("AsOf = %v, want %v (own date beats carried)", q.AsOf, saturday)
+	}
+
+	// No previous date at all → AsOf stays zero (nothing to carry).
+	s.SetQuote(Quote{Symbol: SymVIX, OK: false})
+	if q := s.Latest()[SymVIX]; !q.AsOf.IsZero() {
+		t.Errorf("VIX AsOf = %v, want zero (never had a date)", q.AsOf)
+	}
+}
+
 // TestStore_AddPointCapEvictsOldest: exceeding ringCap drops the oldest points.
 func TestStore_AddPointCapEvictsOldest(t *testing.T) {
 	s := NewStore()

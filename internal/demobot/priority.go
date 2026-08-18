@@ -25,13 +25,19 @@ var signalOrder = []string{keyFunding, keyMomentum, keyTrend}
 //
 //  1. If the macro regime is "risk_off", macro is always the top signal —
 //     a hostile big-money backdrop outranks any single crypto signal.
+//     Regime "unknown" (zero real tradfin lamps — market closed or feed dark)
+//     NEVER wins this slot: it is a statement of missing data, not RISK-OFF,
+//     and an absence of inputs must not outrank live crypto signals.
 //  2. Otherwise the winner is the agent with the highest deviation-from-
 //     neutral (0..100) among funding, momentum and trend. Agents whose data
 //     source failed are simply absent from `deviations`.
 //  3. Ties are broken by the fixed order funding > momentum > trend
 //     (strict `>` while scanning in signalOrder keeps the earlier agent).
 //  4. If none of the three produced data, fall back to macro — the caller
-//     renders whatever macro state it has, including an honest offline card.
+//     renders whatever macro state it has, including an honest offline or
+//     unknown ("no tradfin data") card. That fallback is a last resort, not
+//     the unknown regime "winning": with any live crypto signal present, an
+//     unknown macro never tops /digest or /top.
 //
 // FX in v1: FX assets do NOT compete for the top slot. The priority trio is
 // crypto-only — the momentum agent's deviation is computed from its

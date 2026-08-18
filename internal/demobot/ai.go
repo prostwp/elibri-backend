@@ -28,6 +28,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -49,8 +50,11 @@ const (
 	aiRespBodyCap = 64 << 10
 )
 
-// aiSystemPrompt is pinned verbatim by TestAIRequestShape.
-const aiSystemPrompt = "You are AlphaVizor AI, a market analyst. Write a tight, factual brief for traders based ONLY on the data provided. No advice, no hedging boilerplate, no emoji. End with the single most important thing to watch next."
+// aiSystemPrompt is pinned verbatim by TestAIRequestShape. The analytical-
+// language clause is a regulatory requirement (team review batch 2): the
+// product ships analytics, never trade signals — and sanitizeAdviceLanguage
+// backstops the model when it slips anyway.
+const aiSystemPrompt = "You are AlphaVizor AI, a market analyst. Write a tight, factual brief for traders based ONLY on the data provided. No advice, no hedging boilerplate, no emoji. Use analytical language only: 'bullish/bearish reading', never 'BUY/SELL verdict', never 'edge available to traders', never imperatives to enter or exit. End with the single most important thing to watch next."
 
 const aiBriefInstruction = "Write a coherent market brief of 4-6 sentences from the fenced data. Plain sentences only — no markdown, no headings, no lists."
 
@@ -216,7 +220,8 @@ func (c *aiClient) call(ctx context.Context, userMsg string) string {
 
 // sanitizeAI strips markdown remnants the model sometimes emits despite the
 // plain-text instruction (observed live: "**MARKET BRIEF**"). Telegram HTML
-// parse mode renders them as literal asterisks, so they must go.
+// parse mode renders them as literal asterisks, so they must go. The advice-
+// language pass runs last, on the cleaned text.
 func sanitizeAI(s string) string {
 	s = strings.ReplaceAll(s, "**", "")
 	s = strings.ReplaceAll(s, "__", "")
@@ -227,7 +232,34 @@ func sanitizeAI(s string) string {
 			lines[i] = strings.TrimSpace(strings.TrimLeft(t, "# "))
 		}
 	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
+	return sanitizeAdviceLanguage(strings.TrimSpace(strings.Join(lines, "\n")))
+}
+
+// Advice-word backstop (batch-2 regulatory sweep): even with the system
+// prompt forbidding it, the model can echo signal-speak. Two TARGETED
+// replacements — deliberately narrow so factual data stays intact:
+//
+//  1. "BUY/SELL verdict" (any case on the noun) → "bullish/bearish reading".
+//  2. A standalone ALL-CAPS BUY/SELL token → "bullish"/"bearish". Upper case
+//     is the verdict-shouting context; lowercase prose ("buyers", "selling
+//     pressure", "buy-side flow") and mixed-case words never match, so
+//     quoted mechanics and names survive untouched.
+//
+// Applied to model OUTPUT only — never to card facts, which are already
+// written in analytical language at the source.
+var (
+	adviceBuyVerdictRe  = regexp.MustCompile(`\bBUY\s+(?i:verdict)\b`)
+	adviceSellVerdictRe = regexp.MustCompile(`\bSELL\s+(?i:verdict)\b`)
+	adviceBuyRe         = regexp.MustCompile(`\bBUY\b`)
+	adviceSellRe        = regexp.MustCompile(`\bSELL\b`)
+)
+
+func sanitizeAdviceLanguage(s string) string {
+	s = adviceBuyVerdictRe.ReplaceAllString(s, "bullish reading")
+	s = adviceSellVerdictRe.ReplaceAllString(s, "bearish reading")
+	s = adviceBuyRe.ReplaceAllString(s, "bullish")
+	s = adviceSellRe.ReplaceAllString(s, "bearish")
+	return s
 }
 
 // truncateAtSentence caps s at max runes, cutting at the last sentence end

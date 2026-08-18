@@ -103,8 +103,10 @@ type fxRead struct {
 	CloseAt      time.Time // close time of the last CLOSED bar used
 }
 
-// fxLine renders one overview line:
-// "🟢 EURUSD: up · RSI 58.3 · +0.24% 24h · near day high".
+// fxLine renders one overview line with BOTH horizons labeled explicitly
+// (batch-2: a bare "up · -0.15%" invited misreading one horizon as the other
+// — the trend is the 1h EMA cross, the change is 24h):
+// "🟢 EURUSD: 1h up · 24h -0.15% · RSI(1h) 44.5 · near day low".
 func fxLine(r fxRead) string {
 	if r.Insufficient {
 		return emojiNeutral + " " + r.Pair + ": insufficient history"
@@ -119,10 +121,11 @@ func fxLine(r fxRead) string {
 	case "down":
 		emoji = emojiBear
 	}
-	line := fmt.Sprintf("%s %s: %s · RSI %.1f", emoji, r.Pair, r.Dir, r.RSI)
+	line := fmt.Sprintf("%s %s: 1h %s", emoji, r.Pair, r.Dir)
 	if r.HasDay {
-		line += fmt.Sprintf(" · %+.2f%% 24h", r.DayChangePct)
+		line += fmt.Sprintf(" · 24h %+.2f%%", r.DayChangePct)
 	}
+	line += fmt.Sprintf(" · RSI(1h) %.1f", r.RSI)
 	if r.HasRange {
 		line += " · " + dayRangeLabel(r.DayPos)
 	}
@@ -175,7 +178,9 @@ func fxOverviewCard(reads []fxRead, open bool, dataTime time.Time) Card {
 	add(flat, "flat", true)
 	add(dead, "no data", false)
 
-	verdict := "1h trend: " + strings.Join(parts, " · ")
+	// Header names both horizons so the labeled pair lines below read
+	// unambiguously (the counts themselves are 1h-trend counts).
+	verdict := "1h trend vs 24h change: " + strings.Join(parts, " · ")
 	short := strings.Join(shortParts, " · ")
 	if short == "" {
 		short = "no data"

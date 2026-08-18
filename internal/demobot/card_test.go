@@ -17,13 +17,13 @@ func TestRenderHTMLFullCard(t *testing.T) {
 		Emoji:      "🟢",
 		Agent:      "Momentum Agent",
 		Asset:      "BTC",
-		Verdict:    "BUY — bulls in control",
+		Verdict:    "BULLISH — bulls in control",
 		Facts:      []string{"RSI(14): 62.4", "MACD hist: +120.50"},
 		Confidence: intPtr(60),
 		DataTime:   goldenTime,
 	}
 	want := "🟢 <b>Momentum Agent</b> · BTC\n" +
-		"<b>BUY — bulls in control</b>\n" +
+		"<b>BULLISH — bulls in control</b>\n" +
 		"• RSI(14): 62.4\n" +
 		"• MACD hist: +120.50\n" +
 		"Confidence: ■■■□□ 60%\n" +
@@ -121,8 +121,8 @@ func TestConfidenceBar(t *testing.T) {
 // ── One-liner rendering for /digest ──────────────────────────────────────────
 
 func TestOneLiner(t *testing.T) {
-	withAsset := Card{Emoji: "🟢", ShortName: "Momentum", Asset: "BTC", Short: "buy"}
-	if got, want := withAsset.OneLiner(), "🟢 <b>Momentum</b> BTC: buy"; got != want {
+	withAsset := Card{Emoji: "🟢", ShortName: "Momentum", Asset: "BTC", Short: "bullish"}
+	if got, want := withAsset.OneLiner(), "🟢 <b>Momentum</b> BTC: bullish"; got != want {
 		t.Errorf("one-liner with asset: got %q, want %q", got, want)
 	}
 	noAsset := Card{Emoji: "🔴", ShortName: "Funding", Short: "shorts crowded"}

@@ -93,7 +93,7 @@ func (c Card) renderBody() string {
 	return b.String()
 }
 
-// OneLiner renders the compact digest form: "🟢 <b>Momentum</b> BTC: buy".
+// OneLiner renders the compact digest form: "🟢 <b>Momentum</b> BTC: bullish".
 func (c Card) OneLiner() string {
 	var b strings.Builder
 	b.WriteString(c.Emoji)

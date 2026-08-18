@@ -75,3 +75,28 @@ func TestPickTopNothingAvailable(t *testing.T) {
 		t.Fatalf("only trend available: got %q, want %q", got, keyTrend)
 	}
 }
+
+// Regime "unknown" (zero real tradfin lamps) is NOT RISK-OFF: an absence of
+// inputs must never outrank live crypto signals — see the rule-1 note in
+// priority.go.
+func TestPickTopUnknownRegimeNeverWins(t *testing.T) {
+	// Any live signal beats a no-data macro — even one at zero deviation.
+	if got := pickTop("unknown", map[string]int{keyTrend: 1}); got != keyTrend {
+		t.Fatalf("unknown vs live trend: got %q, want %q", got, keyTrend)
+	}
+	if got := pickTop("unknown", map[string]int{keyFunding: 0}); got != keyFunding {
+		t.Fatalf("unknown vs zero-deviation funding: got %q, want %q", got, keyFunding)
+	}
+	if got := pickTop("unknown", map[string]int{
+		keyFunding:  95,
+		keyMomentum: 80,
+		keyTrend:    70,
+	}); got != keyFunding {
+		t.Fatalf("unknown must not hijack rule 1: got %q, want %q", got, keyFunding)
+	}
+	// Rule-4 fallback only: with NOTHING else live, macro renders its honest
+	// unknown card — a last resort, not a win.
+	if got := pickTop("unknown", map[string]int{}); got != keyMacro {
+		t.Fatalf("unknown fallback: got %q, want %q", got, keyMacro)
+	}
+}

@@ -469,11 +469,16 @@ func (a *Agents) gather(ctx context.Context) gathered {
 	run(func() { // context lines — skipped silently when unavailable
 		if n, err := a.api.Narratives(ctx); err == nil && len(n.Narratives) > 0 {
 			top := pickTopNarrative(n.Narratives)
-			mu.Lock()
-			g.topNarr = &top
-			g.extras = append(g.extras, fmt.Sprintf("📖 <b>Narrative</b>: %s (%s, score %d)",
-				esc(top.Narrative), esc(top.Stage), top.TrendScore))
-			mu.Unlock()
+			// Radar silence threshold (see newsMinMentions): a theme with a
+			// handful of mentions must not surface as a scored finding in the
+			// digest either — no extra line, no AI-payload narrative.
+			if top.MentionCount >= newsMinMentions {
+				mu.Lock()
+				g.topNarr = &top
+				g.extras = append(g.extras, fmt.Sprintf("📖 <b>Narrative</b>: %s (%s, score %d)",
+					esc(top.Narrative), esc(top.Stage), top.TrendScore))
+				mu.Unlock()
+			}
 		}
 	})
 	run(func() {

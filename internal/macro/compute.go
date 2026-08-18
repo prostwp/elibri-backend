@@ -7,6 +7,7 @@ package macro
 import (
 	"math"
 	"regexp"
+	"time"
 )
 
 const (
@@ -205,12 +206,34 @@ func Composite(lamps []Lamp) *int {
 	return &v
 }
 
-// ClassifyRegime buckets a composite into a regime. A nil composite → mixed
-// (the handler emits the "not enough live markets" copy separately).
+// TradfinOK reports whether at least one lamp carries live data. The wire
+// definition is value-presence (per-lamp ok = Value != nil); the Status check
+// only matters for artificial inputs (in the handler a status is never set
+// without a value), keeping the guard total over hand-built lamps too.
+func TradfinOK(lamps []Lamp) bool {
+	for _, l := range lamps {
+		if l.Value != nil || l.Status != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// ClassifyRegime buckets a composite + the lamp set into a regime.
 //
 //	<35 → risk_off | 35..65 → mixed | >65 → risk_on
-func ClassifyRegime(composite *int) string {
+//
+// A nil composite splits on data presence:
+//   - ZERO lamps carry a value → "unknown" — there is no input at all, so no
+//     knowledge claim is possible (never "mixed", which reads as "we looked at
+//     the markets and they disagree").
+//   - ≥1 real lamp but no stable score (<3 active) → "mixed" (the handler
+//     emits the "not enough live markets" copy separately).
+func ClassifyRegime(composite *int, lamps []Lamp) string {
 	if composite == nil {
+		if !TradfinOK(lamps) {
+			return RegimeUnknown
+		}
 		return RegimeMixed
 	}
 	c := *composite
@@ -221,6 +244,33 @@ func ClassifyRegime(composite *int) string {
 		return RegimeRiskOn
 	}
 	return RegimeMixed
+}
+
+// TradfinWindowOpen reports whether the tradfin futures week is open at t:
+// from Sunday 22:00 UTC to Friday 21:00 UTC (Sun 22:00:00 itself is open,
+// Fri 21:00:00 itself is closed; Saturday is fully closed).
+//
+// APPROXIMATION, on purpose: it models how traders think of the week — the
+// lamp futures (vi.f / dx.f, plus spot gold and the yield print) reopen
+// Sunday evening US time and run ~24h through Friday evening. It ignores the
+// short daily maintenance breaks and exchange holidays, and it is pinned to
+// UTC while the real CME/ICE schedule is anchored to US local time — so
+// around a US DST transition the true boundaries drift by an hour against
+// this window. Accepted: the field gates COPY ("market closed" wording),
+// never data honesty — lamps can be null inside the open window (data lag)
+// and regime honesty is driven by data presence (TradfinOK), not this clock.
+func TradfinWindowOpen(t time.Time) bool {
+	t = t.UTC()
+	switch t.Weekday() {
+	case time.Saturday:
+		return false
+	case time.Sunday:
+		return t.Hour() >= 22
+	case time.Friday:
+		return t.Hour() < 21
+	default: // Mon–Thu: open around the clock in this approximation.
+		return true
+	}
 }
 
 // lampByKey returns the status of a lamp by key ("" if absent or N/D).
@@ -239,11 +289,20 @@ func lampStatusByKey(lamps []Lamp, key string) string {
 // breakout/momentum/position/signal) — "favors"/"softening"/"bid"/"weighs"/
 // "tailwind"/"headwind" are fine. Returns "" if the assembled string somehow
 // trips the banned filter (graceful — the frontend shows its own empty state),
-// and "" when the composite is nil (≥3 lamps N/D → no honest read to give).
+// and "" for regime "unknown" (zero real lamps → no honest read to give).
 //
 // Selector: regime × the dominant lamp's sign. Any uncovered mixed case falls
-// back to template #3.
+// back to template #3 — but ONLY with at least one real lamp: the "signals
+// are split" sentence is a claim about observed markets and must never render
+// off an empty lamp set (the all-null honesty defect).
 func BuildDiagnosis(regime string, lamps []Lamp) string {
+	// No data → no sentence. Both gates on purpose: the regime gate covers the
+	// classified path, the TradfinOK gate covers any caller that still hands in
+	// "mixed" with zero real lamps.
+	if regime == RegimeUnknown || !TradfinOK(lamps) {
+		return ""
+	}
+
 	dxy := lampStatusByKey(lamps, KeyDXY)
 	vix := lampStatusByKey(lamps, KeyVIX)
 	spx := lampStatusByKey(lamps, KeySPX)

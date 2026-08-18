@@ -27,15 +27,13 @@ import (
 )
 
 const (
-	// tradfinStaleThreshold — if the freshest tradfin quote is older than this,
-	// the market is treated as closed/stale (tradfin_market_open=false). stooq
-	// live-updates during trading hours; a >15min-old freshest ts means we're on
-	// a weekend or after the close. This IS the whole weekend mechanism: the
-	// freshness of the timestamp honestly reflects whether the market is open.
-	tradfinStaleThreshold = 15 * time.Minute
-
 	// macroCalendarWindowHours / macroCalendarMax bound the embedded calendar:
 	// top-5 medium+high-impact events in the next 72h.
+	//
+	// (tradfin_market_open is no longer staleness-derived here — it is the
+	// clock-based futures-week window macro.TradfinWindowOpen, Sunday 22:00 UTC
+	// → Friday 21:00 UTC. Data presence is reported separately via tradfin_ok
+	// and the per-lamp ok flags; the clock never fakes or hides data.)
 	macroCalendarWindowHours = 72
 	macroCalendarMax         = 5
 )
@@ -94,12 +92,18 @@ func handleMacro(w http.ResponseWriter, r *http.Request) {
 	// it's always present — empty [] when macrocal isn't initialised.
 	cal := topCalendar()
 
-	// nil store (not wired / DB-less boot) → degraded-but-valid payload.
+	// The market-open flag is the clock-based futures week — valid even with a
+	// nil store (it is a statement about the market, not about our data).
+	open := macro.TradfinWindowOpen(now)
+
+	// nil store (not wired / DB-less boot) → degraded-but-valid payload. Zero
+	// lamps carry a value → regime "unknown", never a fabricated "mixed".
 	if macroStore == nil {
 		writeJSON(w, macro.Response{
-			Regime:            macro.RegimeMixed,
+			Regime:            macro.RegimeUnknown,
 			Composite:         nil,
-			TradfinMarketOpen: false,
+			TradfinMarketOpen: open,
+			TradfinOk:         false,
 			TradfinAsOf:       "",
 			CapturedAt:        now.Format(time.RFC3339),
 			Lamps:             emptyLamps(),
@@ -115,9 +119,9 @@ func handleMacro(w http.ResponseWriter, r *http.Request) {
 
 	lamps := buildLamps(quotes)
 	composite := macro.Composite(lamps)
-	regime := macro.ClassifyRegime(composite)
+	regime := macro.ClassifyRegime(composite, lamps)
 	corrs := buildCorrelations(macroStore)
-	open, asOf := tradfinOpenAsOf(quotes, now)
+	asOf := tradfinAsOf(quotes)
 	idea := macro.BuildDiagnosis(regime, lamps)
 
 	var fng *macro.FnG
@@ -130,6 +134,7 @@ func handleMacro(w http.ResponseWriter, r *http.Request) {
 		Regime:            regime,
 		Composite:         composite,
 		TradfinMarketOpen: open,
+		TradfinOk:         macro.TradfinOK(lamps),
 		TradfinAsOf:       asOf,
 		CapturedAt:        now.Format(time.RFC3339),
 		Lamps:             lamps,
@@ -141,7 +146,12 @@ func handleMacro(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildLamps turns the latest quotes into the 5 lamps (render order). An N/D /
-// missing symbol → Value:nil, DeltaPct:nil, Status:"", AsOf:"" (frontend "—").
+// missing symbol → Value:nil, OK:false, DeltaPct:nil, Status:"" (frontend "—").
+//
+// AsOf is filled from the quote's date whenever ONE IS KNOWN, even on an N/D
+// quote (stooq keeps the last session's date on value-less rows and the store
+// carries the last known date forward) — a stale "last close Fri 21:00" is a
+// fact worth showing; "" is reserved for "never saw a date at all".
 //
 // Delta is the SESSION change (Close−Open) the quote already carries. delta==0
 // (Open==Close) is a real "no move" and is reported; only a missing Open (0 →
@@ -157,12 +167,14 @@ func buildLamps(quotes map[string]macro.Quote) []macro.Lamp {
 	for _, spec := range lampSpecs {
 		lamp := macro.Lamp{Key: spec.key, Label: spec.label}
 		q, ok := quotes[spec.symbol]
+		if ok && !q.AsOf.IsZero() {
+			// Last known source date — independent of value presence.
+			lamp.AsOf = q.AsOf.UTC().Format(time.RFC3339)
+		}
 		if ok && q.OK {
 			price := q.Price
 			lamp.Value = &price
-			if !q.AsOf.IsZero() {
-				lamp.AsOf = q.AsOf.UTC().Format(time.RFC3339)
-			}
+			lamp.OK = true
 			// Session delta from Open. Open>0 guards the N/D / unparseable case.
 			if q.Open > 0 {
 				d := pctChange(q.Open, q.Price)
@@ -200,18 +212,19 @@ func buildCorrelations(reader macro.SnapshotReader) []macro.Correlation {
 	return corrs
 }
 
-// tradfinOpenAsOf computes (market_open, freshest_iso) from the freshest OK
-// tradfin quote (BTC excluded — it's 24/7). "Open" is purely a STALENESS signal:
-// the freshest ts being within tradfinStaleThreshold. No weekday gate — these
-// are futures (vi.f/dx.f) that trade ~24×5, so a Mon..Fri test would falsely
-// report "closed" at the Sunday-night futures reopen, and it's redundant with
-// staleness on the weekend (the Friday close is long stale → open=false anyway).
-// asOf is "" when every tradfin symbol is N/D.
-func tradfinOpenAsOf(quotes map[string]macro.Quote, now time.Time) (bool, string) {
+// tradfinAsOf returns the freshest KNOWN tradfin timestamp (BTC excluded —
+// it's 24/7) as ISO, or "" when no tradfin symbol ever carried a date. N/D
+// quotes count too when they carry a date (stooq keeps the last session's date
+// on value-less rows; the store carries it forward) — the field means "last
+// time tradfin had data", which stays true while the source is dark.
+//
+// Market-open is NOT derived here anymore: it's the clock-based futures week
+// (macro.TradfinWindowOpen), and data presence ships as tradfin_ok.
+func tradfinAsOf(quotes map[string]macro.Quote) string {
 	var freshest time.Time
 	for _, sym := range tradfinLampSymbols {
 		q, ok := quotes[sym]
-		if !ok || !q.OK || q.AsOf.IsZero() {
+		if !ok || q.AsOf.IsZero() {
 			continue
 		}
 		if q.AsOf.After(freshest) {
@@ -219,11 +232,9 @@ func tradfinOpenAsOf(quotes map[string]macro.Quote, now time.Time) (bool, string
 		}
 	}
 	if freshest.IsZero() {
-		return false, ""
+		return ""
 	}
-	asOf := freshest.UTC().Format(time.RFC3339)
-	open := now.Sub(freshest) < tradfinStaleThreshold
-	return open, asOf
+	return freshest.UTC().Format(time.RFC3339)
 }
 
 // topCalendar returns up to 5 medium+high-impact macro events in the next 72h,

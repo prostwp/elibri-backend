@@ -5,21 +5,34 @@ package macro
 //   - Pearson: +1 / -1 / 0 / <2pts / zero-variance / clamp.
 //   - LampStatus: every lamp's rules at the boundary values.
 //   - Composite: all-tailwind / all-headwind / mix / N/D renormalisation / nil.
-//   - ClassifyRegime: 34/35/65/66/nil thresholds.
-//   - BuildDiagnosis: each template + the BANNED-WORD assertion (incl. \bsupport\b).
+//   - ClassifyRegime: 34/35/65/66 thresholds + nil-composite split
+//     (real lamps → mixed, zero real lamps → unknown).
+//   - TradfinOK: value / status / empty lamp sets.
+//   - TradfinWindowOpen: Sun 22:00 / Fri 21:00 UTC boundaries + mid-week + Sat.
+//   - BuildDiagnosis: each template + the BANNED-WORD assertion (incl. \bsupport\b)
+//     + the zero-data guard (unknown / empty lamps → "" — never "signals are split").
 //   - CorrelationLabel: nil / strong / inverse.
 
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 func floatPtr(f float64) *float64 { return &f }
 func intPtr(i int) *int           { return &i }
 
 // lamp is a tiny helper to build a Lamp with just key+status (the only fields
-// Composite/BuildDiagnosis read).
+// Composite/BuildDiagnosis read). In production a status implies a value, so a
+// status-only lamp counts as "real" for the honesty guards.
 func lamp(key, status string) Lamp { return Lamp{Key: key, Status: status} }
+
+// valuedLamp builds a value-carrying lamp with no status (e.g. a directional
+// lamp whose session delta is unknown).
+func valuedLamp(key string, v float64) Lamp { return Lamp{Key: key, Value: &v, OK: true} }
+
+// emptyLamp builds an all-N/D lamp (no value, no status) — the weekend shape.
+func emptyLamp(key string) Lamp { return Lamp{Key: key} }
 
 func TestPearson(t *testing.T) {
 	t.Run("perfect positive", func(t *testing.T) {
@@ -244,27 +257,117 @@ func TestComposite(t *testing.T) {
 }
 
 func TestClassifyRegime(t *testing.T) {
+	// A composite value only exists when ≥3 lamps carry statuses, so the scored
+	// cases run over a realistic valued lamp set.
+	scored := []Lamp{
+		{Key: KeyDXY, Value: floatPtr(99), Status: StatusTailwind},
+		{Key: KeyVIX, Value: floatPtr(17), Status: StatusTailwind},
+		{Key: KeySPX, Value: floatPtr(7500), Status: StatusHeadwind},
+	}
+	allNull := []Lamp{
+		emptyLamp(KeyDXY), emptyLamp(KeyRates), emptyLamp(KeyVIX),
+		emptyLamp(KeySPX), emptyLamp(KeyGold),
+	}
+
 	cases := []struct {
 		name      string
 		composite *int
+		lamps     []Lamp
 		want      string
 	}{
-		{"34 → risk_off", intPtr(34), RegimeRiskOff},
-		{"0 → risk_off", intPtr(0), RegimeRiskOff},
-		{"35 → mixed (boundary)", intPtr(35), RegimeMixed},
-		{"50 → mixed", intPtr(50), RegimeMixed},
-		{"65 → mixed (boundary)", intPtr(65), RegimeMixed},
-		{"66 → risk_on", intPtr(66), RegimeRiskOn},
-		{"100 → risk_on", intPtr(100), RegimeRiskOn},
-		{"nil → mixed", nil, RegimeMixed},
+		{"34 → risk_off", intPtr(34), scored, RegimeRiskOff},
+		{"0 → risk_off", intPtr(0), scored, RegimeRiskOff},
+		{"35 → mixed (boundary)", intPtr(35), scored, RegimeMixed},
+		{"50 → mixed", intPtr(50), scored, RegimeMixed},
+		{"65 → mixed (boundary)", intPtr(65), scored, RegimeMixed},
+		{"66 → risk_on", intPtr(66), scored, RegimeRiskOn},
+		{"100 → risk_on", intPtr(100), scored, RegimeRiskOn},
+		// nil composite splits on data presence — the honesty rule:
+		// real-but-insufficient lamps stay "mixed", ZERO real lamps are
+		// "unknown" (never a knowledge claim off no inputs).
+		{"nil + 1 valued lamp → mixed", nil, []Lamp{valuedLamp(KeyDXY, 99), emptyLamp(KeyVIX)}, RegimeMixed},
+		{"nil + 2 valued lamps → mixed", nil, []Lamp{valuedLamp(KeyDXY, 99), valuedLamp(KeyVIX, 17)}, RegimeMixed},
+		{"nil + all-null lamps → unknown", nil, allNull, RegimeUnknown},
+		{"nil + no lamps at all → unknown", nil, nil, RegimeUnknown},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ClassifyRegime(tc.composite); got != tc.want {
-				t.Errorf("ClassifyRegime(%v) = %q, want %q", tc.composite, got, tc.want)
+			if got := ClassifyRegime(tc.composite, tc.lamps); got != tc.want {
+				t.Errorf("ClassifyRegime(%v, lamps) = %q, want %q", tc.composite, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestTradfinOK(t *testing.T) {
+	if TradfinOK(nil) {
+		t.Error("TradfinOK(nil) = true, want false")
+	}
+	if TradfinOK([]Lamp{emptyLamp(KeyDXY), emptyLamp(KeyVIX)}) {
+		t.Error("all-null lamps → true, want false")
+	}
+	if !TradfinOK([]Lamp{emptyLamp(KeyDXY), valuedLamp(KeyVIX, 17.5)}) {
+		t.Error("one valued lamp → false, want true")
+	}
+	// Robustness over artificial inputs: a status implies data too.
+	if !TradfinOK([]Lamp{lamp(KeyDXY, StatusTailwind)}) {
+		t.Error("status-only lamp → false, want true")
+	}
+}
+
+// TestTradfinWindowOpen pins the futures-week approximation to its documented
+// boundaries: open from Sunday 22:00 UTC to Friday 21:00 UTC. The fixture
+// weekdays are asserted first so a bad date can't silently test nothing.
+func TestTradfinWindowOpen(t *testing.T) {
+	day := func(y int, m time.Month, d int, wd time.Weekday) time.Time {
+		t.Helper()
+		dt := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+		if dt.Weekday() != wd {
+			t.Fatalf("fixture %v is a %v, want %v", dt, dt.Weekday(), wd)
+		}
+		return dt
+	}
+	sun := day(2026, time.August, 16, time.Sunday)
+	fri := day(2026, time.August, 14, time.Friday)
+	sat := day(2026, time.August, 15, time.Saturday)
+	wed := day(2026, time.August, 12, time.Wednesday)
+
+	at := func(base time.Time, h, m int) time.Time {
+		return base.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute)
+	}
+
+	cases := []struct {
+		name string
+		t    time.Time
+		want bool
+	}{
+		{"Sun 21:59 → closed", at(sun, 21, 59), false},
+		{"Sun 22:00 → open (boundary)", at(sun, 22, 0), true},
+		{"Sun 22:01 → open", at(sun, 22, 1), true},
+		{"Fri 20:59 → open", at(fri, 20, 59), true},
+		{"Fri 21:00 → closed (boundary)", at(fri, 21, 0), false},
+		{"Fri 21:01 → closed", at(fri, 21, 1), false},
+		{"Fri 23:59 → closed", at(fri, 23, 59), false},
+		{"Sat noon → closed", at(sat, 12, 0), false},
+		{"Sun 00:00 → closed", at(sun, 0, 0), false},
+		{"Wed noon → open (mid-week)", at(wed, 12, 0), true},
+		{"Mon 00:30 → open", at(day(2026, time.August, 17, time.Monday), 0, 30), true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TradfinWindowOpen(tc.t); got != tc.want {
+				t.Errorf("TradfinWindowOpen(%v %v) = %v, want %v", tc.t.Weekday(), tc.t.Format("15:04"), got, tc.want)
+			}
+		})
+	}
+
+	// Non-UTC input is normalised: Sun 22:30 UTC expressed in a +02:00 zone
+	// (Mon 00:30 local) is still inside the open window.
+	loc := time.FixedZone("UTC+2", 2*3600)
+	if !TradfinWindowOpen(at(sun, 22, 30).In(loc)) {
+		t.Error("zone-shifted Sun 22:30 UTC must be open")
 	}
 }
 
@@ -312,6 +415,28 @@ func TestBuildDiagnosis(t *testing.T) {
 			regime: RegimeMixed,
 			lamps:  []Lamp{lamp(KeyDXY, StatusTailwind), lamp(KeyVIX, StatusHeadwind)},
 		},
+		{
+			// THE honesty case (team-testing defect): no data → no sentence.
+			// "Macro signals are split" must never render off zero real lamps.
+			name:      "unknown → empty (no knowledge claim)",
+			regime:    RegimeUnknown,
+			lamps:     []Lamp{emptyLamp(KeyDXY), emptyLamp(KeyVIX), emptyLamp(KeySPX)},
+			wantEmpty: true,
+		},
+		{
+			// Belt-and-braces: even a caller that mislabels the all-null case
+			// as "mixed" gets no split-sentence.
+			name:      "mixed with zero real lamps → empty",
+			regime:    RegimeMixed,
+			lamps:     []Lamp{emptyLamp(KeyDXY), emptyLamp(KeyVIX), emptyLamp(KeySPX), emptyLamp(KeyRates), emptyLamp(KeyGold)},
+			wantEmpty: true,
+		},
+		{
+			name:      "unknown with real lamps still empty (regime gate wins)",
+			regime:    RegimeUnknown,
+			lamps:     []Lamp{lamp(KeyDXY, StatusTailwind)},
+			wantEmpty: true,
+		},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -343,7 +468,7 @@ func TestBuildDiagnosis(t *testing.T) {
 // over the table above). "support" must never appear.
 func TestBuildDiagnosis_NoBannedWordEver(t *testing.T) {
 	statuses := []string{StatusTailwind, StatusNeutral, StatusHeadwind, ""}
-	regimes := []string{RegimeRiskOn, RegimeMixed, RegimeRiskOff}
+	regimes := []string{RegimeRiskOn, RegimeMixed, RegimeRiskOff, RegimeUnknown}
 	keys := []string{KeyDXY, KeyVIX, KeySPX, KeyRates, KeyGold}
 
 	for _, regime := range regimes {

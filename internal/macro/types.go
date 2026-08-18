@@ -21,13 +21,21 @@ const (
 	StatusHeadwind = "headwind" // lamp weighs on crypto (🔴)
 )
 
-// Regime — the "big money" risk regime. 3 buckets (discovery §7 collapsed the
-// original 5 to these). Thresholds on composite: <35 risk_off, 35..65 mixed,
-// >65 risk_on.
+// Regime — the "big money" risk regime. 3 scored buckets (discovery §7
+// collapsed the original 5 to these) plus the no-data state. Thresholds on
+// composite: <35 risk_off, 35..65 mixed, >65 risk_on.
+//
+// "unknown" is NOT a scored bucket: it means zero lamps carry a value (all
+// null — e.g. tradfin closed and every quote N/D), so there is no input to
+// classify at all. "mixed" is reserved for REAL lamp values that don't add up
+// to a single regime; it must never be emitted off an empty lamp set (the
+// honesty defect this constant fixes: a confident "signals are split" with
+// zero inputs).
 const (
 	RegimeRiskOn  = "risk_on"
 	RegimeMixed   = "mixed"
 	RegimeRiskOff = "risk_off"
+	RegimeUnknown = "unknown"
 )
 
 // Lamp keys — the 5 traffic-light series, in render order.
@@ -78,9 +86,10 @@ type Lamp struct {
 	Key      string   `json:"key"`       // "dxy"|"rates"|"vix"|"spx"|"gold"
 	Label    string   `json:"label"`     // "Dollar (DXY)" — human-readable, EN
 	Value    *float64 `json:"value"`     // nil on N/D → UI "—"
+	OK       bool     `json:"ok"`        // value present (Value != nil) — explicit data-presence flag (additive field)
 	DeltaPct *float64 `json:"delta_pct"` // session change % (Close−Open); nil on N/D (delta==0 is a real "no move")
 	Status   string   `json:"status"`    // tailwind|neutral|headwind; "" on N/D OR unknown direction
-	AsOf     string   `json:"as_of"`     // ISO RFC3339, or "" on N/D
+	AsOf     string   `json:"as_of"`     // ISO RFC3339 of the last KNOWN source date — filled even when Value is nil (stale N/D quote), "" only when the source never carried a date
 }
 
 // Correlation — BTC↔X over the rolling window (a compute output).
@@ -110,9 +119,10 @@ type CalEvent struct {
 // Response — the body of GET /api/v1/macro. Slices are always non-nil ([], not
 // null).
 type Response struct {
-	Regime            string        `json:"regime"`              // risk_on|mixed|risk_off
+	Regime            string        `json:"regime"`              // risk_on|mixed|risk_off|unknown (unknown = zero lamps carry a value)
 	Composite         *int          `json:"composite"`           // 0..100; nil if ≥3 lamps N/D → UI "Not enough live markets"
-	TradfinMarketOpen bool          `json:"tradfin_market_open"` // false on weekends / off-hours
+	TradfinMarketOpen bool          `json:"tradfin_market_open"` // clock-based futures-week window (see TradfinWindowOpen) — NOT a data-presence signal
+	TradfinOk         bool          `json:"tradfin_ok"`          // at least one lamp carries a value (additive field) — the data-presence signal that drives regime honesty
 	TradfinAsOf       string        `json:"tradfin_as_of"`       // ISO of the freshest tradfin ts, or ""
 	CapturedAt        string        `json:"captured_at"`         // ISO of when the response was assembled (now)
 	Lamps             []Lamp        `json:"lamps"`               // exactly 5 (N/D → Value/Status empty)

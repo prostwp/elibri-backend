@@ -54,6 +54,7 @@ type MacroLamp struct {
 	Key      string   `json:"key"`
 	Label    string   `json:"label"`
 	Value    *float64 `json:"value"`
+	OK       bool     `json:"ok"` // value present — false (with Value nil) on N/D; absent on older payloads, so readers also fall back to Value != nil
 	DeltaPct *float64 `json:"delta_pct"`
 	Status   string   `json:"status"` // tailwind | neutral | headwind | ""
 }
@@ -65,9 +66,9 @@ type FearGreedCheck struct {
 }
 
 type MacroResp struct {
-	Regime        string          `json:"regime"` // risk_on | mixed | risk_off
+	Regime        string          `json:"regime"` // risk_on | mixed | risk_off | unknown (unknown = zero lamps carry a value)
 	Composite     *int            `json:"composite"`
-	TradfinOpen   bool            `json:"tradfin_market_open"`
+	TradfinOpen   bool            `json:"tradfin_market_open"` // clock-based futures week (Sun 22:00 → Fri 21:00 UTC), not a data signal
 	CapturedAt    string          `json:"captured_at"`
 	Lamps         []MacroLamp     `json:"lamps"`
 	FNG           *FearGreedCheck `json:"fng"`

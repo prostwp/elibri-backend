@@ -889,14 +889,15 @@ paths:
                 regime: mixed
                 composite: 54
                 tradfin_market_open: true
+                tradfin_ok: true
                 tradfin_as_of: "2026-07-17T09:25:00Z"
                 captured_at: "2026-07-17T09:30:00Z"
                 lamps:
-                  - { key: dxy, label: US Dollar Index, value: 103.42, delta_pct: -0.18, status: tailwind, as_of: "2026-07-17T09:25:00Z" }
-                  - { key: rates, label: US 10Y Yield, value: 4.21, delta_pct: 0.35, status: headwind, as_of: "2026-07-17T09:25:00Z" }
-                  - { key: vix, label: VIX, value: 14.8, delta_pct: -1.2, status: tailwind, as_of: "2026-07-17T09:25:00Z" }
-                  - { key: spx, label: S&P 500, value: 6412.3, delta_pct: 0.22, status: tailwind, as_of: "2026-07-17T09:25:00Z" }
-                  - { key: gold, label: Gold, value: 2694.1, delta_pct: 0.05, status: neutral, as_of: "2026-07-17T09:25:00Z" }
+                  - { key: dxy, label: US Dollar Index, value: 103.42, ok: true, delta_pct: -0.18, status: tailwind, as_of: "2026-07-17T09:25:00Z" }
+                  - { key: rates, label: US 10Y Yield, value: 4.21, ok: true, delta_pct: 0.35, status: headwind, as_of: "2026-07-17T09:25:00Z" }
+                  - { key: vix, label: VIX, value: 14.8, ok: true, delta_pct: -1.2, status: tailwind, as_of: "2026-07-17T09:25:00Z" }
+                  - { key: spx, label: S&P 500, value: 6412.3, ok: true, delta_pct: 0.22, status: tailwind, as_of: "2026-07-17T09:25:00Z" }
+                  - { key: gold, label: Gold, value: 2694.1, ok: true, delta_pct: 0.05, status: neutral, as_of: "2026-07-17T09:25:00Z" }
                 correlations:
                   - { pair: btc_spx, coef: 0.61, label: moving like stocks, window: "3h (52 points)" }
                   - { pair: btc_gold, coef: 0.12, label: weak link, window: "3h (52 points)" }
@@ -2408,16 +2409,29 @@ components:
       properties:
         regime:
           type: string
-          enum: [risk_on, mixed, risk_off]
+          enum: [risk_on, mixed, risk_off, unknown]
+          description: >-
+            "unknown" = zero lamps carry a value (no inputs at all — e.g.
+            tradfin closed and every quote N/D). "mixed" is reserved for real
+            but conflicting/insufficient lamp values.
         composite:
           type: [integer, "null"]
           description: 0..100; null when 3 or more lamps have no data.
         tradfin_market_open:
           type: boolean
-          description: False on weekends / off-hours (staleness-based).
+          description: >-
+            Clock-based futures-week window (Sunday 22:00 UTC to Friday 21:00
+            UTC approximation) — a statement about the market, not about data
+            presence. Lamps can be null inside the open window (data lag);
+            data presence ships as tradfin_ok / per-lamp ok.
+        tradfin_ok:
+          type: boolean
+          description: At least one lamp carries a value (data-presence flag).
         tradfin_as_of:
           type: string
-          description: RFC3339 of the freshest tradfin quote, or "".
+          description: >-
+            RFC3339 of the freshest KNOWN tradfin timestamp — kept even when
+            the current quotes are N/D (last time tradfin had data), or "".
         captured_at: { type: string, format: date-time }
         lamps:
           type: array
@@ -2449,6 +2463,9 @@ components:
         value:
           type: [number, "null"]
           description: Null when no data.
+        ok:
+          type: boolean
+          description: Value present (data-presence flag; false when value is null).
         delta_pct:
           type: [number, "null"]
           description: Session change % (Close - Open); null when no data.
@@ -2458,7 +2475,10 @@ components:
           description: Empty on no-data or unknown direction.
         as_of:
           type: string
-          description: RFC3339, or "" on no-data.
+          description: >-
+            RFC3339 of the last KNOWN source date — kept even when value is
+            null (stale N/D quote); "" only when the source never carried a
+            date.
 
     MacroCorrelation:
       type: object

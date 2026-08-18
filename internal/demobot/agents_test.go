@@ -42,7 +42,9 @@ func TestTrendVerdictWording(t *testing.T) {
 	}
 }
 
-// Position-size calculator: risk math is money — pin it hard.
+// Position-size calculator: risk math is money — pin it hard. The result is
+// pure arithmetic: no direction label exists anymore (batch-2 language rule —
+// LONG/SHORT read as a trade suggestion; |entry − stop| math needs none).
 func TestRiskCalc(t *testing.T) {
 	r, err := calcRisk(10000, 1, 100000, 98000)
 	if err != nil {
@@ -57,19 +59,14 @@ func TestRiskCalc(t *testing.T) {
 	if !almostEqual(r.Notional, 5000, 1e-6) {
 		t.Errorf("notional: got %.4f, want 5000", r.Notional)
 	}
-	if r.Direction != "LONG" {
-		t.Errorf("direction: got %q, want LONG", r.Direction)
-	}
 
+	// Entry below stop: same math, |entry − stop| — no direction involved.
 	r, err = calcRisk(5000, 2, 3400, 3500)
 	if err != nil {
-		t.Fatalf("calcRisk short: %v", err)
-	}
-	if r.Direction != "SHORT" {
-		t.Errorf("short direction: got %q", r.Direction)
+		t.Fatalf("calcRisk entry-below-stop: %v", err)
 	}
 	if !almostEqual(r.Size, 1.0, 1e-9) { // 100 risk / 100 per-unit
-		t.Errorf("short size: got %.6f, want 1.0", r.Size)
+		t.Errorf("size: got %.6f, want 1.0", r.Size)
 	}
 
 	for _, bad := range [][4]float64{
@@ -160,6 +157,82 @@ func TestDropUnclosedBarsAndCloseTime(t *testing.T) {
 	}
 	if closeTimeOf(nil, "4h").IsZero() {
 		t.Error("empty series should fall back to a non-zero time, not zero")
+	}
+}
+
+// Batch-2 regulatory language: momentum verdicts are analytical READINGS.
+// "bullish"/"bearish"/"neutral" — never "buy"/"sell" anywhere in the chain.
+func TestMomentumVerdictAnalyticalLanguage(t *testing.T) {
+	cases := []struct {
+		rsi, hist float64
+		want      string
+	}{
+		{62, 120, "bullish"},
+		{55, 0.001, "bullish"},
+		{40, -3, "bearish"},
+		{45, -0.001, "bearish"},
+		{50, 1, "neutral"},  // RSI in the dead zone
+		{60, -1, "neutral"}, // MACD sign disagrees
+		{40, 2, "neutral"},  // MACD sign disagrees
+		{55, 0, "neutral"},  // zero histogram confirms nothing
+	}
+	for _, tc := range cases {
+		if got := momentumVerdict(tc.rsi, tc.hist); got != tc.want {
+			t.Errorf("momentumVerdict(%v, %v): got %q, want %q", tc.rsi, tc.hist, got, tc.want)
+		}
+	}
+	// The emoji mapping keys on the new words.
+	if momentumEmoji("bullish") != emojiBull || momentumEmoji("bearish") != emojiBear || momentumEmoji("neutral") != emojiNeutral {
+		t.Error("momentumEmoji must map bullish/bearish/neutral")
+	}
+	// Advice words must be dead keys — they map to neutral, never a semaphore.
+	if momentumEmoji("buy") != emojiNeutral || momentumEmoji("sell") != emojiNeutral {
+		t.Error("legacy buy/sell keys must not light a semaphore")
+	}
+}
+
+// RiskCard output is pure sizing math: no LONG/SHORT, and the card says so.
+func TestRiskCardNoDirectionLanguage(t *testing.T) {
+	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
+	c := ag.RiskCard([]float64{10000, 1, 64000, 62500}, false, nil)
+	if !strings.HasPrefix(c.Verdict, "Position size: ") {
+		t.Errorf("verdict must lead with the size, got %q", c.Verdict)
+	}
+	joined := c.Verdict + "|" + strings.Join(c.Facts, "|")
+	for _, banned := range []string{"LONG", "SHORT"} {
+		if strings.Contains(joined, banned) {
+			t.Errorf("direction label %q leaked into the risk card: %s", banned, joined)
+		}
+	}
+	var disclaimer, maxLoss bool
+	for _, f := range c.Facts {
+		if f == "Position sizing math only — not a trade suggestion." {
+			disclaimer = true
+		}
+		if strings.HasPrefix(f, "Max loss at stop:") {
+			maxLoss = true
+		}
+	}
+	if !disclaimer {
+		t.Errorf("risk card must carry the sizing-only disclaimer: %v", c.Facts)
+	}
+	if !maxLoss {
+		t.Errorf("risk card must name the max loss: %v", c.Facts)
+	}
+	// The example form keeps its labeling and the disclaimer.
+	ex := ag.RiskCard([]float64{10000, 1, 64000, 62500}, true, nil)
+	if !strings.HasPrefix(ex.Verdict, "Example — Position size: ") {
+		t.Errorf("example verdict: got %q", ex.Verdict)
+	}
+}
+
+// invalidationLevel: 1 ATR under the lower EMA — pure math, pinned.
+func TestInvalidationLevel(t *testing.T) {
+	if got := invalidationLevel(105, 100, 2); !almostEqual(got, 98, 1e-9) {
+		t.Errorf("uptrend cluster: got %v, want 98 (min(105,100)-2)", got)
+	}
+	if got := invalidationLevel(95, 100, 3); !almostEqual(got, 92, 1e-9) {
+		t.Errorf("downtrend cluster: got %v, want 92 (min(95,100)-3)", got)
 	}
 }
 

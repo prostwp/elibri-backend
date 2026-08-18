@@ -73,9 +73,21 @@ func NewStore() *Store {
 // An N/D quote (OK=false) overwrites too — we store the LAST fact, not the last
 // VALID one. Holding a stale "last valid" value would fake freshness on a dead
 // symbol; the handler reads Quote.OK and renders "—" instead.
+//
+// One exception, dates only: when the incoming quote carries NO date (a
+// date-less N/D row, or the worker's network-failure sentinel), the previous
+// quote's AsOf is carried forward. The date is a different kind of fact than
+// the value — "last time this symbol had data" stays true when the source goes
+// dark, and the lamp's as_of should show that last known date rather than "".
+// Price/OK are never carried forward (that would fake freshness).
 func (s *Store) SetQuote(q Quote) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if q.AsOf.IsZero() {
+		if prev, ok := s.latest[q.Symbol]; ok && !prev.AsOf.IsZero() {
+			q.AsOf = prev.AsOf
+		}
+	}
 	s.latest[q.Symbol] = q
 }
 

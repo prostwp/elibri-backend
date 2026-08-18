@@ -116,7 +116,7 @@ var howTexts = map[string]string{
 	keyMacro:    "Reads 5 tradfin lamps (DXY, US 10Y, VIX, S&P 500, Gold) plus crypto Fear & Greed and blends them into a risk-on/off regime. RISK-OFF outranks every other signal in /digest.",
 	keyWhale:    "Watches large on-chain transfers touching known exchange wallets. Net inflow to exchanges = potential sell pressure; net outflow = accumulation.",
 	keyFunding:  "Compares perp funding rates across majors. High positive funding = crowded longs (squeeze risk); negative = crowded shorts. Liquidation feed shows where forced exits cluster.",
-	keyMomentum: "RSI(14) + MACD histogram on 4h Binance candles. RSI 55+ with positive MACD = buy; RSI 45- with negative = sell; anything else = neutral.",
+	keyMomentum: "RSI(14) + MACD histogram on 4h Binance candles. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; anything else = neutral.",
 	keyTrend:    "State machine on 4h candles: ADX<20 = flat (no trade), 20-25 = grey zone, ADX 25+ with price and EMA50/EMA200 aligned = confirmed trend; misaligned = conflict.",
 	keySR:       "Finds swing highs/lows on 4h candles and clusters levels within 0.5%. Strength = number of touches. Levels are rounded to whole numbers.",
 	keyVol:      "ATR(14) now vs its 30-bar average. Ratio 1.25+ = volatility expanding (breakout regime); 0.8- = compressed (range regime).",
@@ -129,8 +129,15 @@ var howTexts = map[string]string{
 
 // ── Macro ────────────────────────────────────────────────────────────────────
 
-// MacroCard returns the card plus the raw regime for the priority rule
+// MacroCard returns the card plus the effective regime for the priority rule
 // ("" when the source is offline).
+//
+// Honesty contract (team-testing defect 2026-08): a regime verdict is a
+// knowledge claim, so it needs at least one real lamp behind it. Regime
+// "unknown" (or an older backend's "mixed" with zero real lamps — reclassified
+// here) renders an explicit no-data card: UNKNOWN verdict, neutral semaphore,
+// facts limited to what IS known (crypto F&G), and never the "signals are
+// split" idea line.
 func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 	m, err := a.api.Macro(ctx)
 	if err != nil {
@@ -143,16 +150,43 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 		HowItWorks: howTexts[keyMacro],
 		DataTime:   parseWhen(m.CapturedAt),
 	}
-	switch m.Regime {
+
+	// A lamp is REAL when the payload carries a value for it. The backend's
+	// per-lamp ok flag says exactly that; the Value fallback keeps the read
+	// correct against older payloads that predate the flag.
+	real := 0
+	for _, l := range m.Lamps {
+		if l.OK || l.Value != nil {
+			real++
+		}
+	}
+
+	// Version-skew guard: an older backend still reports "mixed" for the
+	// all-null case. Zero real lamps can never support a MIXED claim →
+	// reclassify to unknown before rendering (and return the effective regime
+	// so /digest //top see the same truth).
+	regime := m.Regime
+	if regime == "mixed" && real == 0 {
+		regime = "unknown"
+	}
+
+	switch regime {
 	case "risk_on":
 		c.Emoji, c.Verdict, c.Short = emojiBull, "RISK-ON — big money leaning into risk", "risk-on"
 	case "risk_off":
 		c.Emoji, c.Verdict, c.Short = emojiBear, "RISK-OFF — big money defensive", "risk-off"
+	case "unknown":
+		// No tradfin inputs at all — say so instead of claiming a regime read.
+		verdict := "UNKNOWN — market closed, no tradfin data"
+		if m.TradfinOpen {
+			verdict = "UNKNOWN — no tradfin data right now"
+		}
+		c.Emoji, c.Verdict, c.Short = emojiNeutral, verdict, "unknown (no data)"
 	default:
 		c.Emoji, c.Verdict, c.Short = emojiNeutral, "MIXED — no single regime in control", "mixed"
 	}
 
-	var tail, head, neut, dark int
+	var tail, head, neut int
 	for _, l := range m.Lamps {
 		switch l.Status {
 		case "tailwind":
@@ -161,11 +195,11 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 			head++
 		case "neutral":
 			neut++
-		default:
-			dark++
 		}
 	}
-	if dark == len(m.Lamps) && len(m.Lamps) > 0 {
+	if real == 0 && len(m.Lamps) > 0 {
+		// Zero real lamps → the counts line would be a fake "0/0/0 reading";
+		// state the absence instead (with the clock context).
 		note := "no tradfin data right now"
 		if !m.TradfinOpen {
 			note += " (market closed)"
@@ -174,10 +208,16 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 	} else {
 		c.Facts = append(c.Facts, fmt.Sprintf("Lamps: %d tailwind / %d headwind / %d neutral", tail, head, neut))
 	}
+	// What IS known even when tradfin is dark: the crypto side (F&G is 24/7),
+	// rendered only when its own ok flag says the read is live.
 	if m.FNG != nil && m.FNG.OK {
 		c.Facts = append(c.Facts, fmt.Sprintf("Crypto Fear & Greed: %d — %s", m.FNG.Value, m.FNG.Label))
 	}
-	if idea := strings.TrimSpace(m.GeneratedIdea); idea != "" {
+	// The generated idea (e.g. "Macro signals are split…") is a claim about
+	// lamp data — it must NEVER render without at least one real lamp. The
+	// backend already blanks it for unknown; this guard also covers version
+	// skew.
+	if idea := strings.TrimSpace(m.GeneratedIdea); idea != "" && real > 0 {
 		c.Facts = append(c.Facts, truncate(idea, 180))
 	}
 	if m.Composite != nil {
@@ -191,7 +231,7 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 			c.AIHTML = "<b>AI read:</b> <i>" + esc(truncateAtSentence(txt, 400)) + "</i>"
 		}
 	}
-	return c, m.Regime
+	return c, regime
 }
 
 // ── Whale flow ───────────────────────────────────────────────────────────────
@@ -276,6 +316,14 @@ func (a *Agents) WhaleCard(ctx context.Context) Card {
 
 // ── Narrative Radar (/news) ──────────────────────────────────────────────────
 
+// newsMinMentions is the radar's silence threshold: below this many 24h
+// mentions for the TOP narrative there is too little signal to score at all —
+// a trend score computed off a handful of posts is noise dressed as a
+// finding. Under the threshold the card says "warming up" and lists themes as
+// name + mention count only (no scores, no stages, no confidence, no AI
+// idea). HTTP /agents/news mirrors this automatically via the shared card.
+const newsMinMentions = 5
+
 // NewsCard renders the top-3 crypto narratives from the backend radar (48h
 // mention window) plus the backend's AI-generated idea for the leading one.
 // The server sorts by trend_score DESC and attaches generated_idea to the
@@ -301,6 +349,26 @@ func (a *Agents) NewsCard(ctx context.Context) Card {
 		return c
 	}
 	top := n.Narratives[0]
+	// Silence threshold: a thin mention base cannot back a scored finding.
+	// Present names + mention counts only, and say why there is no verdict.
+	if top.MentionCount < newsMinMentions {
+		c.Emoji = emojiNeutral
+		mentions := "mentions"
+		if top.MentionCount == 1 {
+			mentions = "mention"
+		}
+		c.Verdict = fmt.Sprintf("Radar warming up — top theme '%s' has only %d %s in 24h; not enough to score",
+			top.Narrative, top.MentionCount, mentions)
+		c.Short = "warming up"
+		for i, item := range n.Narratives {
+			if i == 3 {
+				break
+			}
+			c.Facts = append(c.Facts, fmt.Sprintf("%d. %s — %d mentions/24h", i+1, item.Narrative, item.MentionCount))
+		}
+		// No confidence, no AI idea: nothing below the threshold is a finding.
+		return c
+	}
 	switch top.SentimentLabel {
 	case "bull":
 		c.Emoji = emojiBull
@@ -500,13 +568,20 @@ func (a *Agents) lastBTCClose(ctx context.Context) float64 {
 // ── Momentum ─────────────────────────────────────────────────────────────────
 
 // Momentum verdict rule (documented, deterministic): RSI≥55 with positive
-// MACD histogram = buy; RSI≤45 with negative histogram = sell; else neutral.
+// MACD histogram = bullish; RSI≤45 with negative histogram = bearish; else
+// neutral.
+//
+// REGULATORY LANGUAGE (team review batch 2): verdicts are analytical READINGS,
+// never trade instructions — "bullish"/"bearish", NOT "buy"/"sell". The
+// product must read as analytics; advice-words are banned from every card,
+// one-liner and envelope. Factual market-mechanics wording ("longs pay
+// shorts", "crowded longs", "sell pressure" as a flow description) stays.
 func momentumVerdict(rsi, macdHist float64) string {
 	switch {
 	case rsi >= 55 && macdHist > 0:
-		return "buy"
+		return "bullish"
 	case rsi <= 45 && macdHist < 0:
-		return "sell"
+		return "bearish"
 	default:
 		return "neutral"
 	}
@@ -552,9 +627,9 @@ func (a *Agents) momentumReadFor(ctx context.Context, spec assetSpec) (momentumR
 
 func momentumEmoji(verdict string) string {
 	switch verdict {
-	case "buy":
+	case "bullish":
 		return emojiBull
-	case "sell":
+	case "bearish":
 		return emojiBear
 	default:
 		return emojiNeutral
@@ -628,6 +703,11 @@ func (a *Agents) MomentumCard(ctx context.Context) Card {
 		}
 	}
 	c.Facts = append(c.Facts, insufficientLines...)
+	// The driving thresholds, once for all assets (Volatility-model style: the
+	// number lines stay compact, one rule line documents what flips them).
+	if len(all) > 0 {
+		c.Facts = append(c.Facts, "Rule: RSI 55+/45- with matching MACD sign")
+	}
 	switch {
 	case xauErr == nil:
 		c.SourceNote = "XAUUSD data: Yahoo Finance"
@@ -852,6 +932,15 @@ func classifyTrend(adx, ema50, ema200, closePrice float64) string {
 	}
 }
 
+// invalidationLevel is the price under which the trend structure no longer
+// holds: 1 ATR(14) below the lower edge of the EMA cluster
+// (min(EMA50, EMA200) − 1×ATR). One ATR of slack keeps ordinary noise from
+// reading as a break; a close beyond it means the EMA structure the verdict
+// stands on is gone. Pure math — rendered per asset tick via trimFloat.
+func invalidationLevel(ema50, ema200, atr float64) float64 {
+	return math.Min(ema50, ema200) - atr
+}
+
 func trendVerdict(state string, adx float64) string {
 	switch state {
 	case trendFlat:
@@ -899,11 +988,24 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 	if ema50 > ema200 {
 		structure = "bullish structure"
 	}
+	// ADX drives the verdict → its confirm threshold rides beside the number
+	// (batch-2 rule: thresholds in parentheses only where the number drives
+	// the verdict — RSI here is informational, so it carries none).
 	c.Facts = append(c.Facts,
 		fmt.Sprintf("EMA50 %s vs EMA200 %s — %s", trimFloat(ema50), trimFloat(ema200), structure),
-		fmt.Sprintf("ADX(14): %.1f · RSI(14): %.1f", adx, rsi),
+		fmt.Sprintf("ADX(14): %.1f (trend confirms above 25) · RSI(14): %.1f", adx, rsi),
 		fmt.Sprintf("Last %s close: %s", spec.Interval, trimFloat(last)),
 	)
+	// Invalidation: the price that breaks the structure this card reads.
+	// ATR(14) is guaranteed by the EMA200 history gate above; the >0 guard
+	// keeps a degenerate flat series from rendering a fake level.
+	if atrSeries := atrSeriesWilder(highs, lows, closes, 14); len(atrSeries) > 0 {
+		if atr := atrSeries[len(atrSeries)-1]; atr > 0 {
+			c.Facts = append(c.Facts, fmt.Sprintf(
+				"Invalidation: below %s the structure is broken (1 ATR under the EMA cluster)",
+				trimFloat(invalidationLevel(ema50, ema200, atr))))
+		}
+	}
 	if spec.Source == srcYahoo {
 		decorateFX(&c)
 	}
@@ -931,6 +1033,12 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 
 // ── Support / Resistance ─────────────────────────────────────────────────────
 
+// srStrongTouches is the touch count from which a clustered level counts as
+// STRONG. Below it a level is a candidate; at 7+ distinct swing touches the
+// market has respected the price often enough to call the level established.
+// Surfaced beside the touch numbers on the card (batch-2 thresholds rule).
+const srStrongTouches = 7
+
 func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 	candles, err := a.candlesFor(ctx, spec)
 	if err != nil {
@@ -957,7 +1065,10 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 	if nl := nearestLevelLine(sup, res, last); nl != "" {
 		c.Facts = append(c.Facts, nl)
 	}
-	c.Facts = append(c.Facts, fmt.Sprintf("Method: swing clusters over %d×%s candles", len(candles), spec.Interval))
+	// Strength threshold beside the numbers (batch-2 rule): touch counts are
+	// the strength metric, so the method line names the bar they clear.
+	c.Facts = append(c.Facts, fmt.Sprintf("Method: swing clusters over %d×%s candles · strength = touch count (strong from %d touches)",
+		len(candles), spec.Interval, srStrongTouches))
 	short := "no clear levels"
 	if len(res) > 0 && len(sup) > 0 {
 		short = fmt.Sprintf("R %s / S %s", srLevelLabel(res[0]), srLevelLabel(sup[0]))
@@ -1098,12 +1209,15 @@ func (a *Agents) VolCard(ctx context.Context, spec assetSpec) Card {
 
 // ── Risk calculator ──────────────────────────────────────────────────────────
 
+// riskResult is pure position-sizing math. It deliberately carries NO
+// direction label (team review batch 2): "LONG"/"SHORT" read as a trade
+// suggestion, and the calculator's only claim is arithmetic — size, max loss,
+// notional. The math is direction-agnostic (|entry − stop|) anyway.
 type riskResult struct {
 	RiskAmount float64
 	PerUnit    float64
 	Size       float64
 	Notional   float64
-	Direction  string
 }
 
 func calcRisk(balance, riskPct, entry, stop float64) (riskResult, error) {
@@ -1120,10 +1234,6 @@ func calcRisk(balance, riskPct, entry, stop float64) (riskResult, error) {
 	r := riskResult{
 		RiskAmount: balance * riskPct / 100,
 		PerUnit:    math.Abs(entry - stop),
-		Direction:  "SHORT",
-	}
-	if entry > stop {
-		r.Direction = "LONG"
 	}
 	r.Size = r.RiskAmount / r.PerUnit
 	r.Notional = r.Size * entry
@@ -1154,14 +1264,17 @@ func (a *Agents) RiskCard(args []float64, isExample bool, parseErr error) Card {
 		c.Facts = []string{err.Error(), riskUsage}
 		return c
 	}
-	c.Verdict = fmt.Sprintf("%s · size %s units", r.Direction, trimFloat6(r.Size))
+	// Pure math, no direction word: sizing is |entry − stop| arithmetic, and a
+	// LONG/SHORT label would read as a trade suggestion (batch-2 language rule).
+	c.Verdict = fmt.Sprintf("Position size: %s units", trimFloat6(r.Size))
 	if isExample {
 		c.Verdict = "Example — " + c.Verdict
 	}
 	c.Facts = append(c.Facts,
-		fmt.Sprintf("Risk: %s (%.4g%% of %s balance)", usd(r.RiskAmount), args[1], usd(args[0])),
+		fmt.Sprintf("Max loss at stop: %s (%.4g%% of %s balance)", usd(r.RiskAmount), args[1], usd(args[0])),
 		fmt.Sprintf("Entry %s / stop %s → %s risk per unit", trimFloat(args[2]), trimFloat(args[3]), trimFloat(r.PerUnit)),
 		fmt.Sprintf("Position notional: %s", usd(r.Notional)),
+		"Position sizing math only — not a trade suggestion.",
 	)
 	if isExample {
 		c.Facts = append(c.Facts, riskUsage)
