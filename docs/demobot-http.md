@@ -55,9 +55,12 @@ Every agent endpoint answers with one shape:
 {
   "agent": "Trend Agent",
   "asset": "EURUSD",
+  "ok": true,
+  "reason": null,
   "verdict": "Grey zone — trend forming, not confirmed",
   "semaphore": "neutral",
   "facts": ["EMA50 1.1583 vs EMA200 1.1560 — bullish structure", "..."],
+  "levels": {"invalidation": 1.148236},
   "confidence": null,
   "ai_text": null,
   "data_as_of": "2026-08-18T09:00:00Z",
@@ -70,15 +73,57 @@ Every agent endpoint answers with one shape:
 |---|---|---|
 | `agent` | string | Full agent name (`"AlphaVizor Digest"` for the digest) |
 | `asset` | string | Asset label; `""` when the read is not asset-specific |
+| `ok` | bool | `true` when the agent produced a **real reading**; `false` for every degraded state — see [ok / reason](#machine-readable-status-ok--reason) |
+| `reason` | string \| null | `null` when `ok`; otherwise the machine-readable WHY (enum below) — branch on this, never on verdict wording |
 | `verdict` | string | The card's headline verdict |
 | `semaphore` | string | `bullish` \| `bearish` \| `neutral` — the card's traffic light |
 | `facts` | string[] | The card's bullet facts, `[]` when none |
+| `levels` | object | **trend / sr / vol only**: raw-precision numeric levels — see [levels](#machine-readable-levels). Absent for other agents and on `ok: false` cards |
 | `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented |
 | `ai_text` | string \| null | Plain-text AI block (mood read / idea / brief / why-line); `null` when AI is disabled or the call failed |
 | `sections` | string[] | **digest only**: plain-text one-liners of every other agent (the winner heads the envelope) |
 | `data_as_of` | string | RFC3339 UTC; for candle-based agents this is the **close time of the last closed bar used** — the same stamp as the card footer |
 | `disclaimer` | string | Always `"Analytics, not financial advice"` |
 | `card_html` | string | The exact Telegram HTML message the bot would send (for `digest`/`top`: the full composed message) |
+
+## Machine-readable status: ok / reason
+
+Templates must branch on **why** a value is absent, not on verdict strings.
+Every envelope carries the pair; when `ok` is `false`, `reason` is one of:
+
+| `reason` | Served by | Meaning |
+|---|---|---|
+| `market_closed` | macro | Regime `UNKNOWN` because the tradfin market is closed — no lamps to read |
+| `source_offline` | any agent | The source behind the headline reading is unreachable. Usually a `503`; also a `200` on the funding card when rates are dead but the liquidation feed is alive (liq facts still render) |
+| `insufficient_history` | momentum, trend, sr, vol | Source alive, but too few **closed** bars for the indicator set (always a `503`) |
+| `below_threshold` | news | Narrative radar warming up: the top theme is under 5 mentions/24h (`200`, themes listed without scores), or there are no snapshots yet (`503`) |
+| `no_data` | macro, whale | Upstream alive but nothing to read: macro unknown **inside** the open tradfin window; whale feed with no BTC snapshot yet |
+
+For `digest` / `top` the pair (and `levels`) describes the **top signal
+card** heading the envelope — with every source dead, the honest macro
+fallback yields `ok: false`, `"reason": "source_offline"` inside the 200.
+
+The `503` error body carries the same pair beside the message, so single-agent
+degraded states are branchable too:
+
+```json
+{"error": "Trend Agent: Insufficient history — no verdict", "ok": false, "reason": "insufficient_history"}
+```
+
+## Machine-readable levels
+
+Three agents' readings *are* price levels; their envelopes add a `levels`
+object with the raw computed numbers — full float precision, never the
+display-rounded strings shown in `facts`:
+
+| Agent | `levels` shape |
+|---|---|
+| `trend` | `{"invalidation": 63297.4}` — price under which the trend structure is broken (1 ATR under the EMA cluster). Omitted only on a degenerate flat series where no ATR exists |
+| `sr` | `{"supports": [{"level": 63775.42, "touches": 9}, …], "resistances": […]}` — strength-sorted raw cluster means; an empty side is `[]` ("we looked, nothing clustered"), never `null` |
+| `vol` | `{"expansion_ratio": 1.01}` — ATR(14) over its 30-bar average, unrounded |
+
+`levels` is absent for every other agent and on degraded (`ok: false`)
+envelopes.
 
 ## Errors
 
@@ -90,7 +135,7 @@ Errors are always `{"error": "..."}` with an honest message:
 | `404` | Unknown agent name or path |
 | `405` | Non-GET method (`Allow: GET` header set) |
 | `429` | Over the 10 req/s global budget (`Retry-After: 1` header set) |
-| `503` | Upstream degraded: the agent's data source is offline, history is too short for the indicator set, or the narrative radar has no snapshots yet — the same states the Telegram card reports in words |
+| `503` | Upstream degraded: the agent's data source is offline, history is too short for the indicator set, or the narrative radar has no snapshots yet — the same states the Telegram card reports in words. The body adds `"ok": false` and the machine-readable `"reason"` (`source_offline` \| `insufficient_history` \| `below_threshold`) |
 
 `digest` and `top` never `503`: they aggregate whatever is alive and label
 dead parts honestly inside the payload (an offline agent shows as an
@@ -113,6 +158,12 @@ curl -s 'localhost:8090/agents/risk?balance=10000&risk=1&entry=64000&stop=62500'
 
 # Full prioritized digest (AI brief in ai_text, one-liners in sections)
 curl -s localhost:8090/agents/digest | jq
+
+# Machine status only: did the agent produce a real reading, and if not, why?
+curl -s localhost:8090/agents/macro | jq '{ok, reason}'
+
+# Raw numeric levels (trend invalidation / sr clusters / vol ratio)
+curl -s localhost:8090/agents/sr | jq '.levels'
 
 # Error shapes
 curl -si 'localhost:8090/agents/trend?asset=doge'   # 400 unknown asset

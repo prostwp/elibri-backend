@@ -181,6 +181,15 @@ func TestHTTPMacroUnknownEnvelope(t *testing.T) {
 	if env.Semaphore != "neutral" {
 		t.Errorf("semaphore: %q, want neutral", env.Semaphore)
 	}
+	// Machine-readable twin of the verdict: not a real reading, and the WHY is
+	// the closed tradfin window (the open-window twin asserts no_data in
+	// httpapi_status_test.go).
+	if env.OK {
+		t.Error("unknown regime must serve ok=false")
+	}
+	if env.Reason == nil || *env.Reason != "market_closed" {
+		t.Errorf("reason: %v, want market_closed", env.Reason)
+	}
 	if env.Confidence != nil {
 		t.Errorf("confidence: %v, want null", env.Confidence)
 	}

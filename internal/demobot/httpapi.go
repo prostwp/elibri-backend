@@ -13,6 +13,9 @@ package demobot
 //     are shared with the Telegram path.
 //   - Honesty rules carry over: a dead upstream is an explicit 503, never
 //     fake numbers; degraded parts inside a 200 card say so in the facts.
+//   - Machine-readable status: every envelope carries ok/reason (and the 503
+//     body carries the same pair) so templates branch on WHY a reading is
+//     absent; level-bearing agents add a raw-precision "levels" object.
 //   - Global in-memory token bucket: 10 req/sec across all clients → 429
 //     with Retry-After: 1.
 
@@ -59,15 +62,27 @@ var assetAgents = map[string]bool{keyMomentum: true, keyTrend: true, keySR: true
 
 // httpEnvelope is the single response shape every agent endpoint serves.
 type httpEnvelope struct {
-	Agent      string   `json:"agent"`
-	Asset      string   `json:"asset"`
-	Verdict    string   `json:"verdict"`
-	Semaphore  string   `json:"semaphore"` // bullish | bearish | neutral
-	Facts      []string `json:"facts"`
-	Confidence *int     `json:"confidence"` // 0-100, null when the source gave none
-	AIText     *string  `json:"ai_text"`    // plain-text AI block, null when absent
+	Agent string `json:"agent"`
+	Asset string `json:"asset"`
+	// OK is true when the agent produced a real reading. False for every
+	// degraded state — Reason then names which one (the enum below), so
+	// templates branch on WHY a value is absent instead of sniffing verdicts.
+	OK bool `json:"ok"`
+	// Reason is null when OK; otherwise one of: "market_closed",
+	// "source_offline", "insufficient_history", "below_threshold", "no_data"
+	// (cardStatus.reason — documented in docs/demobot-http.md).
+	Reason    *string  `json:"reason"`
+	Verdict   string   `json:"verdict"`
+	Semaphore string   `json:"semaphore"` // bullish | bearish | neutral
+	Facts     []string `json:"facts"`
+	// Levels is the machine-readable numeric companion for level-bearing
+	// agents: trend {"invalidation"}, sr {"supports","resistances"}, vol
+	// {"expansion_ratio"} — raw precision floats. Absent for other agents.
+	Levels     any      `json:"levels,omitempty"`
+	Confidence *int     `json:"confidence"`         // 0-100, null when the source gave none
+	AIText     *string  `json:"ai_text"`            // plain-text AI block, null when absent
 	Sections   []string `json:"sections,omitempty"` // digest only: the one-liners
-	DataAsOf   string   `json:"data_as_of"` // RFC3339, same stamp as the card footer
+	DataAsOf   string   `json:"data_as_of"`         // RFC3339, same stamp as the card footer
 	Disclaimer string   `json:"disclaimer"`
 	CardHTML   string   `json:"card_html"` // the exact Telegram HTML card
 }
@@ -103,17 +118,26 @@ func htmlToPlain(s string) string {
 }
 
 // cardEnvelope converts one Card into the HTTP envelope. The card is the
-// single source of truth — nothing here re-derives agent data.
+// single source of truth — nothing here re-derives agent data: ok/reason come
+// from the status the builder threaded through, levels from its computed
+// structs, never from parsing rendered text.
 func cardEnvelope(c Card) httpEnvelope {
+	st := c.effectiveStatus()
 	env := httpEnvelope{
 		Agent:      c.Agent,
 		Asset:      c.Asset,
+		OK:         st == statusOK,
 		Verdict:    c.Verdict,
 		Semaphore:  semaphoreOf(c.Emoji),
 		Facts:      append([]string{}, c.Facts...), // [] not null when empty
+		Levels:     c.Levels,
 		DataAsOf:   c.DataTime.UTC().Format(time.RFC3339),
 		Disclaimer: disclaimerText,
 		CardHTML:   c.RenderHTML(),
+	}
+	if !env.OK {
+		r := st.reason()
+		env.Reason = &r
 	}
 	if c.Confidence != nil {
 		v := clampInt(*c.Confidence, 0, 100)
@@ -398,9 +422,16 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 // writeCard serves one agent card: 200 with the envelope, or an honest 503
 // when the agent could not produce a verdict (source offline, insufficient
 // history, radar warming up) — mirroring the card's own degraded wording.
+// The 503 body carries the same machine-readable ok/reason pair as the
+// envelope, so templates can branch on WHY (offline vs insufficient vs
+// warming up) without parsing the error string.
 func (s *HTTPServer) writeCard(w http.ResponseWriter, card Card) {
 	if card.Offline {
-		writeErr(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", card.Agent, card.Verdict))
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error":  fmt.Sprintf("%s: %s", card.Agent, card.Verdict),
+			"ok":     false,
+			"reason": card.effectiveStatus().reason(),
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, cardEnvelope(card))

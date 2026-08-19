@@ -102,6 +102,7 @@ func insufficientCard(spec assetSpec, agent, shortName, command, how, what strin
 		Verdict:    "Insufficient history — no verdict",
 		Short:      "insufficient history",
 		Offline:    true,
+		Status:     statusInsufficientHistory,
 	}
 	c.Facts = []string{"insufficient history for " + what}
 	if spec.Source == srcYahoo {
@@ -177,9 +178,13 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 		c.Emoji, c.Verdict, c.Short = emojiBear, "RISK-OFF — big money defensive", "risk-off"
 	case "unknown":
 		// No tradfin inputs at all — say so instead of claiming a regime read.
+		// Machine status splits the two absences templates must distinguish:
+		// closed window = market_closed, open window with a dark feed = no_data.
 		verdict := "UNKNOWN — market closed, no tradfin data"
+		c.Status = statusMarketClosed
 		if m.TradfinOpen {
 			verdict = "UNKNOWN — no tradfin data right now"
+			c.Status = statusNoData
 		}
 		c.Emoji, c.Verdict, c.Short = emojiNeutral, verdict, "unknown (no data)"
 	default:
@@ -260,6 +265,7 @@ func (a *Agents) WhaleCard(ctx context.Context) Card {
 	switch {
 	case btc == nil:
 		c.Emoji, c.Verdict, c.Short = emojiNeutral, "No BTC flow snapshot yet", "no data"
+		c.Status = statusNoData // upstream alive, nothing to read yet
 	case btc.Direction == "inflow":
 		c.Emoji, c.Verdict, c.Short = emojiBear, "Net INFLOW to exchanges — potential sell pressure", "inflow (sell pressure)"
 	case btc.Direction == "outflow":
@@ -346,6 +352,7 @@ func (a *Agents) NewsCard(ctx context.Context) Card {
 		c.Verdict = "No narrative snapshots yet — radar warming up"
 		c.Short = "no data"
 		c.Offline = true // "not enough data" is not a signal
+		c.Status = statusBelowThreshold
 		return c
 	}
 	top := n.Narratives[0]
@@ -353,6 +360,7 @@ func (a *Agents) NewsCard(ctx context.Context) Card {
 	// Present names + mention counts only, and say why there is no verdict.
 	if top.MentionCount < newsMinMentions {
 		c.Emoji = emojiNeutral
+		c.Status = statusBelowThreshold
 		mentions := "mentions"
 		if top.MentionCount == 1 {
 			mentions = "mention"
@@ -457,6 +465,10 @@ func (a *Agents) FundingCard(ctx context.Context) Card {
 		c.Deviation = clampInt(int(math.Round(math.Abs(widest)/fundingDevFullScale*100)), 0, 100)
 	} else {
 		c.Emoji, c.Verdict, c.Short = emojiNeutral, "Funding rates unavailable — liquidations only", "rates offline"
+		// The agent's headline reading (funding skew) was not produced — the
+		// envelope must say ok=false/source_offline even though the card still
+		// renders the liquidation facts as a 200.
+		c.Status = statusSourceOffline
 		c.Facts = append(c.Facts, "Funding-rate source offline right now")
 	}
 
@@ -1001,9 +1013,11 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 	// keeps a degenerate flat series from rendering a fake level.
 	if atrSeries := atrSeriesWilder(highs, lows, closes, 14); len(atrSeries) > 0 {
 		if atr := atrSeries[len(atrSeries)-1]; atr > 0 {
+			inv := invalidationLevel(ema50, ema200, atr)
 			c.Facts = append(c.Facts, fmt.Sprintf(
 				"Invalidation: below %s the structure is broken (1 ATR under the EMA cluster)",
-				trimFloat(invalidationLevel(ema50, ema200, atr))))
+				trimFloat(inv)))
+			c.Levels = TrendLevels{Invalidation: inv} // raw float, envelope "levels"
 		}
 	}
 	if spec.Source == srcYahoo {
@@ -1062,6 +1076,9 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 		Verdict:    fmt.Sprintf("Key levels around %s", trimFloat(last)),
 	}
 	c.Facts = append(c.Facts, "Resistance: "+srLine(res), "Support: "+srLine(sup))
+	// Machine-readable twin of the two lines above: raw cluster means, not the
+	// display-rounded labels.
+	c.Levels = SRLevels{Supports: srPoints(sup), Resistances: srPoints(res)}
 	if nl := nearestLevelLine(sup, res, last); nl != "" {
 		c.Facts = append(c.Facts, nl)
 	}
@@ -1078,6 +1095,17 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 		decorateFX(&c)
 	}
 	return c
+}
+
+// srPoints converts clustered levels to the machine-readable envelope form:
+// raw cluster means at full precision, never the display-rounded labels.
+// Always non-nil so an empty side serializes as [].
+func srPoints(levels []SRLevel) []SRPoint {
+	pts := make([]SRPoint, 0, len(levels))
+	for _, l := range levels {
+		pts = append(pts, SRPoint{Level: l.Raw, Touches: l.Touches})
+	}
+	return pts
 }
 
 // srLevelLabel: integer levels for BTC/gold-scale prices (original card
@@ -1186,6 +1214,7 @@ func (a *Agents) VolCard(ctx context.Context, spec assetSpec) Card {
 		Command:    keyVol,
 		HowItWorks: howTexts[keyVol],
 		DataTime:   closeTimeOf(candles, spec.Interval),
+		Levels:     VolLevels{ExpansionRatio: ratio}, // unrounded, envelope "levels"
 	}
 	switch state {
 	case volExpanding:

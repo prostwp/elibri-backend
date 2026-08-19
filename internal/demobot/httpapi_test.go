@@ -16,18 +16,22 @@ import (
 )
 
 // testEnvelope mirrors httpEnvelope for decoding responses in asserts.
+// Levels stays raw JSON so tests can assert exact shapes and absence.
 type testEnvelope struct {
-	Agent      string   `json:"agent"`
-	Asset      string   `json:"asset"`
-	Verdict    string   `json:"verdict"`
-	Semaphore  string   `json:"semaphore"`
-	Facts      []string `json:"facts"`
-	Confidence *int     `json:"confidence"`
-	AIText     *string  `json:"ai_text"`
-	Sections   []string `json:"sections"`
-	DataAsOf   string   `json:"data_as_of"`
-	Disclaimer string   `json:"disclaimer"`
-	CardHTML   string   `json:"card_html"`
+	Agent      string          `json:"agent"`
+	Asset      string          `json:"asset"`
+	OK         bool            `json:"ok"`
+	Reason     *string         `json:"reason"`
+	Verdict    string          `json:"verdict"`
+	Semaphore  string          `json:"semaphore"`
+	Facts      []string        `json:"facts"`
+	Levels     json.RawMessage `json:"levels"`
+	Confidence *int            `json:"confidence"`
+	AIText     *string         `json:"ai_text"`
+	Sections   []string        `json:"sections"`
+	DataAsOf   string          `json:"data_as_of"`
+	Disclaimer string          `json:"disclaimer"`
+	CardHTML   string          `json:"card_html"`
 }
 
 // newTestAPI serves the real handler chain from an httptest server. relax
@@ -77,26 +81,30 @@ func TestHTTPEnvelopeGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"agent":"Momentum Agent","asset":"BTC","verdict":"BULLISH — bulls in control","semaphore":"bullish","facts":["RSI(14): 62.4","MACD hist: +120.50"],"confidence":60,"ai_text":"AI read: Calm & greedy.","data_as_of":"2026-08-18T06:00:00Z","disclaimer":"Analytics, not financial advice","card_html":"🟢 <b>Momentum Agent</b> · BTC\n<b>BULLISH — bulls in control</b>\n• RSI(14): 62.4\n• MACD hist: +120.50\nConfidence: ■■■□□ 60%\n<b>AI read:</b> <i>Calm &amp; greedy.</i>\n\n<i>Analytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC</i>"}`
+	want := `{"agent":"Momentum Agent","asset":"BTC","ok":true,"reason":null,"verdict":"BULLISH — bulls in control","semaphore":"bullish","facts":["RSI(14): 62.4","MACD hist: +120.50"],"confidence":60,"ai_text":"AI read: Calm & greedy.","data_as_of":"2026-08-18T06:00:00Z","disclaimer":"Analytics, not financial advice","card_html":"🟢 <b>Momentum Agent</b> · BTC\n<b>BULLISH — bulls in control</b>\n• RSI(14): 62.4\n• MACD hist: +120.50\nConfidence: ■■■□□ 60%\n<b>AI read:</b> <i>Calm &amp; greedy.</i>\n\n<i>Analytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC</i>"}`
 	if g := strings.TrimRight(string(got), "\n"); g != want {
 		t.Fatalf("envelope golden mismatch:\ngot:  %s\nwant: %s", g, want)
 	}
 }
 
-// Empty facts must serialize as [], never null; nil confidence/AI as null.
+// Empty facts must serialize as [], never null; nil confidence/AI as null;
+// ok/reason always present (true/null on a healthy card); levels omitted for
+// agents without them.
 func TestHTTPEnvelopeNullsAndEmptyFacts(t *testing.T) {
 	c := Card{Emoji: "⚪", Agent: "X", Verdict: "v", DataTime: goldenTime}
 	got, err := encodeJSON(cardEnvelope(c))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"facts":[]`, `"confidence":null`, `"ai_text":null`} {
+	for _, want := range []string{`"facts":[]`, `"confidence":null`, `"ai_text":null`, `"ok":true`, `"reason":null`} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("envelope must contain %s, got: %s", want, got)
 		}
 	}
-	if strings.Contains(string(got), `"sections"`) {
-		t.Errorf("sections must be omitted outside the digest, got: %s", got)
+	for _, banned := range []string{`"sections"`, `"levels"`} {
+		if strings.Contains(string(got), banned) {
+			t.Errorf("%s must be omitted here, got: %s", banned, got)
+		}
 	}
 }
 

@@ -107,6 +107,9 @@ func TestInsufficientCard(t *testing.T) {
 	if !c.Offline {
 		t.Error("insufficient cards must not feed the priority rule")
 	}
+	if c.Status != statusInsufficientHistory {
+		t.Error("insufficient cards must carry the machine status for ok/reason")
+	}
 	// FX flavor carries the source note.
 	fx := insufficientCard(xauSpec, "Trend Agent", "Trend", keyTrend, "how", "EMA200")
 	if fx.SourceNote == "" {

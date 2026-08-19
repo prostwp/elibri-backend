@@ -15,6 +15,75 @@ const (
 	emojiNeutral = "⚪"
 )
 
+// ── machine-readable status ──────────────────────────────────────────────────
+
+// cardStatus is the machine-readable state behind a card, threaded from the
+// builders to the HTTP envelope's ok/reason pair (docs/demobot-http.md) so
+// templates can branch on WHY a reading is absent instead of sniffing verdict
+// strings. The zero value is statusOK — only degraded paths set it.
+type cardStatus int
+
+const (
+	statusOK                  cardStatus = iota // real reading produced
+	statusSourceOffline                         // data source unreachable (or the headline read's source is)
+	statusInsufficientHistory                   // source alive, too few closed bars for the indicator set
+	statusBelowThreshold                        // narrative radar warming up: thin mention base / no snapshots
+	statusNoData                                // upstream alive but nothing to read: macro unknown in the open window, no flow snapshot
+	statusMarketClosed                          // macro unknown because the tradfin market is closed
+)
+
+// reason maps a status to its JSON enum value; "" for statusOK (the envelope
+// serves null instead).
+func (s cardStatus) reason() string {
+	switch s {
+	case statusSourceOffline:
+		return "source_offline"
+	case statusInsufficientHistory:
+		return "insufficient_history"
+	case statusBelowThreshold:
+		return "below_threshold"
+	case statusNoData:
+		return "no_data"
+	case statusMarketClosed:
+		return "market_closed"
+	default:
+		return ""
+	}
+}
+
+// ── machine-readable levels ──────────────────────────────────────────────────
+//
+// Card.Levels is the numeric companion to the facts strings for agents whose
+// reading IS a set of price levels: raw computed float64s at full precision,
+// never display-rounded. The HTTP envelope serves it verbatim as "levels";
+// Telegram rendering ignores it. nil for agents without levels.
+
+// TrendLevels — the price under which the trend structure this card reads is
+// broken (see invalidationLevel).
+type TrendLevels struct {
+	Invalidation float64 `json:"invalidation"`
+}
+
+// SRPoint is one clustered level at raw precision (SRLevel.Raw — the cluster
+// mean, not the display-rounded integer) with its touch count.
+type SRPoint struct {
+	Level   float64 `json:"level"`
+	Touches int     `json:"touches"`
+}
+
+// SRLevels — strength-sorted supports/resistances. Both slices are always
+// non-nil so an empty side serializes as [] ("we looked, nothing clustered"),
+// never null.
+type SRLevels struct {
+	Supports    []SRPoint `json:"supports"`
+	Resistances []SRPoint `json:"resistances"`
+}
+
+// VolLevels — ATR(14) now over its 30-bar average, unrounded.
+type VolLevels struct {
+	ExpansionRatio float64 `json:"expansion_ratio"`
+}
+
 // Card is one agent's reply. RenderHTML produces the exact Telegram
 // HTML-parse-mode body (golden-tested in card_test.go).
 type Card struct {
@@ -32,6 +101,12 @@ type Card struct {
 	Deviation  int    // 0..100 deviation-from-neutral used by the priority rule
 	Offline    bool   // true when the data source was unreachable
 	SourceNote string // extra footer note, e.g. "data: Yahoo Finance"
+	// Status is the machine state behind the HTTP envelope's ok/reason pair.
+	// Zero value = real reading; degraded builders set the matching enum.
+	Status cardStatus
+	// Levels carries one of TrendLevels / SRLevels / VolLevels (or nil) —
+	// served verbatim as the envelope's "levels" object, ignored by Telegram.
+	Levels any
 	// AIHTML is a pre-rendered AI block ("<b>AI idea:</b> <i>…</i>") appended
 	// after the facts and confidence bar. Builders MUST esc() every dynamic
 	// value when composing it — RenderHTML writes it verbatim.
@@ -126,6 +201,17 @@ func clampInt(v, lo, hi int) int {
 	return v
 }
 
+// effectiveStatus is the machine status the HTTP layer serves: the builder's
+// explicit Status, with one defensive collapse — a card flagged Offline that
+// carries no specific status reads as source_offline, so a future degraded
+// path that only sets the flag can never serve ok=true.
+func (c Card) effectiveStatus() cardStatus {
+	if c.Status == statusOK && c.Offline {
+		return statusSourceOffline
+	}
+	return c.Status
+}
+
 // offlineCard is the honest degraded state — never fake data.
 func offlineCard(agent, shortName, asset, command, how string) Card {
 	return Card{
@@ -140,5 +226,6 @@ func offlineCard(agent, shortName, asset, command, how string) Card {
 		HowItWorks: how,
 		Deviation:  0,
 		Offline:    true,
+		Status:     statusSourceOffline,
 	}
 }
