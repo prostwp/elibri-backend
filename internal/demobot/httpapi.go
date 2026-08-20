@@ -31,6 +31,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -193,8 +194,15 @@ type HTTPServer struct {
 	ln  net.Listener
 }
 
+// NewHTTPServer builds the read-only JSON API. A global token bucket
+// (10 req/s) is on by default; set DEMOBOT_RATE_LIMIT=0 to disable it — e.g.
+// a server deployment fronted by a trusted reverse proxy that does its own
+// limiting. When disabled, lim is nil and wrap() skips the 429 gate entirely.
 func NewHTTPServer(addr string, ag *Agents) *HTTPServer {
 	s := &HTTPServer{ag: ag, lim: newTokenBucket(httpRatePerSec, httpBurst)}
+	if os.Getenv("DEMOBOT_RATE_LIMIT") == "0" {
+		s.lim = nil
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/agents", s.handleList)
@@ -246,7 +254,7 @@ func (s *HTTPServer) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if !s.lim.allow() {
+		if s.lim != nil && !s.lim.allow() {
 			w.Header().Set("Retry-After", "1")
 			writeErr(w, http.StatusTooManyRequests, "rate limit exceeded — max 10 requests/second globally, retry in 1s")
 			return

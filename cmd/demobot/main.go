@@ -42,6 +42,7 @@ func main() {
 	}
 	backend := flag.String("backend", defaultBackend, "AlphaVizor backend base URL")
 	selftest := flag.Bool("selftest", false, "render every agent card once and exit (no Telegram)")
+	httpOnly := flag.Bool("http-only", os.Getenv("DEMOBOT_HTTP_ONLY") == "1", "serve only the read-only HTTP JSON API, no Telegram long polling (no bot token required)")
 	flag.Parse()
 
 	agents := demobot.NewAgents(demobot.NewBackendClient(*backend))
@@ -57,13 +58,20 @@ func main() {
 		return
 	}
 
-	token := os.Getenv("TELEGRAM_BOT_TOKEN")
-	if token == "" {
-		fmt.Fprintln(os.Stderr, "TELEGRAM_BOT_TOKEN is not set.")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Create a bot with @BotFather in Telegram, copy its token, then run:")
-		fmt.Fprintln(os.Stderr, "  TELEGRAM_BOT_TOKEN=123456:ABC-your-token ./bin/demobot")
-		os.Exit(1)
+	// In http-only mode (server deployment behind a permanent IP) no bot
+	// token is needed: only the read-only JSON API is served. A Telegram
+	// bot elsewhere keeps the same token without a getUpdates 409 conflict.
+	var token string
+	if !*httpOnly {
+		token = os.Getenv("TELEGRAM_BOT_TOKEN")
+		if token == "" {
+			fmt.Fprintln(os.Stderr, "TELEGRAM_BOT_TOKEN is not set.")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Create a bot with @BotFather in Telegram, copy its token, then run:")
+			fmt.Fprintln(os.Stderr, "  TELEGRAM_BOT_TOKEN=123456:ABC-your-token ./bin/demobot")
+			fmt.Fprintln(os.Stderr, "Or run the JSON API alone with -http-only (no token needed).")
+			os.Exit(1)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -72,7 +80,7 @@ func main() {
 	// Read-only HTTP JSON API — runs alongside long polling on the SAME
 	// Agents instance (shared kline cache + AI memo). A bind failure is
 	// fatal: a half-up process that looks alive but serves nothing is worse
-	// than a clean crash launchd can restart.
+	// than a clean crash the supervisor can restart.
 	httpAddr := os.Getenv("DEMOBOT_HTTP_ADDR")
 	if httpAddr == "" {
 		httpAddr = demobot.DefaultHTTPAddr
@@ -82,12 +90,17 @@ func main() {
 		log.Fatalf("[demobot] HTTP API cannot bind %s: %v — is another demobot instance running? Set DEMOBOT_HTTP_ADDR to move it.", httpAddr, err)
 	}
 
-	log.Printf("[demobot] starting · backend=%s", *backend)
-	bot := demobot.NewBot(token, agents)
-	runErr := bot.Run(ctx)
+	var runErr error
+	if *httpOnly {
+		log.Printf("[demobot] http-only · API on %s · backend=%s (no Telegram)", httpAddr, *backend)
+		<-ctx.Done()
+	} else {
+		log.Printf("[demobot] starting · backend=%s", *backend)
+		bot := demobot.NewBot(token, agents)
+		runErr = bot.Run(ctx)
+	}
 
-	// Same SIGTERM path as long polling: Run has returned (signal or fatal
-	// poll error) — drain in-flight HTTP requests before exiting.
+	// Drain in-flight HTTP requests before exiting.
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("[demobot] HTTP API shutdown: %v", err)
