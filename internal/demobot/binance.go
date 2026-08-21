@@ -15,43 +15,65 @@ import (
 
 // klineCache keeps recently fetched candles for 60s so /digest (which needs
 // BTC 4h candles for momentum, trend, S/R and vol at once) and Refresh spam
-// hit the sources once, not four times.
+// hit the sources once, not four times. Concurrent misses on one key JOIN a
+// single in-flight load (singleflight, mirroring the aiMemo pattern — review
+// fix 10): six-asset scans arriving together must not multiply upstream GETs.
 type klineCache struct {
 	mu    sync.Mutex
-	items map[string]klineEntry
+	items map[string]*klineEntry
 }
 
 type klineEntry struct {
+	done    chan struct{} // closed when the load finished
 	candles []types.OHLCVCandle
+	err     error
 	at      time.Time
 }
 
 const klineTTL = 60 * time.Second
 
 func newKlineCache() *klineCache {
-	return &klineCache{items: map[string]klineEntry{}}
+	return &klineCache{items: map[string]*klineEntry{}}
 }
 
-// cached returns fresh cached candles for key or fills the cache via load.
-// Errors are never cached — the next request retries the source.
+// cached returns fresh cached candles for key, joins an in-flight load for
+// the same key, or starts one. Errors are shared with concurrent joiners of
+// the same flight but never CACHED — the next request retries the source.
 func (c *klineCache) cached(key string, load func() ([]types.OHLCVCandle, error)) ([]types.OHLCVCandle, error) {
 	c.mu.Lock()
-	if e, ok := c.items[key]; ok && time.Since(e.at) < klineTTL {
-		c.mu.Unlock()
-		return e.candles, nil
+	if e, ok := c.items[key]; ok {
+		select {
+		case <-e.done: // finished — serve if fresh and healthy, else reload below
+			if e.err == nil && time.Since(e.at) < klineTTL {
+				c.mu.Unlock()
+				return e.candles, nil
+			}
+		default: // in flight — join it outside the lock
+			c.mu.Unlock()
+			<-e.done
+			return e.candles, e.err
+		}
 	}
+	e := &klineEntry{done: make(chan struct{})}
+	c.items[key] = e
 	c.mu.Unlock()
 
 	candles, err := load()
+	if err == nil && len(candles) == 0 {
+		err = fmt.Errorf("%s: empty candle set", key)
+	}
+	e.candles, e.err, e.at = candles, err, time.Now()
+	close(e.done)
 	if err != nil {
+		// Failed flights are evicted so the NEXT request retries; the joiners
+		// of THIS flight already share the error (they were concurrent).
+		c.mu.Lock()
+		if c.items[key] == e {
+			delete(c.items, key)
+		}
+		c.mu.Unlock()
 		return nil, err
 	}
-	if len(candles) == 0 {
-		return nil, fmt.Errorf("%s: empty candle set", key)
-	}
-	c.mu.Lock()
-	c.items[key] = klineEntry{candles: candles, at: time.Now()}
-	c.mu.Unlock()
 	return candles, nil
 }
 
@@ -113,14 +135,25 @@ func fetchBinanceKlines(ctx context.Context, symbol, interval string, limit int)
 			f, _ := strconv.ParseFloat(s, 64)
 			return f
 		}
-		candles = append(candles, types.OHLCVCandle{
+		c := types.OHLCVCandle{
 			Time:   int64(openMs / 1000), // ms → sec (bar OPEN time)
 			Open:   num(row[1]),
 			High:   num(row[2]),
 			Low:    num(row[3]),
 			Close:  num(row[4]),
 			Volume: num(row[5]),
-		})
+		}
+		// Binance serves floats AS STRINGS and strconv accepts "NaN"/"Inf" —
+		// a poisoned OHLC bar is dropped whole (review fix 4: nothing
+		// non-finite may reach indicator math); a non-finite volume degrades
+		// to 0, matching the null-volume FX convention.
+		if !isFinite(c.Open) || !isFinite(c.High) || !isFinite(c.Low) || !isFinite(c.Close) {
+			continue
+		}
+		if !isFinite(c.Volume) {
+			c.Volume = 0
+		}
+		candles = append(candles, c)
 	}
 	return candles, nil
 }

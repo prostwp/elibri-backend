@@ -195,18 +195,21 @@ func buildLamps(quotes map[string]macro.Quote) []macro.Lamp {
 }
 
 // buildCorrelations computes the 3 BTC↔X correlations + their labels + a human
-// window string from the ring size. coef nil → label "" (frontend "Building
-// correlation window").
+// window string. B2: the coefficient comes from the DAILY-close window (20-30
+// trading days, date-aligned) — see macro.Store.DailyCorrelation. coef nil →
+// label "" and ok:false (frontend "Building correlation window"); the
+// per-pair overlap count ships as points.
 func buildCorrelations(reader macro.SnapshotReader) []macro.Correlation {
-	window := windowDescription(reader.PointCount())
 	corrs := make([]macro.Correlation, 0, len(correlationPairs))
 	for _, cp := range correlationPairs {
-		coef := reader.Correlation(macro.SymBTC, cp.symX)
+		coef, points := reader.DailyCorrelation(macro.SymBTC, cp.symX)
 		corrs = append(corrs, macro.Correlation{
 			Pair:   cp.pair,
 			Coef:   coef,
 			Label:  macro.CorrelationLabel(cp.pair, coef),
-			Window: window,
+			Window: windowDescription(points),
+			OK:     coef != nil,
+			Points: points,
 		})
 	}
 	return corrs
@@ -285,25 +288,15 @@ func pctChange(prev, cur float64) float64 {
 	return (cur - prev) / prev * 100
 }
 
-// windowDescription renders the rolling-window size as a human string, e.g.
-// "≈3h (52 points)". One point per ~3-min cycle → minutes ≈ points×3.
+// windowDescription renders the daily correlation window as a human string.
+// points = overlapping daily closes between BTC and the pair symbol.
 func windowDescription(points int) string {
-	if points <= 0 {
-		return "building"
+	switch {
+	case points <= 0:
+		return "building daily window"
+	case points < macro.MinDailyCorrPoints:
+		return fmt.Sprintf("%d daily closes — building (min %d for a read)", points, macro.MinDailyCorrPoints)
+	default:
+		return fmt.Sprintf("%d daily closes (20-30d window)", points)
 	}
-	plural := "points"
-	if points == 1 {
-		plural = "point"
-	}
-	// At ring capacity the window stops growing — say so honestly.
-	suffix := ""
-	if points >= macro.RingCap {
-		suffix = " (rolling)"
-	}
-	mins := points * 3
-	if mins < 60 {
-		return fmt.Sprintf("≈%dm (%d %s)%s", mins, points, plural, suffix)
-	}
-	hours := (mins + 30) / 60 // rounded
-	return fmt.Sprintf("≈%dh (%d %s)%s", hours, points, plural, suffix)
 }

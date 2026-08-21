@@ -49,11 +49,13 @@ func (a *Agents) candlesFor(ctx context.Context, spec assetSpec) ([]types.OHLCVC
 	var candles []types.OHLCVCandle
 	var err error
 	if spec.Source == srcYahoo {
-		key := "yahoo|" + spec.Symbol
+		// The cache key carries the interval (B1): a 4h-rebased EURUSD must
+		// never collide with the native 1h series.
+		key := "yahoo|" + spec.Symbol + "|" + spec.Interval
 		candles, err = a.klines.cached(key, func() ([]types.OHLCVCandle, error) {
-			c, ferr := fetchYahooCandles(ctx, spec.Symbol)
+			c, ferr := fetchYahooCandlesTF(ctx, spec.Symbol, spec.Interval)
 			if (ferr != nil || len(c) == 0) && spec.Fallback != "" {
-				return fetchYahooCandles(ctx, spec.Fallback)
+				return fetchYahooCandlesTF(ctx, spec.Fallback, spec.Interval)
 			}
 			return c, ferr
 		})
@@ -117,9 +119,9 @@ var howTexts = map[string]string{
 	keyMacro:    "Reads 5 tradfin lamps (DXY, US 10Y, VIX, S&P 500, Gold) plus crypto Fear & Greed and blends them into a risk-on/off regime. RISK-OFF outranks every other signal in /digest.",
 	keyWhale:    "Watches large on-chain transfers touching known exchange wallets. Net inflow to exchanges = potential sell pressure; net outflow = accumulation.",
 	keyFunding:  "Compares perp funding rates across majors. High positive funding = crowded longs (squeeze risk); negative = crowded shorts. Liquidation feed shows where forced exits cluster.",
-	keyMomentum: "RSI(14) + MACD histogram on 4h Binance candles. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; anything else = neutral.",
+	keyMomentum: "RSI(14) + MACD histogram. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; else neutral. Default 4h crypto / 1h FX; custom scan: /momentum btc,eurusd 1d.",
 	keyTrend:    "State machine on 4h candles: ADX<20 = flat (no trade), 20-25 = grey zone, ADX 25+ with price and EMA50/EMA200 aligned = confirmed trend; misaligned = conflict.",
-	keySR:       "Finds swing highs/lows on 4h candles and clusters levels within 0.5%. Strength = number of touches. Levels are rounded to whole numbers.",
+	keySR:       "Finds swing highs/lows on 4h candles and clusters levels within 0.5%. Strength = touches + 0.5 per above-median-volume touch; held/break counts show how levels behaved when tested.",
 	keyVol:      "ATR(14) now vs its 30-bar average. Ratio 1.25+ = volatility expanding (breakout regime); 0.8- = compressed (range regime).",
 	keyRisk:     "Position size = (balance × risk%) ÷ |entry − stop|. Keeps one losing trade at a fixed fraction of the account. Works for any asset.",
 	keyFX:       "EMA50 vs EMA200 direction, RSI(14) and 24h change on 1h Yahoo Finance data for EURUSD, GBPUSD, USDJPY, XAUUSD. Weekend closures (Fri 21:00–Sun 21:00 UTC) are flagged, never hidden.",
@@ -152,24 +154,10 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 		DataTime:   parseWhen(m.CapturedAt),
 	}
 
-	// A lamp is REAL when the payload carries a value for it. The backend's
-	// per-lamp ok flag says exactly that; the Value fallback keeps the read
-	// correct against older payloads that predate the flag.
-	real := 0
-	for _, l := range m.Lamps {
-		if l.OK || l.Value != nil {
-			real++
-		}
-	}
-
-	// Version-skew guard: an older backend still reports "mixed" for the
-	// all-null case. Zero real lamps can never support a MIXED claim →
-	// reclassify to unknown before rendering (and return the effective regime
-	// so /digest //top see the same truth).
-	regime := m.Regime
-	if regime == "mixed" && real == 0 {
-		regime = "unknown"
-	}
+	// A lamp is REAL when the payload carries a value for it; zero real lamps
+	// reclassify an old backend's "mixed" to unknown (a MIXED claim needs at
+	// least one input). Shared with the asset views — see effectiveMacroRegime.
+	regime, real := effectiveMacroRegime(m)
 
 	switch regime {
 	case "risk_on":
@@ -212,6 +200,12 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 		c.Facts = append(c.Facts, "Lamps: "+note)
 	} else {
 		c.Facts = append(c.Facts, fmt.Sprintf("Lamps: %d tailwind / %d headwind / %d neutral", tail, head, neut))
+	}
+	// Signal map (B2): the same lamps read for both assets, one line each —
+	// only with at least one real lamp behind them (an asset verdict is a
+	// knowledge claim like any other).
+	if real > 0 {
+		c.Facts = append(c.Facts, macroViewLines(regime, m.Lamps)...)
 	}
 	// What IS known even when tradfin is dark: the crypto side (F&G is 24/7),
 	// rendered only when its own ok flag says the read is live.
@@ -648,6 +642,16 @@ func momentumEmoji(verdict string) string {
 	}
 }
 
+// assetResult builds one momentum results entry from a card status.
+func assetResult(display string, st cardStatus) AssetResult {
+	res := AssetResult{Asset: display, OK: st == statusOK}
+	if !res.OK {
+		r := st.reason()
+		res.Reason = &r
+	}
+	return res
+}
+
 // MomentumCard is the default multi-asset card: BTC + ETH (Binance 4h) and
 // XAUUSD (Yahoo 1h, GC=F fallback).
 func (a *Agents) MomentumCard(ctx context.Context) Card {
@@ -661,12 +665,16 @@ func (a *Agents) MomentumCard(ctx context.Context) Card {
 	}
 	var reads []momentumRead
 	var insufficientLines []string
+	var assetResults []AssetResult
 	var btcCandles []types.OHLCVCandle // the exact series the BTC read used
 	for _, key := range []string{"btc", "eth"} {
 		spec := assetTable[key]
 		candles, err := a.candlesFor(ctx, spec)
 		if err != nil {
-			continue // hard fetch failure — the asset simply drops out (pre-existing contract)
+			// Hard fetch failure — no fact line (pre-existing contract), but
+			// the machine results array states it (review fix 3).
+			assetResults = append(assetResults, assetResult(spec.Display, statusSourceOffline))
+			continue
 		}
 		if key == "btc" {
 			btcCandles = candles
@@ -675,13 +683,38 @@ func (a *Agents) MomentumCard(ctx context.Context) Card {
 		switch {
 		case rerr == nil:
 			reads = append(reads, r)
+			assetResults = append(assetResults, assetResult(spec.Display, statusOK))
 		case errors.Is(rerr, errInsufficientHistory):
 			insufficientLines = append(insufficientLines, r.name+": insufficient history for RSI/MACD")
+			assetResults = append(assetResults, assetResult(spec.Display, statusInsufficientHistory))
 		}
 	}
 	xau, xauErr := a.momentumReadFor(ctx, xauSpec)
+	switch {
+	case xauErr == nil:
+		assetResults = append(assetResults, assetResult(xauSpec.Display, statusOK))
+	case errors.Is(xauErr, errInsufficientHistory):
+		assetResults = append(assetResults, assetResult(xauSpec.Display, statusInsufficientHistory))
+	default:
+		assetResults = append(assetResults, assetResult(xauSpec.Display, statusSourceOffline))
+	}
+	c.Results = assetResults
 	if len(reads) == 0 && xauErr != nil {
-		return offlineCard("Momentum Agent", "Momentum", "BTC/ETH/XAUUSD", keyMomentum, howTexts[keyMomentum])
+		// Zero real readings — same reason split as the scan card (review
+		// fix 3): any answered-but-short source → insufficient_history; only
+		// an all-dead sweep is source_offline.
+		if len(insufficientLines) > 0 || errors.Is(xauErr, errInsufficientHistory) {
+			c.Emoji = emojiNeutral
+			c.Verdict = "Insufficient history — no verdict"
+			c.Short = "insufficient history"
+			c.Offline = true
+			c.Status = statusInsufficientHistory
+			c.Facts = append(c.Facts, insufficientLines...)
+			return c
+		}
+		off := offlineCard("Momentum Agent", "Momentum", "BTC/ETH/XAUUSD", keyMomentum, howTexts[keyMomentum])
+		off.Results = assetResults
+		return off
 	}
 
 	var verdictParts []string
@@ -812,6 +845,9 @@ func (a *Agents) MomentumAssetCard(ctx context.Context, spec assetSpec) Card {
 		fmt.Sprintf("MACD histogram: %+.4g", r.hist),
 		fmt.Sprintf("Rule: RSI 55+/45- with matching MACD sign · %s candles", spec.Interval),
 	)
+	if spec.Source == srcYahoo && spec.Interval == "4h" {
+		c.Facts = append(c.Facts, yahooAgg4hNote) // B1: disclose the 1h→4h merge
+	}
 	// Binance assets get the volume read from the SAME series as the RSI/MACD
 	// math. Yahoo FX volume is null throughout, so no line over a fake 0×.
 	if spec.Source == srcBinance {
@@ -822,6 +858,155 @@ func (a *Agents) MomentumAssetCard(ctx context.Context, spec assetSpec) Card {
 	if spec.Source == srcYahoo {
 		decorateFX(&c)
 	}
+	return c
+}
+
+// yahooAgg4hNote discloses the B1 aggregation whenever a Yahoo asset runs on
+// 4h bars — Yahoo has no native 4h interval, so the bars are merged 1h groups
+// (see aggregate1hTo4h for the exact rules).
+const yahooAgg4hNote = "Note: 4h FX/gold bars aggregated from Yahoo 1h (Yahoo serves no native 4h)"
+
+// MomentumScanCard is the user-configured scan (B1): up to scanMaxAssets
+// registry assets, optionally re-based on one shared timeframe (tf "" keeps
+// each asset's native interval). keys must be pre-validated registry keys
+// (parseAssetList); per-asset failures degrade to honest fact lines, and the
+// card goes offline only when EVERY asset failed.
+func (a *Agents) MomentumScanCard(ctx context.Context, keys []string, tf string) Card {
+	specs := make([]assetSpec, 0, len(keys))
+	displays := make([]string, 0, len(keys))
+	for _, k := range keys {
+		spec := assetTable[k]
+		if tf != "" {
+			spec.Interval = tf // validated upstream via specWithTF/momentumTFs
+		}
+		specs = append(specs, spec)
+		displays = append(displays, spec.Display)
+	}
+
+	type scanResult struct {
+		read         momentumRead
+		insufficient bool
+		failed       bool
+	}
+	results := make([]scanResult, len(specs))
+	var wg sync.WaitGroup
+	for i, spec := range specs {
+		wg.Add(1)
+		go func(i int, spec assetSpec) {
+			defer wg.Done()
+			r, err := a.momentumReadFor(ctx, spec)
+			switch {
+			case err == nil:
+				results[i] = scanResult{read: r}
+			case errors.Is(err, errInsufficientHistory):
+				results[i] = scanResult{read: r, insufficient: true}
+			default:
+				results[i] = scanResult{failed: true}
+			}
+		}(i, spec)
+	}
+	wg.Wait()
+
+	c := Card{
+		Agent:      "Momentum Agent",
+		ShortName:  "Momentum",
+		Asset:      strings.Join(displays, "/"),
+		Command:    keyMomentum,
+		HowItWorks: howTexts[keyMomentum],
+		DataTime:   time.Now().UTC(), // narrowed below to the OLDEST closed bar used
+	}
+
+	anyOK := false
+	anyInsufficient := false
+	anyYahoo := false
+	agg4h := false
+	fxOpen := isForexOpen(time.Now())
+	var verdictParts []string
+	var assetResults []AssetResult
+	maxDev := 0
+	lead := ""
+	for i, res := range results {
+		spec := specs[i]
+		if spec.Source == srcYahoo {
+			anyYahoo = true
+			if spec.Interval == "4h" {
+				agg4h = true
+			}
+		}
+		name := spec.Display
+		if tf == "" {
+			// Mixed native intervals — each line names its own.
+			name = fmt.Sprintf("%s (%s)", spec.Display, spec.Interval)
+		}
+		switch {
+		case res.failed:
+			c.Facts = append(c.Facts, name+": data unavailable right now")
+			assetResults = append(assetResults, assetResult(spec.Display, statusSourceOffline))
+		case res.insufficient:
+			anyInsufficient = true
+			c.Facts = append(c.Facts, name+": insufficient history for RSI/MACD")
+			assetResults = append(assetResults, assetResult(spec.Display, statusInsufficientHistory))
+		default:
+			anyOK = true
+			assetResults = append(assetResults, assetResult(spec.Display, statusOK))
+			r := res.read
+			if lead == "" {
+				lead = r.verdict // first requested asset leads the semaphore
+			}
+			verdictParts = append(verdictParts, fmt.Sprintf("%s: %s", spec.Display, strings.ToUpper(r.verdict)))
+			line := fmt.Sprintf("%s: RSI(14) %.1f · MACD hist %+.3g → %s", name, r.rsi, r.hist, r.verdict)
+			if spec.Source == srcYahoo && !fxOpen {
+				line += " (market closed)"
+			}
+			c.Facts = append(c.Facts, line)
+			if !r.closeAt.IsZero() && r.closeAt.Before(c.DataTime) {
+				c.DataTime = r.closeAt
+			}
+			// Deviation stays CRYPTO-ONLY (v1 priority rule — see priority.go).
+			if spec.Source == srcBinance {
+				if d := clampInt(int(math.Abs(r.rsi-50)*2), 0, 100); d > maxDev {
+					maxDev = d
+				}
+			}
+		}
+	}
+	c.Results = assetResults
+	if !anyOK {
+		// Zero real readings. The WHY must be honest (review fix 3): when at
+		// least one asset answered but was too short, the scan degrades as
+		// insufficient_history; only an all-sources-dead sweep is
+		// source_offline.
+		if anyInsufficient {
+			c.Emoji = emojiNeutral
+			c.Verdict = "Insufficient history — no verdict"
+			c.Short = "insufficient history"
+			c.Offline = true
+			c.Status = statusInsufficientHistory
+			return c
+		}
+		off := offlineCard("Momentum Agent", "Momentum", c.Asset, keyMomentum, howTexts[keyMomentum])
+		off.Results = assetResults
+		return off
+	}
+
+	rule := "Rule: RSI 55+/45- with matching MACD sign"
+	if tf != "" {
+		rule += " · " + tf + " candles"
+	}
+	c.Facts = append(c.Facts, rule)
+	if agg4h {
+		c.Facts = append(c.Facts, yahooAgg4hNote)
+	}
+	if anyYahoo {
+		c.SourceNote = "FX/gold data: Yahoo Finance"
+	}
+	c.Verdict = strings.Join(verdictParts, " · ")
+	if lead == "" {
+		lead = "neutral"
+	}
+	c.Emoji = momentumEmoji(lead)
+	c.Short = strings.ToLower(lead)
+	c.Deviation = maxDev
 	return c
 }
 
@@ -944,13 +1129,36 @@ func classifyTrend(adx, ema50, ema200, closePrice float64) string {
 	}
 }
 
-// invalidationLevel is the price under which the trend structure no longer
-// holds: 1 ATR(14) below the lower edge of the EMA cluster
-// (min(EMA50, EMA200) − 1×ATR). One ATR of slack keeps ordinary noise from
-// reading as a break; a close beyond it means the EMA structure the verdict
-// stands on is gone. Pure math — rendered per asset tick via trimFloat.
+// invalidationLevel is the below-form invalidation: 1 ATR(14) below the lower
+// edge of the EMA cluster (min(EMA50, EMA200) − 1×ATR). One ATR of slack
+// keeps ordinary noise from reading as a break; a close beyond it means the
+// EMA structure the verdict stands on is gone.
 func invalidationLevel(ema50, ema200, atr float64) float64 {
 	return math.Min(ema50, ema200) - atr
+}
+
+// invalidationFor picks the invalidation level AND direction per state
+// (review fix 8): a DOWNTREND's structure breaks UPWARD — max(EMA50, EMA200)
+// + 1 ATR, worded "above" — while the uptrend and the non-directional states
+// keep the below-form (for flat/grey/conflict the below-form marks where the
+// bearish repricing of the EMA cluster completes; the direction ships
+// machine-readably as invalidation_side so no consumer has to parse wording).
+func invalidationFor(state string, ema50, ema200, atr float64) (float64, string) {
+	if state == trendDown {
+		return math.Max(ema50, ema200) + atr, "above"
+	}
+	return invalidationLevel(ema50, ema200, atr), "below"
+}
+
+// pullbackZoneFor gates the EMA20-EMA50 pullback band (B3): present ONLY in
+// confirmed-trend states — flat/grey/conflict have no trend to pull back
+// within, so offering an "entry band" there would be an invented signal. See
+// the PullbackZone type for why the band is the pullback target.
+func pullbackZoneFor(state string, ema20, ema50 float64) *PullbackZone {
+	if state != trendUp && state != trendDown {
+		return nil
+	}
+	return &PullbackZone{From: ema20, To: ema50}
 }
 
 func trendVerdict(state string, adx float64) string {
@@ -975,18 +1183,45 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 	}
 	closes := closesOf(candles)
 	highs, lows := highsLowsOf(candles)
+	ema20, ok20 := emaLast(closes, 20)
 	ema50, ok50 := emaLast(closes, 50)
 	ema200, ok200 := emaLast(closes, 200)
 	adx, okADX := adxWilder(highs, lows, closes, 14)
 	rsi, okRSI := rsiWilder(closes, 14)
-	if !ok50 || !ok200 || !okADX || !okRSI {
+	if !ok20 || !ok50 || !ok200 || !okADX || !okRSI {
 		c := insufficientCard(spec, "Trend Agent", "Trend", keyTrend, howTexts[keyTrend], "EMA200/ADX(14)")
 		c.DataTime = closeTimeOf(candles, spec.Interval)
 		return c
 	}
 	last := closes[len(closes)-1]
 
+	// HH/HL swing structure (B3, review fix 7) — the SAME swing points the
+	// S/R agent clusters (wing 3), classified over the last six ALTERNATING
+	// pivots. It PARTICIPATES in the state machine: an EMA/ADX-confirmed
+	// direction with a contradicting or mixed pivot structure demotes to the
+	// grey zone — the card must never say "Confirmed UPTREND" over LH/LL
+	// swings. An empty read ("" — too few pivots, e.g. a monotone series)
+	// does NOT demote: there is no structure evidence against the trend, and
+	// a clean monotone rise is the strongest trend there is.
+	swingHighs, swingLows := swingPointsIdx(highs, lows, 3)
+	structure := hhhlStructure(swingHighs, swingLows)
+
 	state := classifyTrend(adx, ema50, ema200, last)
+	structureDemoted := ""
+	switch {
+	case state == trendUp && structure == "lh_ll":
+		structureDemoted = "Structure disagrees (LH/LL) — trend not confirmed"
+	case state == trendUp && structure == "mixed":
+		structureDemoted = "Structure mixed — trend not confirmed"
+	case state == trendDown && structure == "hh_hl":
+		structureDemoted = "Structure disagrees (HH/HL) — trend not confirmed"
+	case state == trendDown && structure == "mixed":
+		structureDemoted = "Structure mixed — trend not confirmed"
+	}
+	if structureDemoted != "" {
+		state = trendGrey
+	}
+
 	c := Card{
 		Agent:      "Trend Agent",
 		ShortName:  "Trend",
@@ -996,28 +1231,57 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 		DataTime:   closeTimeOf(candles, spec.Interval),
 		Verdict:    trendVerdict(state, adx),
 	}
-	structure := "bearish structure"
+	emaStructure := "bearish structure"
 	if ema50 > ema200 {
-		structure = "bullish structure"
+		emaStructure = "bullish structure"
 	}
 	// ADX drives the verdict → its confirm threshold rides beside the number
 	// (batch-2 rule: thresholds in parentheses only where the number drives
 	// the verdict — RSI here is informational, so it carries none).
 	c.Facts = append(c.Facts,
-		fmt.Sprintf("EMA50 %s vs EMA200 %s — %s", trimFloat(ema50), trimFloat(ema200), structure),
+		fmt.Sprintf("EMA50 %s vs EMA200 %s — %s", trimFloat(ema50), trimFloat(ema200), emaStructure),
+	)
+	// One structure fact: the demotion wording when the gate fired, the plain
+	// read otherwise. Silent when the window has too few pivots to classify —
+	// no claim beats an invented one.
+	switch {
+	case structureDemoted != "":
+		c.Facts = append(c.Facts, structureDemoted)
+	case structure == "hh_hl":
+		c.Facts = append(c.Facts, "Structure: HH/HL confirmed (last 3 swing highs and lows rising)")
+	case structure == "lh_ll":
+		c.Facts = append(c.Facts, "Structure: LH/LL (last 3 swing highs and lows falling)")
+	case structure == "mixed":
+		c.Facts = append(c.Facts, "Structure: mixed (last swings not aligned)")
+	}
+	c.Facts = append(c.Facts,
 		fmt.Sprintf("ADX(14): %.1f (trend confirms above 25) · RSI(14): %.1f", adx, rsi),
 		fmt.Sprintf("Last %s close: %s", spec.Interval, trimFloat(last)),
 	)
-	// Invalidation: the price that breaks the structure this card reads.
-	// ATR(14) is guaranteed by the EMA200 history gate above; the >0 guard
-	// keeps a degenerate flat series from rendering a fake level.
+	// Pullback zone (B3): the EMA20-EMA50 band, confirmed trends only —
+	// rendered low-high for reading, raw EMA20/EMA50 in levels. A structure-
+	// demoted state is NOT confirmed, so it offers no zone.
+	zone := pullbackZoneFor(state, ema20, ema50)
+	if zone != nil {
+		lo, hi := math.Min(ema20, ema50), math.Max(ema20, ema50)
+		c.Facts = append(c.Facts, fmt.Sprintf("Pullback zone: %s-%s (EMA20-EMA50 band)",
+			trimFloat(lo), trimFloat(hi)))
+	}
+	// Invalidation: the price that breaks the structure this card reads —
+	// direction-aware (review fix 8: downtrends break UPWARD, above the EMA
+	// cluster). ATR(14) is guaranteed by the EMA200 history gate above; the
+	// >0 guard keeps a degenerate flat series from rendering a fake level.
 	if atrSeries := atrSeriesWilder(highs, lows, closes, 14); len(atrSeries) > 0 {
 		if atr := atrSeries[len(atrSeries)-1]; atr > 0 {
-			inv := invalidationLevel(ema50, ema200, atr)
+			inv, side := invalidationFor(state, ema50, ema200, atr)
+			prep := "under"
+			if side == "above" {
+				prep = "over"
+			}
 			c.Facts = append(c.Facts, fmt.Sprintf(
-				"Invalidation: below %s the structure is broken (1 ATR under the EMA cluster)",
-				trimFloat(inv)))
-			c.Levels = TrendLevels{Invalidation: inv} // raw float, envelope "levels"
+				"Invalidation: %s %s the structure is broken (1 ATR %s the EMA cluster)",
+				side, trimFloat(inv), prep))
+			c.Levels = TrendLevels{Invalidation: inv, InvalidationSide: side, PullbackZone: zone}
 		}
 	}
 	if spec.Source == srcYahoo {
@@ -1065,6 +1329,44 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 	}
 	sup, res := supportResistance(candles, 3, 0.5)
 	last := candles[len(candles)-1].Close
+	// Both sides empty is never "Key levels around …" (review fix 2). Two
+	// distinct causes, two honest states:
+	//   - ZERO swing points in the whole window (monotone/flat tape): there is
+	//     no structure to read at all — same class as a too-short series →
+	//     insufficient_history.
+	//   - swings exist but no cluster sits strictly on either side of the last
+	//     price: that IS a real finding — an explicit ok "no significant
+	//     levels" statement with empty arrays.
+	if len(sup) == 0 && len(res) == 0 {
+		hs, ls := highsLowsOf(candles)
+		sh, sl := swingPointsIdx(hs, ls, 3)
+		if len(sh)+len(sl) == 0 {
+			c := insufficientCard(spec, "S/R Agent", "S/R", keySR, howTexts[keySR], "swing structure")
+			c.DataTime = closeTimeOf(candles, spec.Interval)
+			return c
+		}
+		c := Card{
+			Emoji:      emojiNeutral,
+			Agent:      "S/R Agent",
+			ShortName:  "S/R",
+			Asset:      spec.Display,
+			Command:    keySR,
+			HowItWorks: howTexts[keySR],
+			DataTime:   closeTimeOf(candles, spec.Interval),
+			Verdict:    "No significant levels detected in the window",
+			Short:      "no significant levels",
+			Levels:     SRLevels{Supports: srPoints(nil), Resistances: srPoints(nil)},
+		}
+		c.Facts = append(c.Facts,
+			fmt.Sprintf("Swing points exist (%d), but no cluster sits clear of the last price %s", len(sh)+len(sl), trimFloat(last)),
+			fmt.Sprintf("Method: swing clusters over %d×%s candles · strength = touches + 0.5 per above-median-volume touch (strong from %d touches)",
+				len(candles), spec.Interval, srStrongTouches),
+		)
+		if spec.Source == srcYahoo {
+			decorateFX(&c)
+		}
+		return c
+	}
 	c := Card{
 		Emoji:      emojiNeutral,
 		Agent:      "S/R Agent",
@@ -1082,10 +1384,13 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 	if nl := nearestLevelLine(sup, res, last); nl != "" {
 		c.Facts = append(c.Facts, nl)
 	}
-	// Strength threshold beside the numbers (batch-2 rule): touch counts are
-	// the strength metric, so the method line names the bar they clear.
-	c.Facts = append(c.Facts, fmt.Sprintf("Method: swing clusters over %d×%s candles · strength = touch count (strong from %d touches)",
+	// Strength threshold beside the numbers (batch-2 rule) + the B4 formulas,
+	// stated on the card so the numbers are auditable. Frequency wording only.
+	c.Facts = append(c.Facts, fmt.Sprintf(
+		"Method: swing clusters over %d×%s candles · strength = touches + 0.5 per above-median-volume touch (strong from %d touches)",
 		len(candles), spec.Interval, srStrongTouches))
+	c.Facts = append(c.Facts,
+		"Tests: close within 0.25×ATR of a level = test · close beyond by >0.25×ATR within 3 bars = break, else held. Counts are frequencies over this window, not probabilities")
 	short := "no clear levels"
 	if len(res) > 0 && len(sup) > 0 {
 		short = fmt.Sprintf("R %s / S %s", srLevelLabel(res[0]), srLevelLabel(sup[0]))
@@ -1103,7 +1408,18 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 func srPoints(levels []SRLevel) []SRPoint {
 	pts := make([]SRPoint, 0, len(levels))
 	for _, l := range levels {
-		pts = append(pts, SRPoint{Level: l.Raw, Touches: l.Touches})
+		p := SRPoint{
+			Level:     l.Raw,
+			Touches:   l.Touches,
+			Strength:  l.Strength,
+			Weakening: l.Weakening,
+			Breaks:    l.Breaks,
+			Holds:     l.Holds,
+		}
+		if !l.LastTouch.IsZero() {
+			p.LastTouch = l.LastTouch.Format(time.RFC3339)
+		}
+		pts = append(pts, p)
 	}
 	return pts
 }
@@ -1156,7 +1472,16 @@ func srLine(levels []SRLevel) string {
 		if l.Touches == 1 {
 			word = "touch"
 		}
-		parts = append(parts, fmt.Sprintf("%s (%d %s)", srLevelLabel(l), l.Touches, word))
+		entry := fmt.Sprintf("%s (%d %s", srLevelLabel(l), l.Touches, word)
+		// B4: how the level actually behaved when tested — frequency counts
+		// over this window, never a probability.
+		if tests := l.Breaks + l.Holds; tests > 0 {
+			entry += fmt.Sprintf(", held %d of %d tests", l.Holds, tests)
+		}
+		if l.Weakening {
+			entry += ", weakening: volume fading"
+		}
+		parts = append(parts, entry+")")
 	}
 	return strings.Join(parts, " · ")
 }

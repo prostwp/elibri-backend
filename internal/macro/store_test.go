@@ -1,18 +1,15 @@
 package macro
 
 // store_test.go — offline tests for the in-memory macro store (latest map +
-// correlation ring + F&G). Mirrors funding/store_test.go: `now` is injected so
-// ring timestamps are deterministic.
+// daily-close history + F&G). The correlation window is DAILY closes (B2
+// rework): synthetic series with known Pearson answers, date alignment,
+// the 20-point minimum and the degenerate (flat) window.
 
 import (
 	"math"
 	"testing"
 	"time"
 )
-
-func fixedNow(t time.Time) func() time.Time {
-	return func() time.Time { return t }
-}
 
 // TestStore_SetQuoteLatestIsCopy: SetQuote stores per-symbol; Latest returns a
 // copy that the caller can mutate without racing the store.
@@ -98,107 +95,152 @@ func TestStore_SetQuoteCarriesLastKnownDate(t *testing.T) {
 	}
 }
 
-// TestStore_AddPointCapEvictsOldest: exceeding ringCap drops the oldest points.
-func TestStore_AddPointCapEvictsOldest(t *testing.T) {
-	s := NewStore()
-	base := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
-	s.now = fixedNow(base)
+// ── daily-close history (B2: 20-30d correlation window) ──────────────────────
 
-	total := ringCap + 5
-	for i := 0; i < total; i++ {
-		s.AddPoint(map[string]float64{SymBTC: float64(1000 + i)})
+// dayKey renders day offset i as the store's UTC date key, starting 2026-07-01.
+func dayKey(i int) string {
+	return time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, i).Format("2006-01-02")
+}
+
+// mkDaily builds n daily closes from a value function, dates ascending.
+func mkDaily(n int, val func(i int) float64) []DailyClose {
+	out := make([]DailyClose, n)
+	for i := range out {
+		out[i] = DailyClose{Date: dayKey(i), Close: val(i)}
 	}
-	if s.PointCount() != ringCap {
-		t.Fatalf("PointCount = %d, want cap %d", s.PointCount(), ringCap)
+	return out
+}
+
+// TestStore_SetDailyClosesCapAndCopy: more than dailyKeep closes → only the
+// LAST dailyKeep survive; the caller's slice is copied (later mutation does
+// not corrupt the store).
+func TestStore_SetDailyClosesCapAndCopy(t *testing.T) {
+	s := NewStore()
+	in := mkDaily(dailyKeep+5, func(i int) float64 { return float64(1000 + i) })
+	s.SetDailyCloses(SymBTC, in)
+
+	if got := s.DailyCount(SymBTC); got != dailyKeep {
+		t.Fatalf("DailyCount = %d, want cap %d", got, dailyKeep)
 	}
-	// The oldest surviving point must be index `total-ringCap` (5), so its BTC
-	// price is 1000+5. The OldestPrice helper reads exactly that.
-	oldest, ok := s.OldestPrice(SymBTC)
-	if !ok {
-		t.Fatalf("OldestPrice(BTC) not found")
-	}
-	wantOldest := float64(1000 + (total - ringCap))
-	if oldest != wantOldest {
-		t.Errorf("oldest BTC price = %v, want %v (older points evicted)", oldest, wantOldest)
+	// Mutate the caller's slice — the store must be isolated.
+	in[len(in)-1].Close = -1
+	coef, n := s.DailyCorrelation(SymBTC, SymBTC)
+	if coef == nil || *coef != 1 || n != dailyKeep {
+		t.Errorf("self-correlation after caller mutation = %v/%d, want 1/%d", coef, n, dailyKeep)
 	}
 }
 
-// TestStore_AddPointCopiesPrices: AddPoint copies the prices map so a later
-// mutation of the caller's map doesn't corrupt the ring.
-func TestStore_AddPointCopiesPrices(t *testing.T) {
+// TestStore_SetDailyClosesReplaces: a refetch REPLACES the history (the daily
+// fetch always serves the full trailing window — append would duplicate days).
+func TestStore_SetDailyClosesReplaces(t *testing.T) {
 	s := NewStore()
-	prices := map[string]float64{SymBTC: 70000}
-	s.AddPoint(prices)
-	prices[SymBTC] = 1 // mutate after handing over
-
-	got, ok := s.OldestPrice(SymBTC)
-	if !ok || got != 70000 {
-		t.Errorf("ring BTC price = %v ok=%v, want 70000 (copy isolated mutation)", got, ok)
+	s.SetDailyCloses(SymBTC, mkDaily(25, func(i int) float64 { return float64(i) }))
+	s.SetDailyCloses(SymBTC, mkDaily(10, func(i int) float64 { return float64(i) }))
+	if got := s.DailyCount(SymBTC); got != 10 {
+		t.Errorf("DailyCount after replace = %d, want 10", got)
 	}
 }
 
-// TestStore_CorrelationColdStart: an empty / under-filled ring → nil.
-func TestStore_CorrelationColdStart(t *testing.T) {
+// TestStore_DailyCorrelationKnownAnswer: synthetic series with a known Pearson.
+// SPX = 2×BTC + 5 → exactly +1; DXY = −BTC → exactly −1.
+func TestStore_DailyCorrelationKnownAnswer(t *testing.T) {
 	s := NewStore()
-	// Empty ring.
-	if c := s.Correlation(SymBTC, SymSPX); c != nil {
-		t.Errorf("Correlation(empty) = %v, want nil", *c)
+	s.SetDailyCloses(SymBTC, mkDaily(minDailyCorrPoints, func(i int) float64 { return float64(100 + 3*i) }))
+	s.SetDailyCloses(SymSPX, mkDaily(minDailyCorrPoints, func(i int) float64 { return float64(2*(100+3*i) + 5) }))
+	s.SetDailyCloses(SymDXY, mkDaily(minDailyCorrPoints, func(i int) float64 { return -float64(100 + 3*i) }))
+
+	coef, n := s.DailyCorrelation(SymBTC, SymSPX)
+	if coef == nil || math.Abs(*coef-1) > 1e-9 || n != minDailyCorrPoints {
+		t.Errorf("BTC↔SPX = %v/%d, want +1/%d", coef, n, minDailyCorrPoints)
 	}
-	// Fewer than minCorrPoints overlapping points → still nil.
-	for i := 0; i < minCorrPoints-1; i++ {
-		s.AddPoint(map[string]float64{SymBTC: float64(i), SymSPX: float64(2 * i)})
-	}
-	if c := s.Correlation(SymBTC, SymSPX); c != nil {
-		t.Errorf("Correlation(%d pts) = %v, want nil (<%d)", minCorrPoints-1, *c, minCorrPoints)
+	coef, n = s.DailyCorrelation(SymBTC, SymDXY)
+	if coef == nil || math.Abs(*coef+1) > 1e-9 || n != minDailyCorrPoints {
+		t.Errorf("BTC↔DXY = %v/%d, want −1/%d", coef, n, minDailyCorrPoints)
 	}
 }
 
-// TestStore_CorrelationEnoughPoints: ≥minCorrPoints perfectly-correlated points
-// → ≈+1.
-func TestStore_CorrelationEnoughPoints(t *testing.T) {
+// TestStore_DailyCorrelationAlignsByDate: BTC trades 7 days a week, SPX only
+// weekdays — only SHARED dates pair up. BTC weekend closes carry wild values
+// that would destroy the correlation if misaligned; on the shared dates the
+// series are perfectly linear → +1 over exactly the shared-day count.
+func TestStore_DailyCorrelationAlignsByDate(t *testing.T) {
 	s := NewStore()
-	for i := 0; i < minCorrPoints; i++ {
-		// SPX = 2×BTC + a constant → perfect positive correlation. Vary i so the
-		// series has non-zero variance.
-		s.AddPoint(map[string]float64{SymBTC: float64(100 + i), SymSPX: float64(2*(100+i) + 5)})
-	}
-	c := s.Correlation(SymBTC, SymSPX)
-	if c == nil {
-		t.Fatalf("Correlation(%d pts) = nil, want ≈+1", minCorrPoints)
-	}
-	if math.Abs(*c-1) > 1e-9 {
-		t.Errorf("Correlation = %v, want ≈+1", *c)
-	}
-}
-
-// TestStore_CorrelationSkipsMissingSymbol: points missing one symbol are skipped;
-// only overlapping points count, and if too few overlap → nil.
-func TestStore_CorrelationSkipsMissingSymbol(t *testing.T) {
-	s := NewStore()
-	// Add many points but only a handful have BOTH symbols.
-	for i := 0; i < minCorrPoints*2; i++ {
-		if i%10 == 0 {
-			s.AddPoint(map[string]float64{SymBTC: float64(i), SymSPX: float64(2 * i)})
-		} else {
-			s.AddPoint(map[string]float64{SymBTC: float64(i)}) // SPX missing
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC) // a Monday
+	var btc, spx []DailyClose
+	shared := 0
+	for i := 0; i < 30; i++ {
+		d := base.AddDate(0, 0, i)
+		key := d.Format("2006-01-02")
+		wd := d.Weekday()
+		if wd == time.Saturday || wd == time.Sunday {
+			btc = append(btc, DailyClose{Date: key, Close: 1e9}) // poison if misaligned
+			continue
 		}
+		shared++
+		btc = append(btc, DailyClose{Date: key, Close: float64(100 + i)})
+		spx = append(spx, DailyClose{Date: key, Close: float64(3*(100+i) + 7)})
 	}
-	// Overlapping pairs ≈ minCorrPoints*2/10 ≈ 6 < minCorrPoints → nil.
-	if c := s.Correlation(SymBTC, SymSPX); c != nil {
-		t.Errorf("Correlation(few overlaps) = %v, want nil", *c)
+	s.SetDailyCloses(SymBTC, btc)
+	s.SetDailyCloses(SymSPX, spx)
+
+	coef, n := s.DailyCorrelation(SymBTC, SymSPX)
+	if n != shared {
+		t.Fatalf("overlap = %d, want %d (weekday-only alignment)", n, shared)
+	}
+	if coef == nil || math.Abs(*coef-1) > 1e-9 {
+		t.Errorf("aligned correlation = %v, want +1 (weekend poison rows excluded)", coef)
 	}
 }
 
-// TestStore_CorrelationDegenerateWindow: enough overlapping points but every
-// value identical (weekend Friday closes) → nil via Pearson's zero-variance
-// guard.
-func TestStore_CorrelationDegenerateWindow(t *testing.T) {
+// TestStore_DailyCorrelationBelowMin: fewer than minDailyCorrPoints overlapping
+// days → nil coefficient, honest point count.
+func TestStore_DailyCorrelationBelowMin(t *testing.T) {
 	s := NewStore()
-	for i := 0; i < minCorrPoints; i++ {
-		s.AddPoint(map[string]float64{SymBTC: 70000, SymSPX: 7580})
+	n := minDailyCorrPoints - 1
+	s.SetDailyCloses(SymBTC, mkDaily(n, func(i int) float64 { return float64(i) }))
+	s.SetDailyCloses(SymSPX, mkDaily(n, func(i int) float64 { return float64(2 * i) }))
+	coef, got := s.DailyCorrelation(SymBTC, SymSPX)
+	if coef != nil {
+		t.Errorf("coef = %v, want nil (%d < %d points)", *coef, n, minDailyCorrPoints)
 	}
-	if c := s.Correlation(SymBTC, SymSPX); c != nil {
-		t.Errorf("Correlation(flat window) = %v, want nil (degenerate)", *c)
+	if got != n {
+		t.Errorf("points = %d, want %d", got, n)
+	}
+}
+
+// TestStore_DailyCorrelationEmpty: cold store → (nil, 0).
+func TestStore_DailyCorrelationEmpty(t *testing.T) {
+	s := NewStore()
+	if coef, n := s.DailyCorrelation(SymBTC, SymSPX); coef != nil || n != 0 {
+		t.Errorf("cold store = (%v, %d), want (nil, 0)", coef, n)
+	}
+}
+
+// TestStore_DailyCorrelationDegenerate: enough overlapping days but one series
+// flat → nil via Pearson's zero-variance guard; points still reported.
+func TestStore_DailyCorrelationDegenerate(t *testing.T) {
+	s := NewStore()
+	s.SetDailyCloses(SymBTC, mkDaily(minDailyCorrPoints, func(i int) float64 { return float64(i) }))
+	s.SetDailyCloses(SymSPX, mkDaily(minDailyCorrPoints, func(i int) float64 { return 7580 }))
+	coef, n := s.DailyCorrelation(SymBTC, SymSPX)
+	if coef != nil {
+		t.Errorf("coef = %v, want nil (flat series has no correlation)", *coef)
+	}
+	if n != minDailyCorrPoints {
+		t.Errorf("points = %d, want %d", n, minDailyCorrPoints)
+	}
+}
+
+// TestStore_DailyHistoryIndependentPerSymbol: histories don't bleed across
+// symbols; an unknown symbol reads as empty.
+func TestStore_DailyHistoryIndependentPerSymbol(t *testing.T) {
+	s := NewStore()
+	s.SetDailyCloses(SymBTC, mkDaily(25, func(i int) float64 { return float64(i) }))
+	if got := s.DailyCount(SymSPX); got != 0 {
+		t.Errorf("SPX DailyCount = %d, want 0", got)
+	}
+	if got := s.DailyCount(SymBTC); got != 25 {
+		t.Errorf("BTC DailyCount = %d, want 25", got)
 	}
 }
 
@@ -212,13 +254,5 @@ func TestStore_FnG(t *testing.T) {
 	f, has := s.FnG()
 	if !has || f.Value != 54 || f.Label != "Greed" {
 		t.Errorf("FnG = %+v has=%v, want {54 Greed} true", f, has)
-	}
-}
-
-// TestStore_OldestPriceEmpty: cold ring → (0,false).
-func TestStore_OldestPriceEmpty(t *testing.T) {
-	s := NewStore()
-	if v, ok := s.OldestPrice(SymBTC); ok || v != 0 {
-		t.Errorf("OldestPrice(empty) = (%v,%v), want (0,false)", v, ok)
 	}
 }

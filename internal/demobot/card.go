@@ -58,17 +58,53 @@ func (s cardStatus) reason() string {
 // never display-rounded. The HTTP envelope serves it verbatim as "levels";
 // Telegram rendering ignores it. nil for agents without levels.
 
-// TrendLevels — the price under which the trend structure this card reads is
-// broken (see invalidationLevel).
+// PullbackZone is the EMA20-EMA50 band served ONLY in confirmed-trend states
+// (B3). From = EMA20 (the shallow edge, nearer price), To = EMA50 (the deep,
+// trend-defining edge) — raw floats, unordered by size on purpose: in an
+// uptrend From > To, in a downtrend From < To.
+//
+// Why this band is the pullback target: in a confirmed trend price extends
+// away from its short averages between impulses and mean-reverts toward them;
+// EMA20 is the first dynamic edge a routine pullback touches, and EMA50 is the
+// same average the state machine reads — a close beyond it starts breaking
+// the structure. The honest "pullback with the trend intact" region is
+// therefore bounded by the two. Outside confirmed states there is no trend to
+// pull back within, so the field is absent.
+type PullbackZone struct {
+	From float64 `json:"from"` // EMA20
+	To   float64 `json:"to"`   // EMA50
+}
+
+// TrendLevels — the price at which the trend structure this card reads is
+// broken (see invalidationFor), plus the pullback band in confirmed states.
+// InvalidationSide ("below" | "above") makes the break direction machine-
+// readable: downtrends invalidate ABOVE the EMA cluster, everything else
+// below it (review fix 8) — additive field, old consumers ignore it.
 type TrendLevels struct {
-	Invalidation float64 `json:"invalidation"`
+	Invalidation     float64       `json:"invalidation"`
+	InvalidationSide string        `json:"invalidation_side"`
+	PullbackZone     *PullbackZone `json:"pullback_zone,omitempty"`
 }
 
 // SRPoint is one clustered level at raw precision (SRLevel.Raw — the cluster
-// mean, not the display-rounded integer) with its touch count.
+// mean, not the display-rounded integer) with its touch count and the B4
+// metrics. Formulas live on SRLevel / the indicator functions; the wire adds:
+//   - strength: touches + 0.5 per above-median-volume touch (== touches on
+//     volume-less FX series)
+//   - weakening: ≥7 touches with the last 3 touches' mean volume below the
+//     first 3's
+//   - breaks / holds: frequency counts of level tests over the window
+//     (test = close within 0.25×ATR; break = close beyond by >0.25×ATR
+//     within 3 bars) — frequencies, never probabilities
+//   - last_touch: RFC3339 UTC of the newest touch's bar time
 type SRPoint struct {
-	Level   float64 `json:"level"`
-	Touches int     `json:"touches"`
+	Level     float64 `json:"level"`
+	Touches   int     `json:"touches"`
+	Strength  float64 `json:"strength"`
+	Weakening bool    `json:"weakening"`
+	Breaks    int     `json:"breaks"`
+	Holds     int     `json:"holds"`
+	LastTouch string  `json:"last_touch"`
 }
 
 // SRLevels — strength-sorted supports/resistances. Both slices are always
@@ -82,6 +118,17 @@ type SRLevels struct {
 // VolLevels — ATR(14) now over its 30-bar average, unrounded.
 type VolLevels struct {
 	ExpansionRatio float64 `json:"expansion_ratio"`
+}
+
+// AssetResult is one asset's machine-readable outcome inside a multi-asset
+// momentum card (review fix 3): a mixed scan is no longer distinguishable
+// from a full one only by reading fact strings. OK mirrors the per-asset
+// read; Reason is nil when OK, else "insufficient_history" |
+// "source_offline". Served as the envelope's "results" (momentum only).
+type AssetResult struct {
+	Asset  string  `json:"asset"`
+	OK     bool    `json:"ok"`
+	Reason *string `json:"reason,omitempty"`
 }
 
 // Card is one agent's reply. RenderHTML produces the exact Telegram
@@ -107,6 +154,10 @@ type Card struct {
 	// Levels carries one of TrendLevels / SRLevels / VolLevels (or nil) —
 	// served verbatim as the envelope's "levels" object, ignored by Telegram.
 	Levels any
+	// Results is the per-asset machine outcome of a multi-asset momentum card
+	// (nil elsewhere) — served as the envelope's "results", ignored by
+	// Telegram (the facts carry the human form).
+	Results []AssetResult
 	// AIHTML is a pre-rendered AI block ("<b>AI idea:</b> <i>…</i>") appended
 	// after the facts and confidence bar. Builders MUST esc() every dynamic
 	// value when composing it — RenderHTML writes it verbatim.

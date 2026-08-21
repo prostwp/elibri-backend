@@ -14,18 +14,17 @@ package macro
 // Tests do:         the handler reads a fake implementing SnapshotReader.
 //
 // The interface is a strict read-only subset of *Store — the write-side methods
-// (SetQuote/AddPoint/SetFnG) never leak into the HTTP path.
+// (SetQuote/SetDailyCloses/SetFnG) never leak into the HTTP path.
 
 // SnapshotReader is the read surface the macro handler depends on.
 // Implementations: *Store (production) and any test fake.
 type SnapshotReader interface {
 	// Latest returns the latest-per-symbol quote map (a copy).
 	Latest() map[string]Quote
-	// Correlation returns Pearson(symA,symB) over the rolling window, or nil
-	// when there are too few overlapping points.
-	Correlation(symA, symB string) *float64
-	// PointCount reports the rolling-window size (for the window description).
-	PointCount() int
+	// DailyCorrelation returns Pearson(symA,symB) over the stored daily closes
+	// aligned by date, plus the overlapping-day count. Coefficient is nil under
+	// MinDailyCorrPoints overlapping days (or on a degenerate flat window).
+	DailyCorrelation(symA, symB string) (*float64, int)
 	// FnG returns the last valid Fear & Greed read and whether one was ever set.
 	FnG() (FnG, bool)
 }

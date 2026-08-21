@@ -18,20 +18,28 @@ import (
 // testEnvelope mirrors httpEnvelope for decoding responses in asserts.
 // Levels stays raw JSON so tests can assert exact shapes and absence.
 type testEnvelope struct {
-	Agent      string          `json:"agent"`
-	Asset      string          `json:"asset"`
-	OK         bool            `json:"ok"`
-	Reason     *string         `json:"reason"`
-	Verdict    string          `json:"verdict"`
-	Semaphore  string          `json:"semaphore"`
-	Facts      []string        `json:"facts"`
-	Levels     json.RawMessage `json:"levels"`
-	Confidence *int            `json:"confidence"`
-	AIText     *string         `json:"ai_text"`
-	Sections   []string        `json:"sections"`
-	DataAsOf   string          `json:"data_as_of"`
-	Disclaimer string          `json:"disclaimer"`
-	CardHTML   string          `json:"card_html"`
+	Agent      string            `json:"agent"`
+	Asset      string            `json:"asset"`
+	OK         bool              `json:"ok"`
+	Reason     *string           `json:"reason"`
+	Verdict    string            `json:"verdict"`
+	Semaphore  string            `json:"semaphore"`
+	Facts      []string          `json:"facts"`
+	Levels     json.RawMessage   `json:"levels"`
+	Results    []testAssetResult `json:"results"`
+	Confidence *int              `json:"confidence"`
+	AIText     *string           `json:"ai_text"`
+	Sections   []string          `json:"sections"`
+	DataAsOf   string            `json:"data_as_of"`
+	Disclaimer string            `json:"disclaimer"`
+	CardHTML   string            `json:"card_html"`
+}
+
+// testAssetResult mirrors the momentum envelopes' per-asset results entries.
+type testAssetResult struct {
+	Asset  string  `json:"asset"`
+	OK     bool    `json:"ok"`
+	Reason *string `json:"reason"`
 }
 
 // newTestAPI serves the real handler chain from an httptest server. relax
@@ -209,11 +217,17 @@ func TestHTTPAgentsListComplete(t *testing.T) {
 		if len(item.Examples) == 0 {
 			t.Errorf("%s: no example URLs", item.Name)
 		}
-		if assetAgents[item.Name] {
+		switch {
+		case assetAgents[item.Name]:
 			if strings.Join(item.Assets, ",") != wantAssets {
 				t.Errorf("%s: assets %v, want %v", item.Name, item.Assets, assetKeys())
 			}
-		} else if len(item.Assets) > 0 {
+		case item.Name == keyMacro:
+			// B2 asset views: lamp re-framings, not registry assets.
+			if strings.Join(item.Assets, ",") != strings.Join(macroAssetViews, ",") {
+				t.Errorf("macro: assets %v, want %v", item.Assets, macroAssetViews)
+			}
+		case len(item.Assets) > 0:
 			t.Errorf("%s: must not list assets, got %v", item.Name, item.Assets)
 		}
 	}
@@ -261,7 +275,7 @@ func TestHTTPBadArgs(t *testing.T) {
 	}{
 		{"/agents/trend?asset=doge", "unknown asset"},
 		{"/agents/momentum?asset=doge", "unknown asset"},
-		{"/agents/macro?asset=btc", "does not take an ?asset= parameter"},
+		{"/agents/macro?asset=eurusd", "unknown macro asset"}, // macro views are btc|gold only (B2)
 		{"/agents/digest?asset=btc", "does not take an ?asset= parameter"},
 		{"/agents/risk", "missing ?balance="},
 		{"/agents/risk?balance=10000&risk=1&entry=64000", "missing ?stop="},

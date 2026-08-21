@@ -64,13 +64,13 @@ func TestHTTPEnvelopeTrendLevelsGolden(t *testing.T) {
 		Verdict:  "Confirmed UPTREND",
 		Facts:    []string{"ADX(14): 31.0 (trend confirms above 25) · RSI(14): 62.0"},
 		DataTime: goldenTime,
-		Levels:   TrendLevels{Invalidation: 63297.5},
+		Levels:   TrendLevels{Invalidation: 63297.5, InvalidationSide: "below"},
 	}
 	got, err := encodeJSON(cardEnvelope(c))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"agent":"Trend Agent","asset":"BTC","ok":true,"reason":null,"verdict":"Confirmed UPTREND","semaphore":"bullish","facts":["ADX(14): 31.0 (trend confirms above 25) · RSI(14): 62.0"],"levels":{"invalidation":63297.5},"confidence":null,"ai_text":null,"data_as_of":"2026-08-18T06:00:00Z","disclaimer":"Analytics, not financial advice","card_html":"🟢 <b>Trend Agent</b> · BTC\n<b>Confirmed UPTREND</b>\n• ADX(14): 31.0 (trend confirms above 25) · RSI(14): 62.0\n\n<i>Analytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC</i>"}`
+	want := `{"agent":"Trend Agent","asset":"BTC","ok":true,"reason":null,"verdict":"Confirmed UPTREND","semaphore":"bullish","facts":["ADX(14): 31.0 (trend confirms above 25) · RSI(14): 62.0"],"levels":{"invalidation":63297.5,"invalidation_side":"below"},"confidence":null,"ai_text":null,"data_as_of":"2026-08-18T06:00:00Z","disclaimer":"Analytics, not financial advice","card_html":"🟢 <b>Trend Agent</b> · BTC\n<b>Confirmed UPTREND</b>\n• ADX(14): 31.0 (trend confirms above 25) · RSI(14): 62.0\n\n<i>Analytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC</i>"}`
 	if g := strings.TrimRight(string(got), "\n"); g != want {
 		t.Fatalf("levels golden mismatch:\ngot:  %s\nwant: %s", g, want)
 	}
@@ -102,7 +102,7 @@ func TestSRPointsRawPrecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(got)
-	if !strings.Contains(body, `"levels":{"supports":[{"level":1.15834,"touches":5}],"resistances":[]}`) {
+	if !strings.Contains(body, `"levels":{"supports":[{"level":1.15834,"touches":5,"strength":0,"weakening":false,"breaks":0,"holds":0,"last_touch":""}],"resistances":[]}`) {
 		t.Errorf("sr levels must serve the raw mean and [] for the empty side, got: %s", body)
 	}
 	if strings.Contains(body, `"level":1,`) || strings.Contains(body, `"level":1.1583,`) {
@@ -164,11 +164,12 @@ func TestHTTPLevelsPresenceEndToEnd(t *testing.T) {
 		t.Errorf("vol expansion_ratio must be a positive raw float: %v", vl.Ratio)
 	}
 
-	// sr on this monotonic stub: no swings cluster, but the levels object is
-	// still present with BOTH sides as [] — "we looked, nothing clustered".
-	env = get("/agents/sr")
-	if string(env.Levels) != `{"supports":[],"resistances":[]}` {
-		t.Errorf("sr levels on a swing-free series: got %s, want empty [] sides", env.Levels)
+	// sr on this monotone stub: zero swing points in the window → the honest
+	// degrade is a 503 insufficient_history (review fix 2), never a "real
+	// reading" whose levels are empty arrays.
+	srStatus, _, srBody := httpGet(t, srv.URL+"/agents/sr")
+	if srStatus != 503 || !strings.Contains(string(srBody), "insufficient_history") {
+		t.Errorf("sr on a swing-free series: status %d body %s, want 503 insufficient_history", srStatus, srBody)
 	}
 
 	// Agents without levels: the key is absent, never null/{}.
@@ -365,8 +366,9 @@ func TestHTTPStatusOfflineBackend(t *testing.T) {
 // Insufficient history: the source answers but the closed-bar series is too
 // short for the indicator set — a 503 whose reason is insufficient_history,
 // distinct from source_offline without parsing the error text. The same
-// 30-bar series still serves /agents/sr as a real (ok) reading: thresholds
-// are agent-specific.
+// 30-bar MONOTONE series also degrades /agents/sr: enough bars, but zero
+// swing structure to read (review blocker: never "Key levels around …" over
+// empty arrays).
 func TestHTTPStatusInsufficientHistory(t *testing.T) {
 	stubBinanceKlines(t, 30, func(i int) float64 { return 100 })
 	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
@@ -398,16 +400,17 @@ func TestHTTPStatusInsufficientHistory(t *testing.T) {
 	}
 
 	status, _, body := httpGet(t, srv.URL+"/agents/sr")
-	if status != 200 {
-		t.Fatalf("sr on 30 bars: status %d, want 200 (%s)", status, body)
+	if status != 503 {
+		t.Fatalf("sr on a 30-bar monotone: status %d, want 503 (%s)", status, body)
 	}
-	var env testEnvelope
-	if err := json.Unmarshal(body, &env); err != nil {
+	var e2 struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(body, &e2); err != nil {
 		t.Fatal(err)
 	}
-	if !env.OK || env.Reason != nil || env.Levels == nil {
-		t.Errorf("sr on 30 bars is a real reading with levels: ok=%v reason=%v levels=%s",
-			env.OK, env.Reason, env.Levels)
+	if e2.Reason != "insufficient_history" {
+		t.Errorf("sr monotone reason %q, want insufficient_history (zero swing points)", e2.Reason)
 	}
 }
 

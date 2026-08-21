@@ -2,70 +2,66 @@ package macro
 
 // store.go — thread-safe in-memory state for Macro Sentiment. NO database.
 //
-// Mirrors funding/store.go (single RWMutex, prune-on-write, copies handed out,
-// NewStore presizes). There is no Postgres in the ship path — a cold restart
-// loses the rolling window and the feed refills from the worker within a couple
-// of hours; the frontend frames a cold correlation window as the source's
-// nature, not a bug.
-//
-// Two independent states under one lock:
-//   (a) latest map[string]Quote — the last snapshot of each of the 6 symbols.
-//   (b) ring  []point           — a rolling FIFO of price snapshots, one per
-//       worker cycle, used for BTC↔X correlations.
+// Mirrors funding/store.go (single RWMutex, copies handed out, NewStore
+// presizes). Two independent states under one lock:
+//   (a) latest map[string]Quote      — the last snapshot of each of the 6 symbols.
+//   (b) daily  map[string][]DailyClose — the last 30 DAILY closes per symbol,
+//       used for the BTC↔X correlations (B2: a 20-30 trading-day window on
+//       daily closes replaced the old ~3h intraday ring).
 //   plus the last valid Fear & Greed read (best-effort overlay).
+//
+// Why in-memory is the honest option for the daily history (B2 "cheapest
+// honest option" check): unlike the old intraday ring — which needed ~1.2h of
+// uptime to rebuild after a restart and silently served "building" meanwhile —
+// the daily window is refetchable IN FULL from stooq's daily CSV in one
+// warm-start cycle. A cold restart is repaired within seconds of boot, so a
+// database would add operational surface without adding truth.
 
 import (
 	"sync"
-	"time"
 )
-
-// RingCap is the correlation-ring capacity, exported so the handler can render
-// an honest "(rolling)" suffix on the window description once the ring is full.
-const RingCap = ringCap
 
 const (
-	// ringCap caps the correlation ring. At the 3-min poll cadence one point is
-	// written per cycle → 64 points ≈ 3.2h of rolling window. Plenty for a
-	// stable intraday Pearson, and the memory is trivial (64 × ~6 float64).
-	// Oldest points drop from the front (FIFO), mirroring funding's count cap.
-	ringCap = 64
+	// dailyKeep caps the per-symbol daily history at the checklist window: the
+	// last 30 daily closes (~6 trading weeks for a 5-day symbol, 30 calendar
+	// days for 24/7 BTC).
+	dailyKeep = 30
 
-	// minCorrPoints is how many overlapping (both-symbols-present) points we need
-	// before computing a correlation. <24 pairs is a jumpy coefficient; 24 points
-	// ≈ 1.2h at the 3-min cadence. Below it we return nil → frontend shows
-	// "Building correlation window".
-	minCorrPoints = 24
+	// minDailyCorrPoints — a daily-close Pearson needs at least 20 overlapping
+	// trading days (checklist B2: 20-30d window). Below it the correlation is
+	// served absent (coef null / ok:false), never a jumpy small-sample number.
+	minDailyCorrPoints = 20
 )
 
-// point is one rolling snapshot: the cycle timestamp + the prices of whichever
-// symbols were OK in that cycle (an N/D symbol is simply absent from the map).
-type point struct {
-	ts     time.Time
-	prices map[string]float64
+// MinDailyCorrPoints is minDailyCorrPoints exported for the HTTP handler's
+// window description ("N daily closes, min 20 for a read").
+const MinDailyCorrPoints = minDailyCorrPoints
+
+// DailyClose is one trading day's close for a symbol. Date is the UTC day key
+// ("2006-01-02") straight from the stooq daily CSV — cross-symbol alignment
+// happens on this key, never on wall-clock arithmetic (BTC trades 7 days a
+// week, the tradfin symbols 5; only shared dates pair up).
+type DailyClose struct {
+	Date  string
+	Close float64
 }
 
 // Store is the in-memory Macro Sentiment state. The zero value is NOT ready —
-// use NewStore (it presizes the ring). All methods are safe for concurrent use;
-// the worker calls SetQuote/AddPoint/SetFnG, the handler calls
-// Latest/Correlation/PointCount/FnG.
+// use NewStore. All methods are safe for concurrent use; the worker calls
+// SetQuote/SetDailyCloses/SetFnG, the handler calls Latest/DailyCorrelation/FnG.
 type Store struct {
 	mu     sync.RWMutex
 	latest map[string]Quote
-	ring   []point
+	daily  map[string][]DailyClose
 	fng    FnG
 	hasFnG bool
-
-	// now is injectable for deterministic tests; defaults to time.Now. Never nil
-	// after NewStore.
-	now func() time.Time
 }
 
-// NewStore returns an empty Store with the ring presized to ringCap.
+// NewStore returns an empty Store.
 func NewStore() *Store {
 	return &Store{
 		latest: make(map[string]Quote),
-		ring:   make([]point, 0, ringCap),
-		now:    time.Now,
+		daily:  make(map[string][]DailyClose),
 	}
 }
 
@@ -91,22 +87,56 @@ func (s *Store) SetQuote(q Quote) {
 	s.latest[q.Symbol] = q
 }
 
-// AddPoint appends one rolling snapshot of the given prices (only OK symbols
-// from this cycle) and prunes the ring to ringCap (FIFO, oldest dropped). The
-// prices map is copied so the caller may mutate or retain theirs without racing
-// the store.
-func (s *Store) AddPoint(prices map[string]float64) {
-	cp := make(map[string]float64, len(prices))
-	for k, v := range prices {
-		cp[k] = v
+// SetDailyCloses REPLACES the symbol's daily history with the given
+// date-ascending series, keeping only the last dailyKeep entries. Replacement
+// (not append) keeps the store idempotent across refetches: the daily fetch
+// always serves the full trailing window, so appending would duplicate days.
+// The slice is copied — the caller may mutate or retain theirs.
+func (s *Store) SetDailyCloses(symbol string, closes []DailyClose) {
+	if len(closes) > dailyKeep {
+		closes = closes[len(closes)-dailyKeep:]
 	}
+	cp := make([]DailyClose, len(closes))
+	copy(cp, closes)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ring = append(s.ring, point{ts: s.now(), prices: cp})
-	if len(s.ring) > ringCap {
-		drop := len(s.ring) - ringCap
-		s.ring = append(s.ring[:0], s.ring[drop:]...)
+	s.daily[symbol] = cp
+}
+
+// DailyCount reports the stored daily-history length for one symbol.
+func (s *Store) DailyCount(symbol string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.daily[symbol])
+}
+
+// DailyCorrelation computes Pearson(symA, symB) over the daily closes, pairing
+// values by calendar date (UTC day key) — only dates present in BOTH histories
+// count. Returns the coefficient (nil under minDailyCorrPoints overlapping
+// days, or on a degenerate zero-variance window) and the overlap count, so the
+// handler can serve an honest ok:false + points instead of a fabricated number.
+func (s *Store) DailyCorrelation(symA, symB string) (*float64, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	byDate := make(map[string]float64, len(s.daily[symA]))
+	for _, d := range s.daily[symA] {
+		byDate[d.Date] = d.Close
 	}
+	xs := make([]float64, 0, len(s.daily[symB]))
+	ys := make([]float64, 0, len(s.daily[symB]))
+	for _, d := range s.daily[symB] {
+		a, ok := byDate[d.Date]
+		if !ok {
+			continue
+		}
+		xs = append(xs, a)
+		ys = append(ys, d.Close)
+	}
+	if len(xs) < minDailyCorrPoints {
+		return nil, len(xs)
+	}
+	return Pearson(xs, ys), len(xs)
 }
 
 // SetFnG records the last valid Fear & Greed read (best-effort overlay).
@@ -127,57 +157,6 @@ func (s *Store) Latest() map[string]Quote {
 		out[k] = v
 	}
 	return out
-}
-
-// Correlation computes Pearson(BTC-ish symA, symB) over the ring, using only
-// points where BOTH symbols are present. <minCorrPoints overlapping points →
-// nil. A degenerate window (every value identical — e.g. weekend Friday closes)
-// makes Pearson return nil via its zero-variance guard, which the frontend
-// renders as "Building window" (honest: a flat window has no computable
-// correlation).
-func (s *Store) Correlation(symA, symB string) *float64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	xs := make([]float64, 0, len(s.ring))
-	ys := make([]float64, 0, len(s.ring))
-	for _, p := range s.ring {
-		a, okA := p.prices[symA]
-		b, okB := p.prices[symB]
-		if !okA || !okB {
-			continue
-		}
-		xs = append(xs, a)
-		ys = append(ys, b)
-	}
-	if len(xs) < minCorrPoints {
-		return nil
-	}
-	return Pearson(xs, ys)
-}
-
-// PointCount reports the current ring size. Used for the window description
-// string and the tests.
-func (s *Store) PointCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.ring)
-}
-
-// OldestPrice returns the price of symbol in the OLDEST ring point that contains
-// it (front = oldest), and whether such a point exists. A read accessor over the
-// FIFO ring used by store_test to assert eviction + copy isolation; it is not on
-// the request path (the lamp delta is the session change carried on Quote.Open,
-// not a ring lookup).
-func (s *Store) OldestPrice(symbol string) (float64, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, p := range s.ring {
-		if v, ok := p.prices[symbol]; ok {
-			return v, true
-		}
-	}
-	return 0, false
 }
 
 // FnG returns the last valid Fear & Greed read and whether one was ever set.

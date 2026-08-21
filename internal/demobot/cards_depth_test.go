@@ -543,18 +543,21 @@ func TestTrendCardInvalidationAndADXThreshold(t *testing.T) {
 // ── /sr: strength threshold beside the touch counts ──────────────────────────
 
 func TestSRCardStrengthThreshold(t *testing.T) {
-	stubBinanceKlines(t, 250, func(i int) float64 { return 100 })
+	// A swinging fixture — a monotone series now honestly degrades to
+	// insufficient_history (zero swing structure), so the method lines need a
+	// series with real levels.
+	stubBinanceCandles(t, srCardCycleCandles(250, func(int) float64 { return 100 }))
 	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
 	c := ag.SRCard(context.Background(), btcSpec)
 
 	found := false
 	for _, f := range c.Facts {
-		if strings.HasPrefix(f, "Method: ") && strings.Contains(f, "strength = touch count (strong from 7 touches)") {
+		if strings.HasPrefix(f, "Method: ") && strings.Contains(f, "strength = touches + 0.5 per above-median-volume touch (strong from 7 touches)") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("method line must document the strength threshold: %v", c.Facts)
+		t.Errorf("method line must document the strength formula + threshold: %v", c.Facts)
 	}
 }
 

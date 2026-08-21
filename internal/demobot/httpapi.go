@@ -79,13 +79,16 @@ type httpEnvelope struct {
 	// Levels is the machine-readable numeric companion for level-bearing
 	// agents: trend {"invalidation"}, sr {"supports","resistances"}, vol
 	// {"expansion_ratio"} — raw precision floats. Absent for other agents.
-	Levels     any      `json:"levels,omitempty"`
-	Confidence *int     `json:"confidence"`         // 0-100, null when the source gave none
-	AIText     *string  `json:"ai_text"`            // plain-text AI block, null when absent
-	Sections   []string `json:"sections,omitempty"` // digest only: the one-liners
-	DataAsOf   string   `json:"data_as_of"`         // RFC3339, same stamp as the card footer
-	Disclaimer string   `json:"disclaimer"`
-	CardHTML   string   `json:"card_html"` // the exact Telegram HTML card
+	Levels any `json:"levels,omitempty"`
+	// Results is the per-asset outcome array of multi-asset momentum cards
+	// ({"asset","ok","reason"}) — absent for every other agent.
+	Results    []AssetResult `json:"results,omitempty"`
+	Confidence *int          `json:"confidence"`         // 0-100, null when the source gave none
+	AIText     *string       `json:"ai_text"`            // plain-text AI block, null when absent
+	Sections   []string      `json:"sections,omitempty"` // digest only: the one-liners
+	DataAsOf   string        `json:"data_as_of"`         // RFC3339, same stamp as the card footer
+	Disclaimer string        `json:"disclaimer"`
+	CardHTML   string        `json:"card_html"` // the exact Telegram HTML card
 }
 
 // semaphoreOf maps the card emoji contract to the JSON semaphore words.
@@ -132,6 +135,7 @@ func cardEnvelope(c Card) httpEnvelope {
 		Semaphore:  semaphoreOf(c.Emoji),
 		Facts:      append([]string{}, c.Facts...), // [] not null when empty
 		Levels:     c.Levels,
+		Results:    c.Results,
 		DataAsOf:   c.DataTime.UTC().Format(time.RFC3339),
 		Disclaimer: disclaimerText,
 		CardHTML:   c.RenderHTML(),
@@ -344,6 +348,15 @@ func (s *HTTPServer) handleList(w http.ResponseWriter, _ *http.Request) {
 			info.Assets = assetKeys()
 			info.Examples = append(info.Examples, "/agents/"+name+"?asset=eurusd")
 		}
+		if name == keyMomentum {
+			// B1: user-configured scan + timeframe.
+			info.Examples = append(info.Examples, "/agents/momentum?assets=btc,eurusd,gold&tf=1d")
+		}
+		if name == keyMacro {
+			// The macro asset views (B2) — lamp re-framings, not registry assets.
+			info.Assets = append([]string{}, macroAssetViews...)
+			info.Examples = append(info.Examples, "/agents/macro?asset=gold")
+		}
 		if name == keyRisk {
 			info.Examples = []string{"/agents/risk?balance=10000&risk=1&entry=64000&stop=62500"}
 		}
@@ -374,17 +387,50 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := r.URL.Query()
+	// Repeated parameters are a client bug, never a silent first-wins
+	// (review fix 5: ?assets=btc&assets=eth used to scan only BTC).
+	for _, p := range []string{"asset", "assets", "tf"} {
+		if len(q[p]) > 1 {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf("duplicate parameter %q — pass it once", p))
+			return
+		}
+	}
 	asset := strings.TrimSpace(q.Get("asset"))
-	if asset != "" && !assetAgents[name] {
+	if asset != "" && !assetAgents[name] && name != keyMacro {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("agent %q does not take an ?asset= parameter", name))
 		return
+	}
+	// ?assets= (comma scan) and ?tf= are momentum-only (B1) — anywhere else
+	// they would suggest a configurability the agent doesn't have.
+	if name != keyMomentum {
+		if _, has := q["assets"]; has {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf("agent %q does not take a ?assets= parameter", name))
+			return
+		}
+		if _, has := q["tf"]; has {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf("agent %q does not take a ?tf= parameter", name))
+			return
+		}
 	}
 
 	ctx := r.Context()
 	switch name {
 	case keyMacro:
-		card, _ := s.ag.MacroCard(ctx)
-		s.writeCard(w, card)
+		// ?asset=btc|gold re-frames the lamps for that asset (B2); no param =
+		// the global regime card. Strictly the two view keys — the macro read
+		// is a lamp re-framing, not a candle asset from the trading registry.
+		if asset == "" {
+			card, _ := s.ag.MacroCard(ctx)
+			s.writeCard(w, card)
+			return
+		}
+		view := strings.ToLower(asset)
+		if view != macroAssetBTC && view != macroAssetGold {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf(
+				"unknown macro asset %q — allowed: %s", asset, strings.Join(macroAssetViews, ", ")))
+			return
+		}
+		s.writeCard(w, s.ag.MacroAssetCard(ctx, view))
 	case keyWhale:
 		s.writeCard(w, s.ag.WhaleCard(ctx))
 	case keyFunding:
@@ -394,16 +440,46 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 	case keyNews:
 		s.writeCard(w, s.ag.NewsCard(ctx))
 	case keyMomentum:
-		if asset == "" { // multi-asset default, exactly like typing /momentum
+		// B1: ?assets=btc,eurusd (max 6, registry-validated) + ?tf=1h|4h|1d.
+		tf := strings.ToLower(strings.TrimSpace(q.Get("tf")))
+		if tf != "" && !momentumTFs[tf] {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf("unknown timeframe %q — allowed: %s", tf, momentumTFList))
+			return
+		}
+		assetsRaw, hasAssets := q["assets"]
+		switch {
+		case hasAssets && asset != "":
+			writeErr(w, http.StatusBadRequest, "use either ?asset= (single) or ?assets= (comma scan), not both")
+		case hasAssets:
+			raw := strings.TrimSpace(assetsRaw[0])
+			if raw == "" {
+				writeErr(w, http.StatusBadRequest, "empty ?assets= — a comma list like btc,eurusd,gold")
+				return
+			}
+			keys, err := parseAssetList(raw)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			s.writeCard(w, s.ag.MomentumScanCard(ctx, keys, tf))
+		case asset == "" && tf != "":
+			// tf alone re-bases the default trio on the requested timeframe.
+			s.writeCard(w, s.ag.MomentumScanCard(ctx, defaultMomentumKeys, tf))
+		case asset == "": // multi-asset default, exactly like typing /momentum
 			s.writeCard(w, s.ag.MomentumCard(ctx))
-			return
+		default:
+			spec, err := resolveAsset(asset)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			spec, err = specWithTF(spec, tf)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			s.writeCard(w, s.ag.MomentumAssetCard(ctx, spec))
 		}
-		spec, err := resolveAsset(asset)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		s.writeCard(w, s.ag.MomentumAssetCard(ctx, spec))
 	case keyTrend, keySR, keyVol:
 		spec, err := resolveAsset(asset) // "" resolves to BTC, same as the bot
 		if err != nil {

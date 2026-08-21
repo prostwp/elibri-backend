@@ -47,20 +47,84 @@ var assetAliases = map[string]string{
 // fxPairs is the /fx overview set, in render order.
 var fxPairs = []string{"eurusd", "gbpusd", "usdjpy", "xauusd"}
 
+// defaultMomentumKeys is the default /momentum trio in scan form — used when
+// only a timeframe is requested (B1: "/momentum 1d", "?tf=1d").
+var defaultMomentumKeys = []string{"btc", "eth", "xauusd"}
+
 // resolveAsset maps a user-typed argument to an assetSpec. Empty argument =
 // BTC, matching the original command behavior.
 func resolveAsset(arg string) (assetSpec, error) {
 	if strings.TrimSpace(arg) == "" {
 		return btcSpec, nil
 	}
+	key, err := resolveAssetKey(arg)
+	if err != nil {
+		return assetSpec{}, err
+	}
+	return assetTable[key], nil
+}
+
+// resolveAssetKey maps a user-typed argument to its canonical registry key.
+func resolveAssetKey(arg string) (string, error) {
 	key := strings.ToLower(strings.TrimSpace(arg))
 	if canonical, ok := assetAliases[key]; ok {
 		key = canonical
 	}
-	if spec, ok := assetTable[key]; ok {
+	if _, ok := assetTable[key]; ok {
+		return key, nil
+	}
+	return "", fmt.Errorf("unknown asset %q — try: btc, eth, eurusd, gbpusd, usdjpy, xau/gold", arg)
+}
+
+// scanMaxAssets caps one momentum scan (B1: "up to 6" — the registry size).
+const scanMaxAssets = 6
+
+// parseAssetList validates a comma list against the registry (B1): every
+// entry must resolve (aliases allowed), duplicates collapse to the first
+// appearance, at most scanMaxAssets RAW entries. Errors carry the offending
+// entry and the allowed list so a 400 is self-explanatory.
+func parseAssetList(raw string) ([]string, error) {
+	entries := strings.Split(raw, ",")
+	if len(entries) > scanMaxAssets {
+		return nil, fmt.Errorf("too many assets (%d) — up to %d per scan", len(entries), scanMaxAssets)
+	}
+	seen := map[string]bool{}
+	keys := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if strings.TrimSpace(e) == "" {
+			return nil, fmt.Errorf("empty asset entry in %q — use a plain comma list like btc,eurusd", raw)
+		}
+		key, err := resolveAssetKey(e)
+		if err != nil {
+			return nil, err
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+// momentumTFs are the timeframes the momentum scan accepts (B1). Binance
+// serves all three natively; Yahoo serves 1h and 1d natively while 4h is
+// honestly aggregated from 1h (see fetchYahooCandlesTF).
+var momentumTFs = map[string]bool{"1h": true, "4h": true, "1d": true}
+
+const momentumTFList = "1h, 4h, 1d"
+
+// specWithTF re-bases a spec on the requested timeframe; "" keeps the asset's
+// native interval.
+func specWithTF(spec assetSpec, tf string) (assetSpec, error) {
+	if tf == "" {
 		return spec, nil
 	}
-	return assetSpec{}, fmt.Errorf("unknown asset %q — try: btc, eth, eurusd, gbpusd, usdjpy, xau/gold", arg)
+	if !momentumTFs[tf] {
+		return assetSpec{}, fmt.Errorf("unknown timeframe %q — allowed: %s", tf, momentumTFList)
+	}
+	spec.Interval = tf
+	return spec, nil
 }
 
 // ── Market hours ─────────────────────────────────────────────────────────────

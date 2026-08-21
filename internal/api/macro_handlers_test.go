@@ -35,8 +35,8 @@ import (
 // fakeMacroReader implements macro.SnapshotReader with canned data.
 type fakeMacroReader struct {
 	latest map[string]macro.Quote
-	corr   map[string]*float64 // keyed by symX
-	points int
+	corr   map[string]*float64 // keyed by symX (daily-window coefficient)
+	points int                 // overlapping daily closes reported per pair
 	fng    macro.FnG
 	hasFnG bool
 }
@@ -49,9 +49,10 @@ func (f *fakeMacroReader) Latest() map[string]macro.Quote {
 	return out
 }
 
-func (f *fakeMacroReader) Correlation(_, symB string) *float64 { return f.corr[symB] }
-func (f *fakeMacroReader) PointCount() int                     { return f.points }
-func (f *fakeMacroReader) FnG() (macro.FnG, bool)              { return f.fng, f.hasFnG }
+func (f *fakeMacroReader) DailyCorrelation(_, symB string) (*float64, int) {
+	return f.corr[symB], f.points
+}
+func (f *fakeMacroReader) FnG() (macro.FnG, bool) { return f.fng, f.hasFnG }
 
 var _ macro.SnapshotReader = (*fakeMacroReader)(nil)
 
@@ -172,7 +173,7 @@ func TestMacro_Populated(t *testing.T) {
 			macro.SymGold: ptrF(0.12),
 			macro.SymDXY:  ptrF(-0.64),
 		},
-		points: 52,
+		points: 24, // overlapping daily closes (B2 window)
 		fng:    macro.FnG{Value: 23, Label: "Extreme Fear", OK: true},
 		hasFnG: true,
 	}
@@ -244,8 +245,16 @@ func TestMacro_Populated(t *testing.T) {
 	if corrByPair[macro.PairBTCDXY].Label != "inverse to the dollar" {
 		t.Errorf("btc_dxy label = %q, want 'inverse to the dollar'", corrByPair[macro.PairBTCDXY].Label)
 	}
-	if corrByPair[macro.PairBTCSPX].Window == "" {
-		t.Errorf("window string empty, want a description")
+	// B2 additive fields: ok mirrors coef presence, points is the overlap
+	// count, window describes the DAILY window.
+	if !corrByPair[macro.PairBTCSPX].OK {
+		t.Errorf("btc_spx ok = false, want true (coef present)")
+	}
+	if corrByPair[macro.PairBTCSPX].Points != 24 {
+		t.Errorf("btc_spx points = %d, want 24", corrByPair[macro.PairBTCSPX].Points)
+	}
+	if corrByPair[macro.PairBTCSPX].Window != "24 daily closes (20-30d window)" {
+		t.Errorf("window = %q, want the daily-window description", corrByPair[macro.PairBTCSPX].Window)
 	}
 
 	// F&G forwarded.
@@ -302,10 +311,13 @@ func TestMacro_StaleQuotes(t *testing.T) {
 	if body.Fng == nil || !body.Fng.OK {
 		t.Errorf("fng = %+v, want live (crypto is 24/7)", body.Fng)
 	}
-	// Cold ring → all coefs null.
+	// Cold daily window → all coefs null, ok:false.
 	for _, c := range body.Correlations {
 		if c.Coef != nil {
-			t.Errorf("corr %s coef = %v, want null (cold ring)", c.Pair, *c.Coef)
+			t.Errorf("corr %s coef = %v, want null (cold daily window)", c.Pair, *c.Coef)
+		}
+		if c.OK {
+			t.Errorf("corr %s ok = true, want false (no coefficient)", c.Pair)
 		}
 	}
 }

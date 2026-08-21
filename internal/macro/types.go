@@ -92,12 +92,22 @@ type Lamp struct {
 	AsOf     string   `json:"as_of"`     // ISO RFC3339 of the last KNOWN source date — filled even when Value is nil (stale N/D quote), "" only when the source never carried a date
 }
 
-// Correlation — BTC↔X over the rolling window (a compute output).
+// Correlation — BTC↔X over the daily-close window (a compute output).
+//
+// B2 rework: the coefficient is Pearson over the last 20-30 DAILY closes
+// (stooq daily history, date-aligned), replacing the old ~3h intraday ring.
+// Wire shape is backward compatible: pair/coef/label/window keep their names
+// and types; OK and Points are ADDITIVE fields (older consumers ignore them).
 type Correlation struct {
 	Pair   string   `json:"pair"`   // "btc_spx"|"btc_gold"|"btc_dxy"
-	Coef   *float64 `json:"coef"`   // nil when too few points / NaN → UI "Building correlation window"
+	Coef   *float64 `json:"coef"`   // nil when too few points / degenerate → UI "Building correlation window"
 	Label  string   `json:"label"`  // "moving like stocks" etc.; "" when coef==nil
-	Window string   `json:"window"` // "≈3h (52 points)" — human description of the window
+	Window string   `json:"window"` // "24 daily closes (20-30d window)" — human description
+	// OK is true when Coef was computed (≥ MinDailyCorrPoints overlapping daily
+	// closes, non-degenerate). ok:false + coef:null = window still building.
+	OK bool `json:"ok"`
+	// Points is the overlapping daily-close count behind the read (0..30).
+	Points int `json:"points"`
 }
 
 // FnG — crypto Fear & Greed cross-check (alternative.me).

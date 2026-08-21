@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -47,17 +48,47 @@ const (
 	// latest, cheaper than waiting on a backend cycle.)
 	defaultInterval = 3 * time.Minute
 
-	// defaultStooqBase / defaultFngURL are the public, keyless endpoints.
-	defaultStooqBase = "https://stooq.com/q/l/"
-	defaultFngURL    = "https://api.alternative.me/fng/?limit=1"
+	// defaultStooqBase / defaultStooqDailyBase / defaultFngURL are the public,
+	// keyless endpoints. The daily base serves historical CSV (Date,Open,High,
+	// Low,Close,Volume) for the B2 correlation window.
+	defaultStooqBase      = "https://stooq.com/q/l/"
+	defaultStooqDailyBase = "https://stooq.com/q/d/l/"
+	defaultFngURL         = "https://api.alternative.me/fng/?limit=1"
 
 	// defaultHTTPTimeout caps a single HTTP request.
 	defaultHTTPTimeout = 10 * time.Second
 
-	// fetcherCtxTimeout caps one full fan-out cycle (6 symbols + F&G). 30s = 3×
-	// the per-request timeout — slack for the slowest while keeping the next tick
-	// on schedule (mirrors whale's defaultFetcherCtxTimeout).
-	fetcherCtxTimeout = 30 * time.Second
+	// Per-phase context budgets (review fix 13): quotes, daily history and
+	// F&G each run under their OWN timeout, so a hanging quote endpoint can
+	// exhaust only its own phase — the daily window and the F&G overlay still
+	// get their turn within the same cycle.
+	defaultQuotesBudget = 20 * time.Second
+	defaultDailyBudget  = 30 * time.Second
+	defaultFngBudget    = 10 * time.Second
+
+	// dailyRefreshEvery is the daily-history cadence: once a day per symbol
+	// (checklist B2). Checked on the 3-min tick, so a due fetch lands within
+	// one tick of the 24h boundary. On total failure the stamp is NOT advanced,
+	// so the next tick retries instead of waiting a day on nothing.
+	dailyRefreshEvery = 24 * time.Hour
+
+	// dailyFetchCalendarDays bounds the d1..d2 request window: 30 trading days
+	// for a 5-day-week symbol span ~42 calendar days; 60 adds holiday slack
+	// while keeping the response tiny (~45 rows).
+	dailyFetchCalendarDays = 60
+
+	// dailyMaxAgeDays is the honesty guard on parsed daily rows: anything older
+	// is dropped before storing. If stooq ever ignored d1/d2 and the body-size
+	// cap truncated the RECENT tail away, the surviving ancient rows would
+	// otherwise be served as "the last 30 days" — with the guard the symbol
+	// degrades to an empty history (correlation ok:false) instead.
+	dailyMaxAgeDays = 90
+
+	// maxQuoteBody / maxDailyBody cap the response reads. Quote rows and the
+	// F&G JSON are tiny (64 KiB is generous); the ranged daily CSV is ~45 rows
+	// but gets 1 MiB of slack in case the range parameters are ignored.
+	maxQuoteBody = 64 << 10
+	maxDailyBody = 1 << 20
 )
 
 // allSymbols is the fetch order for one cycle. BTC is included (24/7) for the
@@ -68,12 +99,34 @@ var allSymbols = []string{SymSPX, SymVIX, SymDXY, SymGold, SymRates, SymBTC}
 // default (Logger → log.Default, HTTPClient → 10s, Interval → 3min, URLs → the
 // public endpoints). The zero value is NOT usable — Store must be set.
 type Worker struct {
-	Store      *Store
-	Logger     *log.Logger   // nil → log.Default()
-	HTTPClient *http.Client  // nil → &http.Client{Timeout: 10s}
-	Interval   time.Duration // 0 → defaultInterval
-	StooqBase  string        // "" → defaultStooqBase (override for tests)
-	FngURL     string        // "" → defaultFngURL (override for tests)
+	Store          *Store
+	Logger         *log.Logger   // nil → log.Default()
+	HTTPClient     *http.Client  // nil → &http.Client{Timeout: 10s}
+	Interval       time.Duration // 0 → defaultInterval
+	StooqBase      string        // "" → defaultStooqBase (override for tests)
+	StooqDailyBase string        // "" → defaultStooqDailyBase (override for tests)
+	FngURL         string        // "" → defaultFngURL (override for tests)
+
+	// Per-phase budgets; 0 → the defaults above (overridable for tests).
+	QuotesBudget time.Duration
+	DailyBudget  time.Duration
+	FngBudget    time.Duration
+
+	// lastDaily is the last SUCCESSFUL daily-history fetch (≥1 symbol stored).
+	// Only refresh touches it, and refresh runs on Run's single goroutine — no
+	// lock needed. Zero on boot → the warm-start cycle fetches immediately.
+	lastDaily time.Time
+
+	// now is injectable for deterministic once-a-day tests; nil → time.Now.
+	now func() time.Time
+}
+
+// clock returns the injected clock or time.Now.
+func (w *Worker) clock() time.Time {
+	if w.now != nil {
+		return w.now()
+	}
+	return time.Now()
 }
 
 // Run blocks until ctx is cancelled. Returns the ctx error on cancellation so
@@ -107,21 +160,27 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// refresh runs one poll cycle: fetch the 6 symbols → SetQuote each → AddPoint
-// the OK prices → fetch F&G → SetFnG. Best-effort: every fetch/parse error is
-// logged, never returned. (No error return at all — the loop is unconditional.)
+// refresh runs one poll cycle: fetch the 6 symbols → SetQuote each → the daily
+// history (only when due, once a day) → fetch F&G → SetFnG. Best-effort: every
+// fetch/parse error is logged, never returned. (No error return at all — the
+// loop is unconditional.)
 func (w *Worker) refresh(ctx context.Context) {
 	start := time.Now()
 	logger := w.logger()
 
-	fetchCtx, cancel := context.WithTimeout(ctx, fetcherCtxTimeout)
-	defer cancel()
+	budget := func(v, def time.Duration) time.Duration {
+		if v > 0 {
+			return v
+		}
+		return def
+	}
 
-	// ── stooq: one GET per symbol (the batch garbles on the ^spx caret). ──
+	// ── stooq quotes: one GET per symbol (the batch garbles on the ^spx
+	// caret), under the QUOTES budget only (review fix 13). ──
 	okCount := 0
-	prices := make(map[string]float64, len(allSymbols))
+	quotesCtx, cancelQuotes := context.WithTimeout(ctx, budget(w.QuotesBudget, defaultQuotesBudget))
 	for _, sym := range allSymbols {
-		q, err := w.fetchQuote(fetchCtx, sym)
+		q, err := w.fetchQuote(quotesCtx, sym)
 		if err != nil {
 			// Network/timeout — store an N/D quote so the lamp honestly shows "—"
 			// rather than retaining a stale value, and keep going.
@@ -131,24 +190,94 @@ func (w *Worker) refresh(ctx context.Context) {
 		}
 		if q.OK {
 			// The lamp delta is the SESSION change (Close−Open), carried on the
-			// quote itself — no ring lookup needed (the ring is correlations-only).
+			// quote itself.
 			okCount++
-			prices[sym] = q.Price
 		}
 		w.Store.SetQuote(q)
 	}
-	// One rolling point per cycle (only the OK prices of this cycle).
-	w.Store.AddPoint(prices)
+	cancelQuotes()
+
+	// ── daily-close history for the 20-30d correlations (once a day), under
+	// its OWN budget — slow quotes cannot starve it. ──
+	dailyCtx, cancelDaily := context.WithTimeout(ctx, budget(w.DailyBudget, defaultDailyBudget))
+	w.refreshDailyIfDue(dailyCtx)
+	cancelDaily()
 
 	// ── Fear & Greed (best-effort overlay; not folded into composite). ──
-	if f, err := w.fetchFnG(fetchCtx); err != nil {
+	fngCtx, cancelFng := context.WithTimeout(ctx, budget(w.FngBudget, defaultFngBudget))
+	if f, err := w.fetchFnG(fngCtx); err != nil {
 		logger.Printf("macro: fetch F&G failed (continuing): %v", err)
 	} else if f.OK {
 		w.Store.SetFnG(f)
 	}
+	cancelFng()
 
-	logger.Printf("macro: refreshed %d/%d symbols, %d points in ring, took %s",
-		okCount, len(allSymbols), w.Store.PointCount(), time.Since(start).Round(time.Millisecond))
+	logger.Printf("macro: refreshed %d/%d symbols, took %s",
+		okCount, len(allSymbols), time.Since(start).Round(time.Millisecond))
+}
+
+// refreshDailyIfDue fetches the trailing daily-close window for every symbol
+// when the last successful daily fetch is over dailyRefreshEvery old (or never
+// happened). One GET per symbol, best-effort per symbol; the success stamp is
+// advanced only when AT LEAST ONE symbol stored usable rows, so a fully dead
+// source retries next tick instead of going dark for a day.
+func (w *Worker) refreshDailyIfDue(ctx context.Context) {
+	now := w.clock()
+	if !w.lastDaily.IsZero() && now.Sub(w.lastDaily) < dailyRefreshEvery {
+		return
+	}
+	logger := w.logger()
+	stored := 0
+	for _, sym := range allSymbols {
+		closes, err := w.fetchDailyCloses(ctx, sym, now)
+		if err != nil {
+			logger.Printf("macro: daily fetch %s failed (continuing): %v", sym, err)
+			continue
+		}
+		if len(closes) == 0 {
+			// A parsable body with zero usable recent rows (all N/D, or ancient
+			// rows behind the age guard) — nothing honest to store.
+			logger.Printf("macro: daily fetch %s returned no usable recent rows", sym)
+			continue
+		}
+		w.Store.SetDailyCloses(sym, closes)
+		stored++
+	}
+	if stored > 0 {
+		w.lastDaily = now
+	}
+	logger.Printf("macro: daily history refreshed for %d/%d symbols", stored, len(allSymbols))
+}
+
+// fetchDailyCloses GETs one symbol's ranged daily CSV and returns its recent
+// closes (date-ascending). Rows older than dailyMaxAgeDays are dropped — see
+// the constant for why that guard exists.
+func (w *Worker) fetchDailyCloses(ctx context.Context, symbol string, now time.Time) ([]DailyClose, error) {
+	base := w.StooqDailyBase
+	if base == "" {
+		base = defaultStooqDailyBase
+	}
+	d2 := now.UTC()
+	d1 := d2.AddDate(0, 0, -dailyFetchCalendarDays)
+	u := base + "?s=" + url.QueryEscape(symbol) +
+		"&d1=" + d1.Format("20060102") + "&d2=" + d2.Format("20060102") + "&i=d"
+
+	body, err := w.httpGet(ctx, u, maxDailyBody)
+	if err != nil {
+		return nil, err
+	}
+	closes, err := ParseStooqDailyCSV(body)
+	if err != nil {
+		return nil, err
+	}
+	cutoff := d2.AddDate(0, 0, -dailyMaxAgeDays).Format("2006-01-02")
+	recent := closes[:0]
+	for _, c := range closes {
+		if c.Date >= cutoff { // ISO dates compare lexicographically
+			recent = append(recent, c)
+		}
+	}
+	return recent, nil
 }
 
 // fetchQuote GETs one stooq symbol and parses it into a Quote. A 200 with an N/D
@@ -161,7 +290,7 @@ func (w *Worker) fetchQuote(ctx context.Context, symbol string) (Quote, error) {
 	}
 	u := base + "?s=" + url.QueryEscape(symbol) + "&f=sd2t2ohlcv&e=csv"
 
-	body, err := w.httpGet(ctx, u)
+	body, err := w.httpGet(ctx, u, maxQuoteBody)
 	if err != nil {
 		return Quote{}, err
 	}
@@ -181,16 +310,16 @@ func (w *Worker) fetchFnG(ctx context.Context) (FnG, error) {
 	if u == "" {
 		u = defaultFngURL
 	}
-	body, err := w.httpGet(ctx, u)
+	body, err := w.httpGet(ctx, u, maxQuoteBody)
 	if err != nil {
 		return FnG{}, err
 	}
 	return ParseFnG(body)
 }
 
-// httpGet performs a GET and returns the body bytes, erroring on a non-2xx
-// status or any transport failure.
-func (w *Worker) httpGet(ctx context.Context, u string) ([]byte, error) {
+// httpGet performs a GET and returns the body bytes (capped at maxBody),
+// erroring on a non-2xx status or any transport failure.
+func (w *Worker) httpGet(ctx context.Context, u string, maxBody int64) ([]byte, error) {
 	client := w.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: defaultHTTPTimeout}
@@ -207,9 +336,7 @@ func (w *Worker) httpGet(ctx context.Context, u string) ([]byte, error) {
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil, fmt.Errorf("GET %s: status %d", u, res.StatusCode)
 	}
-	// stooq rows + the F&G JSON are tiny; cap the read defensively at 64 KiB.
 	// io.ReadAll surfaces a mid-stream read error instead of silently truncating.
-	const maxBody = 64 << 10
 	body, err := io.ReadAll(io.LimitReader(res.Body, maxBody))
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: read body: %w", u, err)
@@ -287,28 +414,85 @@ func ParseStooqCSV(data []byte) (Quote, error) {
 	}
 
 	price, perr := strconv.ParseFloat(closeStr, 64)
-	if perr != nil {
-		// Unparseable close → treat as N/D (honest "—"), not a hard error.
+	if perr != nil || !isFinite(price) {
+		// Unparseable OR non-finite close (strconv accepts "NaN"/"Inf"!) →
+		// treat as N/D (honest "—"), never an OK quote carrying a value the
+		// JSON encoder cannot serialize (review fix 4).
 		return q, nil
 	}
 
 	q.Price = price
 	q.OK = true
 	// Open: the session baseline for the lamp delta. Same N/D + float tolerance
-	// as Close — an N/D or unparseable Open leaves Open=0 (the handler then emits
-	// delta_pct:null rather than fabricating a move). A valid Close with a bad
-	// Open is still an OK quote (the lamp shows its value, just no direction).
+	// as Close — an N/D, unparseable or non-finite Open leaves Open=0 (the
+	// handler then emits delta_pct:null rather than fabricating a move). A
+	// valid Close with a bad Open is still an OK quote (the lamp shows its
+	// value, just no direction).
 	if !isND(openStr) {
-		if o, oerr := strconv.ParseFloat(openStr, 64); oerr == nil {
+		if o, oerr := strconv.ParseFloat(openStr, 64); oerr == nil && isFinite(o) {
 			q.Open = o
 		}
 	}
 	return q, nil
 }
 
+// isFinite rejects NaN and ±Inf — strconv.ParseFloat parses them happily, and
+// a non-finite number must always degrade to "no data" (review fix 4).
+func isFinite(f float64) bool {
+	return !math.IsNaN(f) && !math.IsInf(f, 0)
+}
+
 // isND reports whether a stooq field is the "no data" sentinel.
 func isND(s string) bool {
 	return strings.EqualFold(strings.TrimSpace(s), "N/D")
+}
+
+// ParseStooqDailyCSV parses a stooq ranged daily-history CSV
+// (https://stooq.com/q/d/l/?s=SYM&d1=…&d2=…&i=d):
+//
+//	Date,Open,High,Low,Close,Volume
+//	2026-07-21,117433.94,119482.98,116215.98,117294.65,...
+//
+// one row per trading day, dates ascending. Volume is absent for some symbols
+// (indices), so only Date + Close are required. Rows with an unparseable date
+// or close (or the N/D sentinel) are skipped — a partial history is still an
+// honest history; the store/correlation layer enforces the minimum-points
+// gate. An error is returned only when the body carries no header+row
+// structure at all (the "symbol unknown" plain-text response lands here).
+func ParseStooqDailyCSV(data []byte) ([]DailyClose, error) {
+	text := strings.ReplaceAll(string(data), "\r", "")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("ParseStooqDailyCSV: empty body")
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) < 2 {
+		return nil, fmt.Errorf("ParseStooqDailyCSV: no data rows (got %d lines)", len(lines))
+	}
+	if !strings.HasPrefix(strings.ToLower(lines[0]), "date,") {
+		return nil, fmt.Errorf("ParseStooqDailyCSV: unexpected header %q", lines[0])
+	}
+	out := make([]DailyClose, 0, len(lines)-1)
+	for _, line := range lines[1:] {
+		fields := strings.Split(strings.TrimSpace(line), ",")
+		if len(fields) < 5 {
+			continue
+		}
+		dateStr := strings.TrimSpace(fields[0])
+		closeStr := strings.TrimSpace(fields[4])
+		if isND(dateStr) || isND(closeStr) {
+			continue
+		}
+		if _, err := time.ParseInLocation("2006-01-02", dateStr, time.UTC); err != nil {
+			continue
+		}
+		price, err := strconv.ParseFloat(closeStr, 64)
+		if err != nil || !isFinite(price) {
+			continue // non-finite closes are not data (review fix 4)
+		}
+		out = append(out, DailyClose{Date: dateStr, Close: price})
+	}
+	return out, nil
 }
 
 // fngRaw matches the alternative.me /fng response element.

@@ -323,12 +323,7 @@ func (b *Bot) buildReply(ctx context.Context, cmd string, args []string) (string
 	case keyNews:
 		return b.ag.NewsCard(ctx).RenderHTML(), cardKeyboard(keyNews, true)
 	case keyMomentum:
-		if len(args) == 0 {
-			return b.ag.MomentumCard(ctx).RenderHTML(), cardKeyboard(keyMomentum, true)
-		}
-		return b.assetReply(ctx, cmd, args, func(spec assetSpec) Card {
-			return b.ag.MomentumAssetCard(ctx, spec)
-		})
+		return b.momentumReply(ctx, args)
 	case keyTrend:
 		return b.assetReply(ctx, cmd, args, func(spec assetSpec) Card {
 			return b.ag.TrendCard(ctx, spec)
@@ -349,6 +344,66 @@ func (b *Bot) buildReply(ctx context.Context, cmd string, args []string) (string
 		return b.topReply(ctx), cardKeyboard(keyTop, true)
 	default:
 		return "Unknown command. Try /help for the agent list.", nil
+	}
+}
+
+// momentumReply implements B1's /momentum command grammar (HTTP parity):
+//
+//	/momentum                  → default multi-asset card (unchanged)
+//	/momentum eurusd           → single-asset card (unchanged)
+//	/momentum eurusd 1d        → single asset re-based on the timeframe
+//	/momentum btc,eurusd [1d]  → user scan: comma list + optional tf token
+//	/momentum 1d               → default trio re-based on the timeframe
+//
+// Any token matching a known timeframe (1h/4h/1d) is the tf; the rest join
+// into the asset list (so "btc eth" and "btc,eth" both scan). Refresh re-runs
+// the exact same scan via the callback payload.
+func (b *Bot) momentumReply(ctx context.Context, args []string) (string, *InlineKeyboardMarkup) {
+	tf := ""
+	var assetTokens []string
+	for _, tok := range args {
+		low := strings.ToLower(strings.TrimSpace(tok))
+		if low == "" {
+			continue
+		}
+		if momentumTFs[low] {
+			if tf != "" && tf != low {
+				return esc(fmt.Sprintf("one timeframe per scan — got %q and %q", tf, low)), nil
+			}
+			tf = low
+			continue
+		}
+		assetTokens = append(assetTokens, low)
+	}
+	listExpr := strings.Join(assetTokens, ",")
+	kbCmd := keyMomentum
+	if listExpr != "" {
+		kbCmd += " " + listExpr
+	}
+	if tf != "" {
+		kbCmd += " " + tf
+	}
+	switch {
+	case listExpr == "" && tf == "":
+		return b.ag.MomentumCard(ctx).RenderHTML(), cardKeyboard(keyMomentum, true)
+	case listExpr == "":
+		return b.ag.MomentumScanCard(ctx, defaultMomentumKeys, tf).RenderHTML(), cardKeyboard(kbCmd, true)
+	case !strings.Contains(listExpr, ","):
+		spec, err := resolveAsset(listExpr)
+		if err != nil {
+			return esc(err.Error()), nil
+		}
+		spec, err = specWithTF(spec, tf)
+		if err != nil {
+			return esc(err.Error()), nil
+		}
+		return b.ag.MomentumAssetCard(ctx, spec).RenderHTML(), cardKeyboard(kbCmd, true)
+	default:
+		keys, err := parseAssetList(listExpr)
+		if err != nil {
+			return esc(err.Error()), nil
+		}
+		return b.ag.MomentumScanCard(ctx, keys, tf).RenderHTML(), cardKeyboard(kbCmd, true)
 	}
 }
 
@@ -643,6 +698,9 @@ Live market agents from the AlphaVizor platform:
 /momentum, /trend, /sr and /vol take an optional asset:
 <code>/trend eurusd</code> · <code>/sr gold</code> · <code>/vol usdjpy</code>
 Assets: btc (default), eth, eurusd, gbpusd, usdjpy, xau/gold.
+
+/momentum also scans a list at a timeframe (up to 6 assets, tf 1h/4h/1d):
+<code>/momentum btc,eurusd 1d</code> · <code>/momentum 4h</code>
 
 Every card has 🔄 Refresh and ℹ️ How it works buttons.
 
