@@ -58,7 +58,7 @@ const (
 // caret forms (^vix/^dxy/^tnx) return N/D; these are the ones that resolve.
 const (
 	SymSPX   = "^spx"     // S&P 500
-	SymVIX   = "vi.f"     // VIX (front future ≈ spot)
+	SymVIX   = "vi.f"     // VIX (stooq front future ≈ spot; Yahoo serves ^VIX SPOT — see compute.go thresholds)
 	SymDXY   = "dx.f"     // Dollar index (ICE future ≈ spot)
 	SymGold  = "xauusd"   // Gold spot
 	SymRates = "10yusy.b" // US 10Y yield (%)
@@ -74,11 +74,15 @@ const (
 // row, so the delta is meaningful from the very first cycle (and on weekends,
 // off the Friday session). Open is internal (json:"-") — it never ships.
 type Quote struct {
-	Symbol string    `json:"symbol"` // stooq id, e.g. "^spx"
+	Symbol string    `json:"symbol"` // canonical macro id, e.g. "^spx" (see the Sym* consts)
 	Price  float64   `json:"price"`  // Close
 	Open   float64   `json:"-"`      // session Open (baseline for the session-change delta); 0 on N/D
-	AsOf   time.Time `json:"as_of"`  // Date+Time parsed from the CSV (UTC)
+	AsOf   time.Time `json:"as_of"`  // last-known source timestamp (UTC)
 	OK     bool      `json:"ok"`     // false on N/D → lamp shows "—"
+	// Source names the provider that produced Price ("stooq"|"yahoo"). It is
+	// set ONLY on an OK quote — it describes a VALUE, so a not-ok quote always
+	// carries "" (both providers were tried and neither had a usable row).
+	Source string `json:"source"`
 }
 
 // Lamp — one of the 5 traffic-light lamps (a compute output, not stored).
@@ -90,6 +94,9 @@ type Lamp struct {
 	DeltaPct *float64 `json:"delta_pct"` // session change % (Close−Open); nil on N/D (delta==0 is a real "no move")
 	Status   string   `json:"status"`    // tailwind|neutral|headwind; "" on N/D OR unknown direction
 	AsOf     string   `json:"as_of"`     // ISO RFC3339 of the last KNOWN source date — filled even when Value is nil (stale N/D quote), "" only when the source never carried a date
+	// Source names the provider behind Value ("stooq"|"yahoo"); "" when Value
+	// is nil. Additive field — see the source-order notes in worker.go.
+	Source string `json:"source"`
 }
 
 // Correlation — BTC↔X over the daily-close window (a compute output).
@@ -108,6 +115,12 @@ type Correlation struct {
 	OK bool `json:"ok"`
 	// Points is the overlapping daily-close count behind the read (0..30).
 	Points int `json:"points"`
+	// Source names the provider behind Coef. A correlation is computed from
+	// TWO daily histories, so this is the combination of both legs: the shared
+	// name when they agree, SourceMixed when BTC and the paired symbol came
+	// from different providers (never silently one of the two), and "" when
+	// Coef is nil (no value was produced, so no provider to attribute).
+	Source string `json:"source"`
 }
 
 // FnG — crypto Fear & Greed cross-check (alternative.me).

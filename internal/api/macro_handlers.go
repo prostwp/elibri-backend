@@ -38,7 +38,9 @@ const (
 	macroCalendarMax         = 5
 )
 
-// lampSpec defines a lamp's stooq symbol + human label, in render order.
+// lampSpec defines a lamp's canonical symbol id + human label, in render order.
+// The ids are the stooq ones and remain the Store's keys whichever provider
+// actually answered — the per-source ticker mapping lives inside internal/macro.
 type lampSpec struct {
 	key    string
 	symbol string
@@ -162,6 +164,11 @@ func handleMacro(w http.ResponseWriter, r *http.Request) {
 //   - directional lamps (dxy/rates/spx/gold) get a status ONLY when DeltaPct is
 //     known; without a delta the lamp shows its value with Status:"" and is
 //     excluded from Composite (which skips Status=="").
+//
+// Source carries the provider that produced Value ("stooq"|"yahoo") and is set
+// only when Value is — see macro.Quote.Source. Lamps in one response may name
+// different providers: the fallback is per symbol, and the field is what makes
+// that visible instead of silent.
 func buildLamps(quotes map[string]macro.Quote) []macro.Lamp {
 	lamps := make([]macro.Lamp, 0, len(lampSpecs))
 	for _, spec := range lampSpecs {
@@ -175,6 +182,9 @@ func buildLamps(quotes map[string]macro.Quote) []macro.Lamp {
 			price := q.Price
 			lamp.Value = &price
 			lamp.OK = true
+			// Provenance of THIS value ("stooq"|"yahoo"). Set only alongside a
+			// value: a lamp with no value has no provider to attribute.
+			lamp.Source = q.Source
 			// Session delta from Open. Open>0 guards the N/D / unparseable case.
 			if q.Open > 0 {
 				d := pctChange(q.Open, q.Price)
@@ -198,11 +208,18 @@ func buildLamps(quotes map[string]macro.Quote) []macro.Lamp {
 // window string. B2: the coefficient comes from the DAILY-close window (20-30
 // trading days, date-aligned) — see macro.Store.DailyCorrelation. coef nil →
 // label "" and ok:false (frontend "Building correlation window"); the
-// per-pair overlap count ships as points.
+// per-pair overlap count ships as points, and the provider(s) behind the
+// coefficient as source.
 func buildCorrelations(reader macro.SnapshotReader) []macro.Correlation {
 	corrs := make([]macro.Correlation, 0, len(correlationPairs))
 	for _, cp := range correlationPairs {
-		coef, points := reader.DailyCorrelation(macro.SymBTC, cp.symX)
+		// One consistent read: coefficient, overlap count and provenance come
+		// from a single lock acquisition, so a daily refresh landing mid-request
+		// cannot pair one window's number with another window's source name.
+		// Attribution is "" unless a coefficient was produced; both legs
+		// agreeing → that provider; different providers → macro.SourceMixed,
+		// never one of the two picked silently.
+		coef, points, source := reader.DailyCorrelationWithSource(macro.SymBTC, cp.symX)
 		corrs = append(corrs, macro.Correlation{
 			Pair:   cp.pair,
 			Coef:   coef,
@@ -210,6 +227,7 @@ func buildCorrelations(reader macro.SnapshotReader) []macro.Correlation {
 			Window: windowDescription(points),
 			OK:     coef != nil,
 			Points: points,
+			Source: source,
 		})
 	}
 	return corrs

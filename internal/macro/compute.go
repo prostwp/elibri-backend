@@ -18,6 +18,12 @@ const (
 
 	// vixTailwindBelow / vixHeadwindAbove are absolute VIX levels (not deltas):
 	// calm tape (<18) is a tailwind for crypto, fearful tape (>25) a headwind.
+	//
+	// ⚠️ INSTRUMENT CHANGED 2026-08-24: these thresholds are now read against
+	// SPOT VIX (Yahoo ^VIX), not stooq's vi.f front future, which ran roughly
+	// 0.5-2 points higher in contango. 18/25 are the canonical SPOT levels, so
+	// this is a closer fit than before — but do NOT re-tune them against the
+	// old vi.f series by mistake.
 	vixTailwindBelow = 18.0
 	vixHeadwindAbove = 25.0
 

@@ -392,7 +392,16 @@ func TestWorkerRefresh_OneCycle(t *testing.T) {
 		Logger:         log.New(io.Discard, "", 0),
 		StooqBase:      stooq.URL + "/q/l/",
 		StooqDailyBase: stooq.URL + "/q/d/l/",
-		FngURL:         fng.URL + "/fng",
+		// Pin stooq: these cases assert STOOQ behaviour. Without this the
+		// default order would fall through to the real Yahoo endpoint on every
+		// N/D row — a live network call inside a unit test. Multi-source
+		// behaviour has its own tests in source_test.go / yahoo_test.go.
+		SourceOrder: []string{SourceStooq},
+		FngURL:      fng.URL + "/fng",
+		// The served row is dated 2026-05-29; pin the clock beside it so the
+		// quoteMaxAge freshness guard sees the age this case intends (hours,
+		// not "however long since this fixture was written").
+		now: func() time.Time { return time.Date(2026, 5, 30, 9, 0, 0, 0, time.UTC) },
 	}
 	wk.refresh(context.Background())
 
@@ -442,8 +451,13 @@ func TestWorkerDaily_OncePerDay(t *testing.T) {
 		Logger:         log.New(io.Discard, "", 0),
 		StooqBase:      stooq.URL + "/q/l/",
 		StooqDailyBase: stooq.URL + "/q/d/l/",
-		FngURL:         fng.URL + "/fng",
-		now:            func() time.Time { return clock },
+		// Pin stooq: these cases assert STOOQ behaviour. Without this the
+		// default order would fall through to the real Yahoo endpoint on every
+		// N/D row — a live network call inside a unit test. Multi-source
+		// behaviour has its own tests in source_test.go / yahoo_test.go.
+		SourceOrder: []string{SourceStooq},
+		FngURL:      fng.URL + "/fng",
+		now:         func() time.Time { return clock },
 	}
 
 	wk.refresh(context.Background()) // warm start → daily fetch
@@ -489,8 +503,13 @@ func TestWorkerDaily_TotalFailureRetriesNextTick(t *testing.T) {
 		Logger:         log.New(io.Discard, "", 0),
 		StooqBase:      stooq.URL + "/q/l/",
 		StooqDailyBase: stooq.URL + "/q/d/l/",
-		FngURL:         fng.URL + "/fng",
-		now:            func() time.Time { return clock },
+		// Pin stooq: these cases assert STOOQ behaviour. Without this the
+		// default order would fall through to the real Yahoo endpoint on every
+		// N/D row — a live network call inside a unit test. Multi-source
+		// behaviour has its own tests in source_test.go / yahoo_test.go.
+		SourceOrder: []string{SourceStooq},
+		FngURL:      fng.URL + "/fng",
+		now:         func() time.Time { return clock },
 	}
 
 	wk.refresh(context.Background())
@@ -529,10 +548,15 @@ func TestWorkerBudgets_SlowQuotesDoNotStarveDaily(t *testing.T) {
 		Logger:         log.New(io.Discard, "", 0),
 		StooqBase:      stooq.URL + "/q/l/",
 		StooqDailyBase: stooq.URL + "/q/d/l/",
-		FngURL:         fng.URL + "/fng",
-		QuotesBudget:   50 * time.Millisecond, // quotes die fast…
-		DailyBudget:    5 * time.Second,       // …daily still has room
-		FngBudget:      5 * time.Second,
+		// Pin stooq: these cases assert STOOQ behaviour. Without this the
+		// default order would fall through to the real Yahoo endpoint on every
+		// N/D row — a live network call inside a unit test. Multi-source
+		// behaviour has its own tests in source_test.go / yahoo_test.go.
+		SourceOrder:  []string{SourceStooq},
+		FngURL:       fng.URL + "/fng",
+		QuotesBudget: 50 * time.Millisecond, // quotes die fast…
+		DailyBudget:  5 * time.Second,       // …daily still has room
+		FngBudget:    5 * time.Second,
 	}
 	wk.refresh(context.Background())
 
@@ -575,7 +599,16 @@ func TestWorkerDaily_AncientRowsRejected(t *testing.T) {
 		Logger:         log.New(io.Discard, "", 0),
 		StooqBase:      stooq.URL + "/q/l/",
 		StooqDailyBase: stooq.URL + "/q/d/l/",
-		FngURL:         fng.URL + "/fng",
+		// Pin stooq: these cases assert STOOQ behaviour. Without this the
+		// default order would fall through to the real Yahoo endpoint on every
+		// N/D row — a live network call inside a unit test. Multi-source
+		// behaviour has its own tests in source_test.go / yahoo_test.go.
+		SourceOrder: []string{SourceStooq},
+		FngURL:      fng.URL + "/fng",
+		// The served row is dated 2026-05-29; pin the clock beside it so the
+		// quoteMaxAge freshness guard sees the age this case intends (hours,
+		// not "however long since this fixture was written").
+		now: func() time.Time { return time.Date(2026, 5, 30, 9, 0, 0, 0, time.UTC) },
 	}
 	wk.refresh(context.Background())
 	for _, sym := range allSymbols {
@@ -587,7 +620,7 @@ func TestWorkerDaily_AncientRowsRejected(t *testing.T) {
 
 // TestWorkerRun_NilStore: Run errors immediately on a nil store.
 func TestWorkerRun_NilStore(t *testing.T) {
-	wk := &Worker{Logger: log.New(io.Discard, "", 0)}
+	wk := &Worker{Logger: log.New(io.Discard, "", 0), SourceOrder: []string{SourceStooq}}
 	if err := wk.Run(context.Background()); err == nil {
 		t.Errorf("Run(nil store) err = nil, want error")
 	}
@@ -613,8 +646,13 @@ func TestWorkerRun_CtxCancel(t *testing.T) {
 		Logger:         log.New(io.Discard, "", 0),
 		StooqBase:      stooq.URL + "/q/l/",
 		StooqDailyBase: stooq.URL + "/q/d/l/",
-		FngURL:         fng.URL + "/fng",
-		Interval:       time.Hour,
+		// Pin stooq: these cases assert STOOQ behaviour. Without this the
+		// default order would fall through to the real Yahoo endpoint on every
+		// N/D row — a live network call inside a unit test. Multi-source
+		// behaviour has its own tests in source_test.go / yahoo_test.go.
+		SourceOrder: []string{SourceStooq},
+		FngURL:      fng.URL + "/fng",
+		Interval:    time.Hour,
 	}
 	err := wk.Run(ctx)
 	if err == nil {

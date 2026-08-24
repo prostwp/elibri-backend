@@ -39,6 +39,10 @@ type fakeMacroReader struct {
 	points int                 // overlapping daily closes reported per pair
 	fng    macro.FnG
 	hasFnG bool
+	// dailySrc is the provider behind each symbol's daily history, keyed by
+	// symbol. Empty map → "" for every symbol, which is what a store with no
+	// history reports.
+	dailySrc map[string]string
 }
 
 func (f *fakeMacroReader) Latest() map[string]macro.Quote {
@@ -53,6 +57,16 @@ func (f *fakeMacroReader) DailyCorrelation(_, symB string) (*float64, int) {
 	return f.corr[symB], f.points
 }
 func (f *fakeMacroReader) FnG() (macro.FnG, bool) { return f.fng, f.hasFnG }
+
+func (f *fakeMacroReader) DailySource(symbol string) string { return f.dailySrc[symbol] }
+
+func (f *fakeMacroReader) DailyCorrelationWithSource(symA, symB string) (*float64, int, string) {
+	coef, points := f.DailyCorrelation(symA, symB)
+	if coef == nil {
+		return nil, points, ""
+	}
+	return coef, points, macro.CombineSources(f.dailySrc[symA], f.dailySrc[symB])
+}
 
 var _ macro.SnapshotReader = (*fakeMacroReader)(nil)
 
@@ -443,3 +457,100 @@ func TestMacro_CalendarAlwaysSlice(t *testing.T) {
 }
 
 func ptrF(f float64) *float64 { return &f }
+
+// TestMacro_SourceAttribution: the additive "source" field on the wire.
+//
+// Covers the mixed-payload case the fallback makes possible — some lamps from
+// stooq, some from Yahoo, one dead — and asserts the rule that makes the field
+// trustworthy: source is present EXACTLY when a value is. A lamp with no value
+// names no provider, and a correlation whose two daily histories came from
+// different providers reports "mixed" rather than silently claiming one.
+func TestMacro_SourceAttribution(t *testing.T) {
+	asOf := time.Now().UTC().Add(-2 * time.Minute)
+	reader := &fakeMacroReader{
+		latest: map[string]macro.Quote{
+			// stooq answered for these two…
+			macro.SymDXY: {Symbol: macro.SymDXY, Price: 98.85, Open: 99.05, AsOf: asOf, OK: true, Source: macro.SourceStooq},
+			macro.SymSPX: {Symbol: macro.SymSPX, Price: 7580, Open: 7530, AsOf: asOf, OK: true, Source: macro.SourceStooq},
+			// …Yahoo picked up these two…
+			macro.SymVIX:  {Symbol: macro.SymVIX, Price: 17.5, Open: 17.5, AsOf: asOf, OK: true, Source: macro.SourceYahoo},
+			macro.SymGold: {Symbol: macro.SymGold, Price: 4546, Open: 4540, AsOf: asOf, OK: true, Source: macro.SourceYahoo},
+			// …and nobody could answer for rates: a dated N/D quote, no value,
+			// therefore no source.
+			macro.SymRates: {Symbol: macro.SymRates, AsOf: asOf, OK: false},
+		},
+		corr: map[string]*float64{
+			macro.SymSPX:  ptrF(0.78),
+			macro.SymGold: ptrF(0.12),
+			macro.SymDXY:  ptrF(-0.64),
+		},
+		points: 24,
+		dailySrc: map[string]string{
+			macro.SymBTC:  macro.SourceYahoo,
+			macro.SymSPX:  macro.SourceYahoo, // agrees with BTC → "yahoo"
+			macro.SymGold: macro.SourceStooq, // disagrees with BTC → "mixed"
+			macro.SymDXY:  macro.SourceYahoo, // agrees with BTC → "yahoo"
+		},
+	}
+	withMacroStore(t, reader)
+
+	code, body := runMacroRequest(t)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+
+	wantLampSource := map[string]string{
+		macro.KeyDXY:   macro.SourceStooq,
+		macro.KeySPX:   macro.SourceStooq,
+		macro.KeyVIX:   macro.SourceYahoo,
+		macro.KeyGold:  macro.SourceYahoo,
+		macro.KeyRates: "", // no value → no provider
+	}
+	for _, l := range body.Lamps {
+		want := wantLampSource[l.Key]
+		if l.Source != want {
+			t.Errorf("lamp %s source = %q, want %q", l.Key, l.Source, want)
+		}
+		// The invariant that makes the field readable at a glance.
+		if (l.Value != nil) != (l.Source != "") {
+			t.Errorf("lamp %s: value present = %v but source = %q — source must be set "+
+				"exactly when a value is", l.Key, l.Value != nil, l.Source)
+		}
+	}
+
+	wantCorrSource := map[string]string{
+		macro.PairBTCSPX:  macro.SourceYahoo,
+		macro.PairBTCGold: macro.SourceMixed, // BTC yahoo + gold stooq
+		macro.PairBTCDXY:  macro.SourceYahoo,
+	}
+	for _, c := range body.Correlations {
+		if want := wantCorrSource[c.Pair]; c.Source != want {
+			t.Errorf("correlation %s source = %q, want %q", c.Pair, c.Source, want)
+		}
+	}
+}
+
+// TestMacro_SourceAbsentWithoutValue: with nothing stored, no lamp and no
+// correlation may claim a provider. Guards against a default creeping in.
+func TestMacro_SourceAbsentWithoutValue(t *testing.T) {
+	withMacroStore(t, &fakeMacroReader{})
+
+	code, body := runMacroRequest(t)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	for _, l := range body.Lamps {
+		if l.Source != "" {
+			t.Errorf("lamp %s source = %q, want \"\" (no data at all)", l.Key, l.Source)
+		}
+	}
+	for _, c := range body.Correlations {
+		if c.Source != "" {
+			t.Errorf("correlation %s source = %q, want \"\" (no coefficient)", c.Pair, c.Source)
+		}
+	}
+	// The all-null honesty contract is unchanged by the new field.
+	if body.Regime != macro.RegimeUnknown {
+		t.Errorf("regime = %q, want unknown", body.Regime)
+	}
+}

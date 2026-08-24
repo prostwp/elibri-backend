@@ -107,6 +107,121 @@ schema is compatible, the meaning is not.
   coefficient is planned as the next stage **after customer sign-off**; until
   then the window string states the basis and this note is the honest caveat.
 
+## Macro data sources + `MACRO_SOURCE_ORDER`
+
+**stooq stopped answering on 2026-08-24** — the quote endpoint serves an HTTP
+404 HTML page and the daily-history endpoint serves a JavaScript anti-bot
+challenge. Every lamp went `null`, the regime went `unknown`, and
+`/agents/macro?asset=gold` honestly reported "no tradfin data". The backend now
+tries each symbol against an **ordered list of providers** and takes the first
+that yields a usable row.
+
+| canonical id | lamp | stooq | Yahoo |
+|---|---|---|---|
+| `dx.f` | `dxy` | `dx.f` | `DX-Y.NYB` |
+| `10yusy.b` | `rates` | `10yusy.b` | `^TNX` |
+| `vi.f` | `vix` | `vi.f` | `^VIX` |
+| `^spx` | `spx` | `^spx` | `^GSPC` |
+| `xauusd` | `gold` | `xauusd` | `GC=F` |
+| `btcusd` | — (correlations) | `btcusd` | `BTC-USD` |
+
+The store, the JSON and every internal key stay on the **stooq ids** whichever
+provider answered — the Yahoo tickers exist only inside `internal/macro`.
+
+### Configuration
+
+`MACRO_SOURCE_ORDER` (backend env, default `stooq,yahoo`) pins the order:
+
+```bash
+MACRO_SOURCE_ORDER=stooq,yahoo   # default: stooq first (it may recover), Yahoo per-symbol fallback
+MACRO_SOURCE_ORDER=yahoo         # pin Yahoo, never touch stooq
+MACRO_SOURCE_ORDER=yahoo,stooq   # prefer Yahoo, keep stooq as the fallback
+```
+
+Comma separated, case- and whitespace-insensitive, duplicates collapse. Unknown
+names are logged and dropped; a value naming **no** known provider falls back to
+the default rather than leaving the worker with zero sources. The resolved order
+is logged once per process: `macro: source order = stooq → yahoo`.
+
+### New field: `source`
+
+`/api/v1/macro` gained an **additive** `"source"` string on each lamp and each
+correlation. It is `"stooq"` or `"yahoo"`, and:
+
+- it is present **exactly when a value is** — a lamp with `value: null` always
+  has `source: ""`, so the field can never be read as "we had data from X";
+- lamps within one response may name **different** providers (the fallback is
+  per symbol, not per cycle);
+- a correlation is built from two daily histories, so its `source` is
+  `"mixed"` when the BTC leg and the paired leg came from different providers —
+  never one of the two picked silently.
+
+### Two honesty guards specific to the Yahoo path
+
+**Freshness.** stooq announces a dead symbol explicitly (an `N/D` row). Yahoo's
+chart endpoint has no such sentinel — it just returns the last bar it holds — so
+a frozen feed would keep serving a weeks-old close as `ok:true`, with a status
+and a vote in the composite. Any quote older than **7 days** is therefore
+rejected for every source alike. Seven days cannot fire on a normal closure (a
+weekend is 3 days from Friday's bar, the longest US holiday break about 5). A
+rejected quote still contributes its **date**, so the lamp keeps showing how
+stale the market went rather than blanking.
+
+**Daylight saving.** Yahoo shifts its daily-bar timestamps with DST but reports
+`meta.gmtoffset` only for the offset *at request time*. Measured over a 1-year
+DX-Y.NYB window: 166 bars at 04:00Z (EDT) and 83 at 05:00Z (EST) under a single
+`gmtoffset` of −14400. Dating bars with that one scalar mis-dates the other
+regime — 166 of 251 bars wrong for a request made during EST — which, since only
+the last 30 rows are kept, would have slid the whole correlation window one day
+off BTC's UTC days for weeks after each November transition. Session dates are
+therefore derived by converting **each bar's own instant** into
+`meta.exchangeTimezoneName`, with a raw-UTC fallback that is measured to agree
+on 251/251 bars for all six symbols in both regimes.
+
+### Correlation window sizing (changed 2026-08-24)
+
+The per-symbol daily history now keeps **42 rows, not 30**. The cap is applied
+per symbol in *rows*, but the correlation joins on calendar *dates*, and the two
+legs accumulate rows at different rates — BTC trades 7 days a week, the tradfin
+symbols 5. At 30 rows, BTC's window spanned 30 calendar days while SPX's spanned
+~42, so only the ~20 SPX sessions inside BTC's window could pair: measured
+`points = 20` against a minimum of 20, i.e. **zero margin**. One market holiday
+(Labor Day, 2026-09-07) would have dropped it to 19 and blanked `btc_spx` for
+about a month. At 42 the measured overlap is 29-30 points — still inside the
+documented "20-30 daily closes" window, now with ~10 points of headroom. The
+stooq fetch window widened from 60 to 90 calendar days to be able to fill it.
+
+The once-a-day refresh stamp now advances **only when the BTC leg stored**.
+Every correlation is BTC↔X, and BTC is fetched last, so a cycle that stored the
+tradfin legs but missed BTC used to stamp success and park all three
+correlations on an empty leg for 24 hours. It now retries on the next 3-min tick.
+
+### Poll budgets
+
+The quote phase gets **45s**, with an explicit **10s cap per provider attempt**.
+With 6 symbols and the default 2-provider order: a healthy cycle is ~2.4s, a
+cycle with stooq dead ~4.2s (measured 2.9-5.0s live). The per-attempt cap
+matters when a provider *hangs* rather than fails — without it one symbol could
+consume the whole phase and every later symbol would be cancelled before being
+tried at all. Symbols the budget does not reach store an honest not-ok quote,
+exactly like any other failure.
+
+### VIX instrument note
+
+The VIX lamp now reads **spot `^VIX`** (Yahoo), where stooq served `vi.f`, the
+front future — which runs roughly 0.5-2 points higher in contango. The 18/25
+thresholds are the canonical *spot* levels, so this is a closer fit than before;
+they were **not** re-tuned, and must not be re-tuned against the old `vi.f`
+series.
+
+### What did NOT change
+
+Honesty behaviour is identical. When **both** providers come up empty for a
+symbol the lamp is still `ok:false` / `value:null`, the regime is still
+`unknown` when zero lamps carry a value, `generated_idea` is still `""`, and the
+`as_of` carry-forward of a last-known date is unchanged. The fallback only adds
+attempts; it never softens a failure.
+
 ## Macro asset views
 
 `GET /agents/macro?asset=gold` (or `btc`) re-frames the same five lamps for
@@ -278,6 +393,10 @@ curl -si  localhost:8090/agents/nope                # 404 unknown agent
   `funding/liquidations`, `narratives`, `market/*`) · Binance spot klines
   and futures premiumIndex (public, no key) · Yahoo Finance chart API for
   FX/gold (`GC=F` is the working gold source; `XAUUSD=X` is dead upstream).
+  The macro lamps behind `/agents/macro` are served by stooq **with a Yahoo
+  fallback per symbol** since 2026-08-24 — see [macro data
+  sources](#macro-data-sources--macro_source_order). Each lamp reports which
+  provider produced it.
 - **No fake numbers, ever.** A dead source is a `503` (single agents) or an
   explicit `offline` line (digest/top). Too little history for an indicator
   says so instead of rendering a confident flat. Weekend FX data carries the

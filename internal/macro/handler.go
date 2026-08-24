@@ -27,6 +27,14 @@ type SnapshotReader interface {
 	DailyCorrelation(symA, symB string) (*float64, int)
 	// FnG returns the last valid Fear & Greed read and whether one was ever set.
 	FnG() (FnG, bool)
+	// DailySource reports which provider produced a symbol's stored daily
+	// history ("stooq"|"yahoo"), or "" when there is none.
+	DailySource(symbol string) string
+	// DailyCorrelationWithSource returns the coefficient, the overlapping-day
+	// count and the provenance of that coefficient in ONE consistent read —
+	// the handler uses this rather than composing DailyCorrelation with two
+	// DailySource calls, which could tear across a daily refresh.
+	DailyCorrelationWithSource(symA, symB string) (*float64, int, string)
 }
 
 // Compile-time assertion: *Store satisfies SnapshotReader. Breaking the

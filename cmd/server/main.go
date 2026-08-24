@@ -120,20 +120,25 @@ func main() {
 	}()
 	log.Println("Funding liquidations worker started (WS !forceOrder@arr)")
 
-	// Macro Sentiment worker — an HTTP poller of 6 stooq series (S&P/VIX/DXY/
+	// Macro Sentiment worker — an HTTP poller of 6 market series (S&P/VIX/DXY/
 	// Gold/US10Y + BTC) plus alternative.me Fear&Greed. It accumulates a
-	// latest-per-symbol snapshot + a rolling ring for BTC↔SPX/Gold/DXY
+	// latest-per-symbol snapshot + a daily-close window for BTC↔SPX/Gold/DXY
 	// correlations; /api/v1/macro reads that same store (wired via
 	// api.SetMacroStore). Deliberately OUTSIDE the store.Pool guard below: macro
 	// is in-memory, no Postgres. Best-effort — any cycle error is logged, never
 	// fatal; before the first cycle the endpoint serves a degraded-but-valid
 	// payload and the frontend renders its skeleton/empty states.
+	//
+	// Each symbol is tried against an ordered provider list (MACRO_SOURCE_ORDER,
+	// default "stooq,yahoo") — see internal/macro/source.go. The worker logs the
+	// resolved order on its first cycle.
 	macroStore := macro.NewStore()
 	api.SetMacroStore(macroStore)
 	macroWorker := &macro.Worker{
 		Store: macroStore,
 		// Logger nil → log.Default(); HTTPClient/Interval/URLs nil → public
-		// stooq + F&G endpoints at a 3-min cadence.
+		// stooq + Yahoo + F&G endpoints at a 3-min cadence. SourceOrder nil →
+		// MACRO_SOURCE_ORDER → the default order.
 	}
 	go func() {
 		// Tolerate both Canceled (SIGTERM via signal.NotifyContext) and
@@ -144,7 +149,10 @@ func main() {
 			log.Printf("macro sentiment worker exited: %v", err)
 		}
 	}()
-	log.Println("Macro Sentiment worker started (stooq 6 symbols + F&G, poll 3 min)")
+	// The resolved provider order is logged by the worker itself on its first
+	// cycle ("macro: source order = …"), so it is not duplicated here.
+	log.Printf("Macro Sentiment worker started (6 symbols + F&G, poll 3 min, %s=%q)",
+		macro.SourceOrderEnv, os.Getenv(macro.SourceOrderEnv))
 
 	// Narrative Radar worker — periodically pulls news from Reddit + RSS feeds,
 	// classifies into narratives, and writes snapshots to narrative_snapshots.

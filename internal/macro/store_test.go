@@ -117,7 +117,7 @@ func mkDaily(n int, val func(i int) float64) []DailyClose {
 func TestStore_SetDailyClosesCapAndCopy(t *testing.T) {
 	s := NewStore()
 	in := mkDaily(dailyKeep+5, func(i int) float64 { return float64(1000 + i) })
-	s.SetDailyCloses(SymBTC, in)
+	s.SetDailyCloses(SymBTC, in, SourceStooq)
 
 	if got := s.DailyCount(SymBTC); got != dailyKeep {
 		t.Fatalf("DailyCount = %d, want cap %d", got, dailyKeep)
@@ -134,8 +134,8 @@ func TestStore_SetDailyClosesCapAndCopy(t *testing.T) {
 // fetch always serves the full trailing window — append would duplicate days).
 func TestStore_SetDailyClosesReplaces(t *testing.T) {
 	s := NewStore()
-	s.SetDailyCloses(SymBTC, mkDaily(25, func(i int) float64 { return float64(i) }))
-	s.SetDailyCloses(SymBTC, mkDaily(10, func(i int) float64 { return float64(i) }))
+	s.SetDailyCloses(SymBTC, mkDaily(25, func(i int) float64 { return float64(i) }), SourceStooq)
+	s.SetDailyCloses(SymBTC, mkDaily(10, func(i int) float64 { return float64(i) }), SourceStooq)
 	if got := s.DailyCount(SymBTC); got != 10 {
 		t.Errorf("DailyCount after replace = %d, want 10", got)
 	}
@@ -145,9 +145,9 @@ func TestStore_SetDailyClosesReplaces(t *testing.T) {
 // SPX = 2×BTC + 5 → exactly +1; DXY = −BTC → exactly −1.
 func TestStore_DailyCorrelationKnownAnswer(t *testing.T) {
 	s := NewStore()
-	s.SetDailyCloses(SymBTC, mkDaily(minDailyCorrPoints, func(i int) float64 { return float64(100 + 3*i) }))
-	s.SetDailyCloses(SymSPX, mkDaily(minDailyCorrPoints, func(i int) float64 { return float64(2*(100+3*i) + 5) }))
-	s.SetDailyCloses(SymDXY, mkDaily(minDailyCorrPoints, func(i int) float64 { return -float64(100 + 3*i) }))
+	s.SetDailyCloses(SymBTC, mkDaily(minDailyCorrPoints, func(i int) float64 { return float64(100 + 3*i) }), SourceStooq)
+	s.SetDailyCloses(SymSPX, mkDaily(minDailyCorrPoints, func(i int) float64 { return float64(2*(100+3*i) + 5) }), SourceStooq)
+	s.SetDailyCloses(SymDXY, mkDaily(minDailyCorrPoints, func(i int) float64 { return -float64(100 + 3*i) }), SourceStooq)
 
 	coef, n := s.DailyCorrelation(SymBTC, SymSPX)
 	if coef == nil || math.Abs(*coef-1) > 1e-9 || n != minDailyCorrPoints {
@@ -180,8 +180,8 @@ func TestStore_DailyCorrelationAlignsByDate(t *testing.T) {
 		btc = append(btc, DailyClose{Date: key, Close: float64(100 + i)})
 		spx = append(spx, DailyClose{Date: key, Close: float64(3*(100+i) + 7)})
 	}
-	s.SetDailyCloses(SymBTC, btc)
-	s.SetDailyCloses(SymSPX, spx)
+	s.SetDailyCloses(SymBTC, btc, SourceStooq)
+	s.SetDailyCloses(SymSPX, spx, SourceStooq)
 
 	coef, n := s.DailyCorrelation(SymBTC, SymSPX)
 	if n != shared {
@@ -197,8 +197,8 @@ func TestStore_DailyCorrelationAlignsByDate(t *testing.T) {
 func TestStore_DailyCorrelationBelowMin(t *testing.T) {
 	s := NewStore()
 	n := minDailyCorrPoints - 1
-	s.SetDailyCloses(SymBTC, mkDaily(n, func(i int) float64 { return float64(i) }))
-	s.SetDailyCloses(SymSPX, mkDaily(n, func(i int) float64 { return float64(2 * i) }))
+	s.SetDailyCloses(SymBTC, mkDaily(n, func(i int) float64 { return float64(i) }), SourceStooq)
+	s.SetDailyCloses(SymSPX, mkDaily(n, func(i int) float64 { return float64(2 * i) }), SourceStooq)
 	coef, got := s.DailyCorrelation(SymBTC, SymSPX)
 	if coef != nil {
 		t.Errorf("coef = %v, want nil (%d < %d points)", *coef, n, minDailyCorrPoints)
@@ -220,8 +220,8 @@ func TestStore_DailyCorrelationEmpty(t *testing.T) {
 // flat → nil via Pearson's zero-variance guard; points still reported.
 func TestStore_DailyCorrelationDegenerate(t *testing.T) {
 	s := NewStore()
-	s.SetDailyCloses(SymBTC, mkDaily(minDailyCorrPoints, func(i int) float64 { return float64(i) }))
-	s.SetDailyCloses(SymSPX, mkDaily(minDailyCorrPoints, func(i int) float64 { return 7580 }))
+	s.SetDailyCloses(SymBTC, mkDaily(minDailyCorrPoints, func(i int) float64 { return float64(i) }), SourceStooq)
+	s.SetDailyCloses(SymSPX, mkDaily(minDailyCorrPoints, func(i int) float64 { return 7580 }), SourceStooq)
 	coef, n := s.DailyCorrelation(SymBTC, SymSPX)
 	if coef != nil {
 		t.Errorf("coef = %v, want nil (flat series has no correlation)", *coef)
@@ -235,7 +235,7 @@ func TestStore_DailyCorrelationDegenerate(t *testing.T) {
 // symbols; an unknown symbol reads as empty.
 func TestStore_DailyHistoryIndependentPerSymbol(t *testing.T) {
 	s := NewStore()
-	s.SetDailyCloses(SymBTC, mkDaily(25, func(i int) float64 { return float64(i) }))
+	s.SetDailyCloses(SymBTC, mkDaily(25, func(i int) float64 { return float64(i) }), SourceStooq)
 	if got := s.DailyCount(SymSPX); got != 0 {
 		t.Errorf("SPX DailyCount = %d, want 0", got)
 	}
