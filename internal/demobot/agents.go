@@ -158,6 +158,7 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 	// reclassify an old backend's "mixed" to unknown (a MIXED claim needs at
 	// least one input). Shared with the asset views — see effectiveMacroRegime.
 	regime, real := effectiveMacroRegime(m)
+	c.State = regime // authoritative context for the AI layer (see Card.State)
 
 	switch regime {
 	case "risk_on":
@@ -1073,7 +1074,14 @@ func (a *Agents) fxReads(ctx context.Context) []fxRead {
 // FXCard builds the /fx overview from live reads. Footer time = the newest
 // closed bar among the pairs that produced data.
 func (a *Agents) FXCard(ctx context.Context) Card {
-	reads := a.fxReads(ctx)
+	return fxCardFromReads(a.fxReads(ctx))
+}
+
+// fxCardFromReads is the pure half of FXCard: reads already computed → the
+// card. Split out so a caller that ALREADY holds a sweep's fx reads (the
+// landing showcase reuses gather's) rebuilds the exact same card without a
+// second round of Yahoo fetches — same builder, no duplicated logic.
+func fxCardFromReads(reads []fxRead) Card {
 	anyOK := false
 	var latest time.Time
 	for _, r := range reads {
@@ -1230,6 +1238,7 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 		HowItWorks: howTexts[keyTrend],
 		DataTime:   closeTimeOf(candles, spec.Interval),
 		Verdict:    trendVerdict(state, adx),
+		State:      state, // grey/flat/conflict = confirmation WITHHELD
 	}
 	emaStructure := "bearish structure"
 	if ema50 > ema200 {
@@ -1540,6 +1549,7 @@ func (a *Agents) VolCard(ctx context.Context, spec assetSpec) Card {
 		HowItWorks: howTexts[keyVol],
 		DataTime:   closeTimeOf(candles, spec.Interval),
 		Levels:     VolLevels{ExpansionRatio: ratio}, // unrounded, envelope "levels"
+		State:      state,
 	}
 	switch state {
 	case volExpanding:
@@ -1595,6 +1605,13 @@ func calcRisk(balance, riskPct, entry, stop float64) (riskResult, error) {
 }
 
 const riskUsage = "Usage: /risk <balance> <risk%> <entry> <stop>"
+
+// riskExampleValues is the single worked example the calculator shows when it
+// has no user numbers — shared by the Telegram /risk with no args, the
+// self-test and the landing showcase, so the three can never drift apart. It
+// is the parsed twin of bot.go's riskExampleArgs (the [Try: …] button's
+// string form); TestRiskExampleValuesMatchButtonArgs pins them together.
+var riskExampleValues = []float64{10000, 1, 64000, 62500}
 
 // RiskCard renders the calculator. With no args it shows a worked example —
 // clearly labeled, never pretending to be live data.

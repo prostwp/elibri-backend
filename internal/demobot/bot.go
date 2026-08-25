@@ -433,7 +433,7 @@ func (b *Bot) riskReply(args []string) (string, *InlineKeyboardMarkup) {
 			{{Text: "ℹ️ How it works", CallbackData: "h|" + keyRisk}},
 			{menuButton()},
 		}}
-		return b.ag.RiskCard([]float64{10000, 1, 64000, 62500}, true, nil).RenderHTML(), kb
+		return b.ag.RiskCard(riskExampleValues, true, nil).RenderHTML(), kb
 	}
 	if len(args) != 4 {
 		return b.ag.RiskCard(nil, false, fmt.Errorf("expected 4 numbers, got %d", len(args))).RenderHTML(), cardKeyboard(keyRisk, false)

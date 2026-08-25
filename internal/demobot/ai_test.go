@@ -153,7 +153,7 @@ func TestAIRequestShape(t *testing.T) {
 	if mt, _ := body["max_tokens"].(float64); mt != 400 {
 		t.Errorf("max_tokens: got %v, want 400", body["max_tokens"])
 	}
-	wantSystem := "You are AlphaVizor AI, a market analyst. Write a tight, factual brief for traders based ONLY on the data provided. No advice, no hedging boilerplate, no emoji. Use analytical language only: 'bullish/bearish reading', never 'BUY/SELL verdict', never 'edge available to traders', never imperatives to enter or exit. End with the single most important thing to watch next."
+	wantSystem := "You are AlphaVizor AI, a market analyst. Write a tight, factual brief for traders based ONLY on the data provided. No advice, no hedging boilerplate, no emoji. Use analytical language only: 'bullish/bearish reading', never 'BUY/SELL verdict', never 'edge available to traders', never imperatives to enter or exit. The agent verdicts in the data block are authoritative: they come from state machines that already weighed these indicators. Never assert that a trend, breakout or regime is confirmed when the verdict says it is not; when a verdict withholds confirmation (confirmation_withheld true), explain WHY it was withheld — which condition failed — rather than arguing for confirmation. End with the single most important thing to watch next."
 	if s, _ := body["system"].(string); s != wantSystem {
 		t.Errorf("system prompt drifted:\ngot:  %q\nwant: %q", s, wantSystem)
 	}

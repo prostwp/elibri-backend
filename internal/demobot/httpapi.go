@@ -196,6 +196,10 @@ type HTTPServer struct {
 	srv *http.Server
 	lim *tokenBucket
 	ln  net.Listener
+	// sc memoizes the whole landing-showcase sweep (60s, singleflight) so a
+	// landing page render never fires twelve uncached upstream calls — see
+	// showcase.go.
+	sc showcaseMemo
 }
 
 // NewHTTPServer builds the read-only JSON API. A global token bucket
@@ -211,6 +215,10 @@ func NewHTTPServer(addr string, ag *Agents) *HTTPServer {
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/agents", s.handleList)
 	mux.HandleFunc("/agents/", s.handleAgent)
+	// Landing showcase (showcase.go): the catalog the marketing page renders
+	// and the one ready-to-render "what you get" story.
+	mux.HandleFunc("/showcase", s.handleShowcase)
+	mux.HandleFunc("/showcase/example", s.handleShowcaseExample)
 	s.srv = &http.Server{
 		Addr:              addr,
 		Handler:           s.wrap(mux),
@@ -312,9 +320,11 @@ func (s *HTTPServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"service":    "AlphaVizor demo bot — read-only HTTP JSON API",
-		"agents":     "/agents",
-		"disclaimer": disclaimerText,
+		"service":          "AlphaVizor demo bot — read-only HTTP JSON API",
+		"agents":           "/agents",
+		"showcase":         "/showcase",
+		"showcase_example": "/showcase/example",
+		"disclaimer":       disclaimerText,
 	})
 }
 
@@ -547,6 +557,15 @@ func (s *HTTPServer) handleRisk(w http.ResponseWriter, q url.Values) {
 	s.writeCard(w, s.ag.RiskCard(vals, false, nil))
 }
 
+// digestAgentName / digestHeadline are the digest's own identity line, shared
+// verbatim by /agents/digest and the landing showcase row so the two can
+// never word the same sweep differently.
+const digestAgentName = "AlphaVizor Digest"
+
+func digestHeadline(top Card) string {
+	return "Top signal: " + top.Agent + " — " + top.Verdict
+}
+
 // handleDigest runs the exact digest sweep and serves the top card as the
 // envelope head, the remaining one-liners as sections and the AI brief as
 // ai_text. Partial upstream failures stay inside the 200 as honest offline
@@ -557,9 +576,9 @@ func (s *HTTPServer) handleDigest(w http.ResponseWriter, ctx context.Context) {
 	brief := s.ag.aiBrief(ctx, g) // same aiMemo as the Telegram path
 
 	env := cardEnvelope(top)
-	env.Agent = "AlphaVizor Digest"
+	env.Agent = digestAgentName
 	env.Asset = ""
-	env.Verdict = "Top signal: " + top.Agent + " — " + top.Verdict
+	env.Verdict = digestHeadline(top)
 	env.AIText = nil
 	if brief != "" {
 		env.AIText = &brief

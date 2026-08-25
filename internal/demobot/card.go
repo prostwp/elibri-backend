@@ -151,6 +151,13 @@ type Card struct {
 	// Status is the machine state behind the HTTP envelope's ok/reason pair.
 	// Zero value = real reading; degraded builders set the matching enum.
 	Status cardStatus
+	// State is the builder's own state-machine output when it has one:
+	// trend flat|grey|up|down|conflict, macro risk_on|mixed|risk_off|unknown,
+	// vol expanding|normal|compressed. "" for agents without a state machine.
+	// It travels into the AI payload as authoritative context (ai.go): a
+	// state that WITHHELD confirmation must never be argued back into one by
+	// the model — that contradiction is the defect stateConfirms() guards.
+	State string
 	// Levels carries one of TrendLevels / SRLevels / VolLevels (or nil) —
 	// served verbatim as the envelope's "levels" object, ignored by Telegram.
 	Levels any

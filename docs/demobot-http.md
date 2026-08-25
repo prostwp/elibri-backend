@@ -37,6 +37,8 @@ Telegram.
 | `GET /agents/risk` | `?balance=&risk=&entry=&stop=` all required | Position-size calculator |
 | `GET /agents/digest` | — | All agents in one sweep, prioritized; AI brief in `ai_text`, one-liners in `sections` |
 | `GET /agents/top` | — | The single strongest signal right now, with the AI brief + why-line |
+| `GET /showcase` | — | **Landing catalog**: every agent with `live`/`degraded` status, headline and one-liner (see [landing showcase](#landing-showcase)) |
+| `GET /showcase/example` | — | **Landing story**: one worked example — detected → explained → data → conclusion |
 
 **Assets** for `momentum` / `trend` / `sr` / `vol`:
 `btc` (default), `eth`, `eurusd`, `gbpusd`, `usdjpy`, `xauusd` — aliases
@@ -244,6 +246,128 @@ real lamp exists.
 `risk` accepts the same tolerant number formats as the Telegram command:
 `balance=10,000`, `risk=1%`, `entry=$64000` all parse.
 
+## Landing showcase
+
+Two endpoints for the marketing page. They exist because the landing was
+reading `/agents` as a menu of *ideas* — it surfaced one agent as a real-data
+demo and labelled the rest "planned", while twelve agents were serving live
+data the whole time.
+
+Both run over **one** sweep — the same `gather()` `/digest` uses, through the
+same card builders — memoized for **60 seconds** with singleflight. Ten
+landing renders cost one sweep; `/showcase/example` rides the build
+`/showcase` just made. A page render can never fire twelve uncached upstream
+calls. Upstream cost over a plain `/digest`: exactly one extra GET (the
+narrative radar).
+
+### `GET /showcase` — the catalog
+
+```json
+{
+  "generated_at": "2026-08-25T12:31:04Z",
+  "live_count": 11,
+  "total_count": 12,
+  "agents": [
+    {
+      "slug": "digest",
+      "name": "AlphaVizor Digest",
+      "category": "tools",
+      "status": "live",
+      "ok": true,
+      "reason": null,
+      "headline": "Top signal: Trend Agent — Confirmed UPTREND",
+      "one_liner": "🟢 Trend BTC: confirmed uptrend",
+      "data_as_of": "2026-08-25T12:31:04Z",
+      "example_url": "/agents/digest"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `generated_at` | When the **sweep** ran, not when the request arrived — with the 60s memo a render can legitimately serve a payload up to a minute old, and saying so is the honest form of a cache |
+| `live_count` / `total_count` | Agents that returned `ok: true` on this sweep, out of every agent that exists |
+| `status` | `live` \| `degraded` — **never `planned`**. This endpoint only lists agents whose builder actually ran; there is no fictional state and no roadmap entry here |
+| `ok` / `reason` | The same machine-readable pair the agent envelopes carry (`source_offline`, `insufficient_history`, `below_threshold`, `no_data`, `market_closed`), `null` when `ok` |
+| `headline` | The card's verdict line — for `digest`, the prioritized "Top signal: …" line |
+| `one_liner` | The digest-style one-liner, plain text |
+| `category` | `crypto` \| `forex` \| `macro` \| `onchain` \| `derivatives` \| `news` \| `tools`. `tools` holds the three that are not a single-market read: `digest`, `top`, `risk` |
+| `example_url` | Where the landing links for the full card: `/agents/<slug>` |
+
+**Degraded agents stay in the list.** They are not hidden and they are not
+relabelled — the row keeps its `reason` so the landing can decide to show
+"source offline" or drop the card, and the honesty rule from the card layer
+carries all the way to the marketing page. The rows come back in the same
+order as `/agents`.
+
+### `GET /showcase/example` — one worked story
+
+The "what does a user actually get" demonstration, in the order a trader
+reads it: **detected → explained → data → conclusion**.
+
+```json
+{
+  "generated_at": "2026-08-25T12:31:04Z",
+  "agent": "Trend Agent",
+  "slug": "trend",
+  "asset": "BTC",
+  "detected": "Trend Agent on BTC — Confirmed UPTREND.",
+  "explained": "ADX(14) at 31.2 sits above the 25 confirmation threshold with EMA50 over EMA200.",
+  "data": [
+    "ADX(14): 31.2 (trend confirms above 25) · RSI(14): 62.0",
+    "EMA50 118420 above EMA200 112870",
+    "Invalidation: close below 110350"
+  ],
+  "conclusion": "For a trader this is a bullish reading on BTC: the numbers above lean up, and the read holds only for as long as they do. The structure this read describes breaks on a close below 110350.",
+  "levels": { "invalidation": 110350.2, "invalidation_side": "below" },
+  "example_url": "/agents/trend",
+  "disclaimer": "Analytics, not financial advice",
+  "data_as_of": "2026-08-25T12:00:00Z"
+}
+```
+
+- **Which agent tells the story**: the same deterministic priority rule
+  `/top` uses (`topSelection` — RISK-OFF macro first, otherwise the strongest
+  deviation from neutral among funding/momentum/trend, ties breaking
+  funding > momentum > trend). If that winner is **degraded**, the story
+  falls back to the strongest `ok` agent instead of narrating a dead source;
+  `digest`, `top` and `risk` are never the subject (an aggregate is not one
+  agent's story, and the calculator has no "detected" moment).
+- **`explained`** is the AI why-line when one is available, taken from the
+  **same 5-minute memo `/top` uses** — the landing costs no extra LLM spend
+  and opens no new prompt kind. On the fallback path there is deliberately no
+  AI call; the card's strongest fact stands in, and so it does whenever AI is
+  disabled or the call failed.
+- **`data`** is 3-4 of the card's own live fact lines. Fewer only when the
+  card itself carries fewer — nothing is invented to reach a rounder number.
+- **`conclusion`** is analytical language only: what the reading means while
+  its inputs hold. Never BUY/SELL, never an instruction to enter or exit —
+  the same sanitizer rules that apply to `ai_text` apply here.
+- **`levels`** rides along when the winning card has one (trend invalidation,
+  S/R clusters, vol expansion ratio) — the raw-precision object documented
+  under [machine-readable levels](#machine-readable-levels).
+- **`503`** when *every* agent is degraded: the standard
+  `{"error": …, "ok": false, "reason": …}` body. A story is the one thing
+  this API will not fake.
+
+### Verdicts are authoritative for the AI layer
+
+The agent verdicts come from state machines, and the AI text is decoration on
+top of them — so the model is never allowed to overrule one. A trend in its
+**grey** state ("trend forming, not confirmed") must not be narrated as
+confirmed structure just because ADX alone looks convincing. Three layers
+enforce this on the shared AI path, so `/agents/digest`, `/agents/top` and
+`/showcase/example` are all covered:
+
+1. the payload labels each read `authoritative_verdict` and carries `state`
+   plus `confirmation_withheld`;
+2. the system prompt forbids asserting a confirmation the verdict withheld,
+   and asks for *which condition failed* instead;
+3. a post-processing filter drops any sentence that claims confirmation about
+   an agent whose state withheld it. If that empties the text, the AI block is
+   omitted — an absent decoration beats a contradiction.
+
 ## Response envelope
 
 Every agent endpoint answers with one shape:
@@ -385,6 +509,29 @@ curl -s localhost:8090/agents/sr | jq '.levels'
 # Error shapes
 curl -si 'localhost:8090/agents/trend?asset=doge'   # 400 unknown asset
 curl -si  localhost:8090/agents/nope                # 404 unknown agent
+
+# ── Landing showcase ─────────────────────────────────────────────────────────
+
+# The catalog the landing renders
+curl -s localhost:8090/showcase | jq
+
+# How many agents are serving live data right now
+curl -s localhost:8090/showcase | jq '{generated_at, live_count, total_count}'
+
+# Just the catalog rows, compact
+curl -s localhost:8090/showcase | jq -r '.agents[] | "\(.status)\t\(.slug)\t\(.headline)"'
+
+# Only the degraded ones, with the reason they are degraded
+curl -s localhost:8090/showcase | jq '.agents[] | select(.ok == false) | {slug, reason, headline}'
+
+# Proof the word never appears
+curl -s localhost:8090/showcase | grep -c planned          # 0
+
+# The worked example: detected → explained → data → conclusion
+curl -s localhost:8090/showcase/example | jq
+
+# The story as prose
+curl -s localhost:8090/showcase/example | jq -r '.detected, .explained, (.data[]), .conclusion'
 ```
 
 ## Honest notes
@@ -408,6 +555,11 @@ curl -si  localhost:8090/agents/nope                # 404 unknown agent
   never blocked by it. The AI brief is memoized for **5 minutes per unique
   market state** in one cache shared with the Telegram path, so hammering
   the HTTP digest does not multiply LLM spend.
+- **One sweep per minute for the landing**: `/showcase` and
+  `/showcase/example` share a 60-second singleflight memo over the whole
+  sweep, so ten concurrent renders make one pass over the sources. A sweep
+  that found nothing alive is held only 15s, so a blip cannot freeze the
+  landing on a blackout.
 - **Shared caches**: candles are cached 60s per symbol across both
   transports; ten HTTP digests and a Telegram `/digest` inside a minute hit
   Binance once per symbol, not eleven times.

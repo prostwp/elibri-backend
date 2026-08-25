@@ -41,7 +41,7 @@ func SelfTest(ag *Agents) {
 	}
 	section("/sr", ag.SRCard(ctx, btcSpec).RenderHTML())
 	section("/vol", ag.VolCard(ctx, btcSpec).RenderHTML())
-	section("/risk (example)", ag.RiskCard([]float64{10000, 1, 64000, 62500}, true, nil).RenderHTML())
+	section("/risk (example)", ag.RiskCard(riskExampleValues, true, nil).RenderHTML())
 	section("/digest", bot.digestReply(ctx))
 	section("/top", bot.topReply(ctx))
 }

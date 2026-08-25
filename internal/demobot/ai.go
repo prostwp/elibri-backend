@@ -54,7 +54,7 @@ const (
 // language clause is a regulatory requirement (team review batch 2): the
 // product ships analytics, never trade signals — and sanitizeAdviceLanguage
 // backstops the model when it slips anyway.
-const aiSystemPrompt = "You are AlphaVizor AI, a market analyst. Write a tight, factual brief for traders based ONLY on the data provided. No advice, no hedging boilerplate, no emoji. Use analytical language only: 'bullish/bearish reading', never 'BUY/SELL verdict', never 'edge available to traders', never imperatives to enter or exit. End with the single most important thing to watch next."
+const aiSystemPrompt = "You are AlphaVizor AI, a market analyst. Write a tight, factual brief for traders based ONLY on the data provided. No advice, no hedging boilerplate, no emoji. Use analytical language only: 'bullish/bearish reading', never 'BUY/SELL verdict', never 'edge available to traders', never imperatives to enter or exit. The agent verdicts in the data block are authoritative: they come from state machines that already weighed these indicators. Never assert that a trend, breakout or regime is confirmed when the verdict says it is not; when a verdict withholds confirmation (confirmation_withheld true), explain WHY it was withheld — which condition failed — rather than arguing for confirmation. End with the single most important thing to watch next."
 
 const aiBriefInstruction = "Write a coherent market brief of 4-6 sentences from the fenced data. Plain sentences only — no markdown, no headings, no lists."
 
@@ -262,6 +262,130 @@ func sanitizeAdviceLanguage(s string) string {
 	return s
 }
 
+// ── confirmation guard: the model may not overrule a state machine ───────────
+//
+// Defect this closes (team landing review, 2026-08): with the trend agent in
+// its GREY state — "trend forming, not confirmed", structure gate failed —
+// the model wrote "the only signal showing confirmed directional structure …
+// ADX 58.8, well above the 25 threshold". Every number was real; the
+// conclusion was the one the state machine had explicitly refused. On a
+// landing page that reads as the product contradicting itself.
+//
+// The prompt now carries the rule (aiSystemPrompt) and the payload carries
+// the flag (confirmation_withheld). This is the belt-and-braces third layer,
+// same shape as sanitizeAdviceLanguage: a targeted sentence filter, never a
+// general NLP attempt. A sentence is dropped only when it claims confirmation
+// AND is about an agent whose state withheld it AND does not already agree
+// with that withholding.
+
+// confirmationTopics maps an agent whose state machine can withhold
+// confirmation to the words that make a sentence ABOUT it. A confirmation
+// claim that mentions none of a withholding agent's topics is left alone —
+// e.g. "funding confirms crowded longs" has no confirmation gate to violate.
+var confirmationTopics = map[string][]string{
+	keyTrend: {"trend", "structure", "directional", "uptrend", "downtrend", "breakout"},
+	keyMacro: {"macro", "regime", "risk-on", "risk off", "risk-off", "risk on"},
+	keyVol:   {"volatility", "expansion", "atr"},
+}
+
+// stateConfirms reports whether a card's own state ASSERTS a confirmed
+// structure. Everything else — grey, flat, conflict, unknown, mixed, normal,
+// compressed, no state at all, or any degraded card — withholds it.
+func stateConfirms(c Card) bool {
+	if c.effectiveStatus() != statusOK {
+		return false // a card with no real reading confirms nothing
+	}
+	switch c.State {
+	case trendUp, trendDown, "risk_on", "risk_off", volExpanding:
+		return true
+	}
+	return false
+}
+
+// withheldTopics collects the topic words of every agent in the sweep that
+// did NOT confirm. An agent that DID confirm keeps its topic out of the list,
+// so a legitimate "the uptrend is confirmed" survives untouched.
+func withheldTopics(g gathered) []string {
+	var out []string
+	for _, k := range digestOrder { // fixed order → deterministic
+		words, gated := confirmationTopics[k]
+		if !gated {
+			continue
+		}
+		c, ok := g.cards[k]
+		if ok && stateConfirms(c) {
+			continue
+		}
+		out = append(out, words...)
+	}
+	return out
+}
+
+var (
+	confirmationRe = regexp.MustCompile(`(?i)\bconfirm(?:s|ed|ing|ation)?\b`)
+	// A sentence that AGREES with the withheld verdict is kept: it is saying
+	// the true thing. Up to three words may sit between the negation and the
+	// claim ("not yet fully confirmed").
+	negatedConfirmationRe = regexp.MustCompile(`(?i)\bunconfirmed\b|\b(?:not|no|never|without|lacks?|lacking|awaiting|absent|failed|fails)\b(?:\s+\w+){0,3}\s+confirm`)
+)
+
+// sanitizeConfirmationClaims drops sentences that assert a confirmation the
+// authoritative verdicts withheld. Dropping beats rewriting: a half-rewritten
+// market sentence is a new claim nobody checked. If every sentence goes, the
+// result is "" and the caller omits the AI block entirely — an absent
+// decoration is always better than a contradiction.
+func sanitizeConfirmationClaims(s string, topics []string) string {
+	if s == "" || len(topics) == 0 {
+		return s
+	}
+	kept := make([]string, 0, 8)
+	for _, sent := range splitSentences(s) {
+		if confirmationRe.MatchString(sent) &&
+			!negatedConfirmationRe.MatchString(sent) &&
+			mentionsAny(sent, topics) {
+			continue
+		}
+		kept = append(kept, sent)
+	}
+	return strings.TrimSpace(strings.Join(kept, " "))
+}
+
+func mentionsAny(sentence string, topics []string) bool {
+	low := strings.ToLower(sentence)
+	for _, w := range topics {
+		if strings.Contains(low, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitSentences cuts on . ! ? followed by whitespace or end of text, so
+// decimals ("58.8") never split a sentence; newlines break too.
+func splitSentences(s string) []string {
+	var out []string
+	r := []rune(s)
+	start := 0
+	flush := func(end int) {
+		if seg := strings.TrimSpace(string(r[start:end])); seg != "" {
+			out = append(out, seg)
+		}
+		start = end
+	}
+	for i := 0; i < len(r); i++ {
+		switch r[i] {
+		case '.', '!', '?':
+			if i+1 == len(r) || r[i+1] == ' ' || r[i+1] == '\n' || r[i+1] == '\t' {
+				flush(i + 1)
+			}
+		case '\n':
+			flush(i + 1)
+		}
+	}
+	flush(len(r))
+	return out
+}
+
 // truncateAtSentence caps s at max runes, cutting at the last sentence end
 // inside the window; when no boundary lands in the second half it falls
 // back to the plain ellipsis truncate. Decimal points ("63.0") are not
@@ -292,10 +416,18 @@ func truncateAtSentence(s string, max int) string {
 // map keys, fact order is the card order) and free of wall-clock stamps, so
 // an unchanged market state hashes to the same 5-minute cache key.
 func aiPayload(g gathered) string {
+	// AuthoritativeVerdict is deliberately NOT called "verdict": the field
+	// name itself tells the model the state machine already ruled, so a
+	// contradicting reading of the raw facts is out of bounds. State and
+	// ConfirmationWithheld make that machine-readable (team landing defect
+	// 2026-08: a grey-zone trend was narrated as "confirmed structure"
+	// because ADX alone looked convincing).
 	type agentRead struct {
-		Verdict string   `json:"verdict"`
-		Facts   []string `json:"facts,omitempty"`
-		Offline bool     `json:"offline,omitempty"`
+		AuthoritativeVerdict string   `json:"authoritative_verdict"`
+		State                string   `json:"state,omitempty"`
+		ConfirmationWithheld bool     `json:"confirmation_withheld,omitempty"`
+		Facts                []string `json:"facts,omitempty"`
+		Offline              bool     `json:"offline,omitempty"`
 	}
 	agents := map[string]agentRead{}
 	for _, k := range digestOrder {
@@ -303,7 +435,13 @@ func aiPayload(g gathered) string {
 		if !ok {
 			continue
 		}
-		agents[k] = agentRead{Verdict: c.Verdict, Facts: c.Facts, Offline: c.Offline}
+		agents[k] = agentRead{
+			AuthoritativeVerdict: c.Verdict,
+			State:                c.State,
+			ConfirmationWithheld: !stateConfirms(c),
+			Facts:                c.Facts,
+			Offline:              c.Offline,
+		}
 	}
 	var fxLines []string
 	for _, r := range g.fx {
@@ -366,7 +504,10 @@ func (a *Agents) aiBrief(ctx context.Context, g gathered) string {
 	if data == "" {
 		return ""
 	}
-	return truncateAtSentence(a.ai.generate(ctx, "brief", fencedMessage(aiBriefInstruction, data)), aiMaxRendered)
+	text := a.ai.generate(ctx, "brief", fencedMessage(aiBriefInstruction, data))
+	// Post-memo on purpose: the guard needs the sweep's states, and the memo
+	// stores the raw model text shared with every joiner.
+	return truncateAtSentence(sanitizeConfirmationClaims(text, withheldTopics(g)), aiMaxRendered)
 }
 
 // aiTopTexts fetches the market brief and the why-this-signal line
@@ -397,7 +538,8 @@ func (a *Agents) aiTopWhy(ctx context.Context, winner string, g gathered) string
 		return ""
 	}
 	instruction := fmt.Sprintf(
-		"The AlphaVizor priority rule selected the %s as the single top signal right now. In 2-3 sentences explain WHY this signal outranks the others, using only the fenced data. Plain sentences only — no markdown.",
+		"The AlphaVizor priority rule selected the %s as the single top signal right now. In 2-3 sentences explain WHY this signal outranks the others, using only the fenced data. Each agent's authoritative_verdict is final — if its confirmation_withheld flag is true, say which condition failed instead of claiming confirmation. Plain sentences only — no markdown.",
 		card.Agent)
-	return truncateAtSentence(a.ai.generate(ctx, "why|"+winner, fencedMessage(instruction, data)), aiMaxRendered)
+	text := a.ai.generate(ctx, "why|"+winner, fencedMessage(instruction, data))
+	return truncateAtSentence(sanitizeConfirmationClaims(text, withheldTopics(g)), aiMaxRendered)
 }
