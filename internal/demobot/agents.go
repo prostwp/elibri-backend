@@ -72,9 +72,14 @@ func (a *Agents) candlesFor(ctx context.Context, spec assetSpec) ([]types.OHLCVC
 // carry the Yahoo footer note and the FX-specific offline wording.
 func assetOffline(spec assetSpec, agent, shortName, command, how string) Card {
 	c := offlineCard(agent, shortName, spec.Display, command, how)
+	c.AssetKey = spec.Key
 	if spec.Source == srcYahoo {
-		c.Verdict = fxOfflineVerdict
-		c.SourceNote = "data: Yahoo Finance"
+		// Per-asset wording: a card headed "GOLD · COMEX GC=F" must not report
+		// that the "FX data source" failed, and it must keep the instrument
+		// disclosure the spec requires on EVERY card — degraded ones included,
+		// where the bare Yahoo credit used to silently drop "not spot XAUUSD".
+		c.Verdict = spec.offlineVerdict()
+		c.SourceNote = spec.sourceNote()
 	}
 	return c
 }
@@ -98,6 +103,7 @@ func insufficientCard(spec assetSpec, agent, shortName, command, how, what strin
 		Agent:      agent,
 		ShortName:  shortName,
 		Asset:      spec.Display,
+		AssetKey:   spec.Key,
 		Command:    command,
 		HowItWorks: how,
 		DataTime:   time.Now().UTC(),
@@ -108,7 +114,7 @@ func insufficientCard(spec assetSpec, agent, shortName, command, how, what strin
 	}
 	c.Facts = []string{"insufficient history for " + what}
 	if spec.Source == srcYahoo {
-		c.SourceNote = "data: Yahoo Finance"
+		c.SourceNote = spec.sourceNote()
 	}
 	return c
 }
@@ -120,13 +126,14 @@ var howTexts = map[string]string{
 	keyWhale:    "Watches large on-chain transfers touching known exchange wallets. Net inflow to exchanges = potential sell pressure; net outflow = accumulation.",
 	keyFunding:  "Compares perp funding rates across majors. High positive funding = crowded longs (squeeze risk); negative = crowded shorts. Liquidation feed shows where forced exits cluster.",
 	keyMomentum: "RSI(14) + MACD histogram. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; else neutral. Default 4h crypto / 1h FX; custom scan: /momentum btc,eurusd 1d.",
-	keyTrend:    "State machine on 4h candles: ADX<20 = flat (no trade), 20-25 = grey zone, ADX 25+ with price and EMA50/EMA200 aligned = confirmed trend; misaligned = conflict.",
+	keyTrend:    "State machine on 4h candles: ADX<20 = flat (no readable trend), 20-25 = grey zone, ADX 25+ with price and EMA50/EMA200 aligned = confirmed trend; misaligned = conflict.",
 	keySR:       "Finds swing highs/lows on 4h candles and clusters levels within 0.5%. Strength = touches + 0.5 per above-median-volume touch; held/break counts show how levels behaved when tested.",
 	keyVol:      "ATR(14) now vs its 30-bar average. Ratio 1.25+ = volatility expanding (breakout regime); 0.8- = compressed (range regime).",
 	keyRisk:     "Position size = (balance × risk%) ÷ |entry − stop|. Keeps one losing trade at a fixed fraction of the account. Works for any asset.",
 	keyFX:       "EMA50 vs EMA200 direction, RSI(14) and 24h change on 1h Yahoo Finance data for EURUSD, GBPUSD, USDJPY, XAUUSD. Weekend closures (Fri 21:00–Sun 21:00 UTC) are flagged, never hidden.",
 	keyDigest:   "Deterministic priority: RISK-OFF macro always tops; otherwise the strongest deviation from neutral among funding, momentum, trend. Ties break funding > momentum > trend.",
 	keyTop:      "Deterministic priority: RISK-OFF macro always tops; otherwise the strongest deviation from neutral among funding, momentum, trend. Ties break funding > momentum > trend.",
+	keyGold:     goldHow,
 	keyNews:     "Crypto themes ranked by 48h mention growth across news/Reddit. Stage: early/trending/mainstream/declining; trend score 0-100. The top narrative carries an AI-generated observation.",
 }
 
@@ -831,6 +838,7 @@ func (a *Agents) MomentumAssetCard(ctx context.Context, spec assetSpec) Card {
 		Agent:      "Momentum Agent",
 		ShortName:  "Momentum",
 		Asset:      spec.Display,
+		AssetKey:   spec.Key,
 		Command:    keyMomentum,
 		HowItWorks: howTexts[keyMomentum],
 		DataTime:   r.closeAt,
@@ -1169,10 +1177,22 @@ func pullbackZoneFor(state string, ema20, ema50 float64) *PullbackZone {
 	return &PullbackZone{From: ema20, To: ema50}
 }
 
+// trendVerdict words each state.
+//
+// Analytic statements only, never advice — the Этап 6 review flagged "Trading
+// not advised" and "stand aside" as recommendations, and a recommendation to
+// abstain is still a recommendation. The disclaimer in the footer does not
+// change what the body of the card says. What the agent may state is what it
+// READ: there is no trend to read, the indicators do not agree.
 func trendVerdict(state string, adx float64) string {
 	switch state {
 	case trendFlat:
-		return fmt.Sprintf("Flat. Trading not advised (ADX %.0f < 20)", adx)
+		// The text asserts "< 20", so the number is rounded DOWN, never to
+		// nearest: at %.0f an ADX of 19.6 printed "ADX 20 < 20", and simply
+		// adding a decimal only moves the problem (19.99 → "20.0 < 20").
+		// Flooring is provably safe — a value below the threshold can never
+		// print at or above it — which no rounding precision can guarantee.
+		return fmt.Sprintf("Flat — no trend to read (ADX %.1f < 20)", math.Floor(adx*10)/10)
 	case trendGrey:
 		return "Grey zone — trend forming, not confirmed"
 	case trendUp:
@@ -1180,14 +1200,46 @@ func trendVerdict(state string, adx float64) string {
 	case trendDown:
 		return "Confirmed DOWNTREND"
 	default:
-		return "Indicator conflict — stand aside"
+		return "Indicator conflict — no agreed reading"
 	}
 }
 
-func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
-	candles, err := a.candlesFor(ctx, spec)
-	if err != nil {
-		return assetOffline(spec, "Trend Agent", "Trend", keyTrend, howTexts[keyTrend])
+// trendRead is the Trend Agent's state machine evaluated over one window of
+// CLOSED bars — everything the verdict depends on, and nothing about how it is
+// rendered.
+//
+// It exists so the state machine has exactly ONE definition. Anything that
+// needs to know what the agent WOULD say (the gold agent, the history-run
+// harness) calls this instead of restating the rules, because a restated rule
+// silently stops matching the day someone edits the original. That is not
+// hypothetical: the measurement harness for the structure gate did exactly
+// that on 2026-08-27 and reported the defect it was built to measure as
+// costing nothing.
+type trendRead struct {
+	OK               bool   // false → window too short for the indicator set
+	State            string // flat | grey | up | down | conflict (post-gate)
+	Raw              string // classifyTrend's answer BEFORE the structure gate
+	Structure        string // "" (unreadable) | hh_hl | lh_ll | mixed
+	StructureDemoted string // demotion wording; "" when the gate did not fire
+	ADX, RSI         float64
+	EMA20, EMA50     float64
+	EMA200, Last     float64
+}
+
+// trendReadOf runs the state machine over candles (oldest first, CLOSED bars
+// only — the caller drops the forming bar). Pure: no clock, no network.
+// trendMinBars is the history floor for a regime reading.
+//
+// EMA200 alone is satisfied at exactly 200 bars, and the agent used to accept
+// that — while the history run only ever took decisions from bar 220. States
+// produced on 200-219 bars were therefore live-reachable and completely
+// unrepresented in the report backing them. One floor now, shared by both:
+// 200 for EMA200 plus 14 for ADX plus a small settling margin.
+const trendMinBars = 220
+
+func trendReadOf(candles []types.OHLCVCandle) trendRead {
+	if len(candles) < trendMinBars {
+		return trendRead{}
 	}
 	closes := closesOf(candles)
 	highs, lows := highsLowsOf(candles)
@@ -1197,9 +1249,7 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 	adx, okADX := adxWilder(highs, lows, closes, 14)
 	rsi, okRSI := rsiWilder(closes, 14)
 	if !ok20 || !ok50 || !ok200 || !okADX || !okRSI {
-		c := insufficientCard(spec, "Trend Agent", "Trend", keyTrend, howTexts[keyTrend], "EMA200/ADX(14)")
-		c.DataTime = closeTimeOf(candles, spec.Interval)
-		return c
+		return trendRead{}
 	}
 	last := closes[len(closes)-1]
 
@@ -1208,41 +1258,86 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 	// pivots. It PARTICIPATES in the state machine: an EMA/ADX-confirmed
 	// direction with a contradicting or mixed pivot structure demotes to the
 	// grey zone — the card must never say "Confirmed UPTREND" over LH/LL
-	// swings. An empty read ("" — too few pivots, e.g. a monotone series)
-	// does NOT demote: there is no structure evidence against the trend, and
-	// a clean monotone rise is the strongest trend there is.
+	// swings.
+	//
+	// An empty read ("") does NOT demote, and that is the load-bearing half of
+	// the rule. "" means the structure could not be READ — too few pivots (a
+	// monotone series, the strongest trend there is) or a non-alternating
+	// window (a double top, two pushes). Neither is evidence against a trend.
+	// Only "mixed" — pivots that alternate and still refuse to line up — is a
+	// real disagreement, and only it demotes alongside the explicit opposite.
+	//
+	// The two were conflated until 2026-08-27, which cost 33 percentage points
+	// of trend confirmations platform-wide; see hhhlStructure's comment and
+	// structure_gate_measure_test.go.
 	swingHighs, swingLows := swingPointsIdx(highs, lows, 3)
 	structure := hhhlStructure(swingHighs, swingLows)
 
 	state := classifyTrend(adx, ema50, ema200, last)
-	structureDemoted := ""
+	raw := state
+	demoted := ""
 	switch {
 	case state == trendUp && structure == "lh_ll":
-		structureDemoted = "Structure disagrees (LH/LL) — trend not confirmed"
+		demoted = "Structure disagrees (LH/LL) — trend not confirmed"
 	case state == trendUp && structure == "mixed":
-		structureDemoted = "Structure mixed — trend not confirmed"
+		demoted = "Structure mixed — trend not confirmed"
 	case state == trendDown && structure == "hh_hl":
-		structureDemoted = "Structure disagrees (HH/HL) — trend not confirmed"
+		demoted = "Structure disagrees (HH/HL) — trend not confirmed"
 	case state == trendDown && structure == "mixed":
-		structureDemoted = "Structure mixed — trend not confirmed"
+		demoted = "Structure mixed — trend not confirmed"
 	}
-	if structureDemoted != "" {
+	if demoted != "" {
 		state = trendGrey
 	}
+	return trendRead{
+		OK: true, State: state, Raw: raw,
+		Structure: structure, StructureDemoted: demoted,
+		ADX: adx, RSI: rsi,
+		EMA20: ema20, EMA50: ema50, EMA200: ema200, Last: last,
+	}
+}
+
+// Confirmed reports whether the state machine committed to a direction.
+func (r trendRead) Confirmed() bool { return r.State == trendUp || r.State == trendDown }
+
+func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
+	candles, err := a.candlesFor(ctx, spec)
+	if err != nil {
+		return assetOffline(spec, "Trend Agent", "Trend", keyTrend, howTexts[keyTrend])
+	}
+	r := trendReadOf(candles)
+	if !r.OK {
+		c := insufficientCard(spec, "Trend Agent", "Trend", keyTrend, howTexts[keyTrend], "EMA200/ADX(14)")
+		c.DataTime = closeTimeOf(candles, spec.Interval)
+		return c
+	}
+	closes := closesOf(candles)
+	highs, lows := highsLowsOf(candles)
+	ema20, ema50, ema200 := r.EMA20, r.EMA50, r.EMA200
+	adx, rsi, last := r.ADX, r.RSI, r.Last
+	state, structure, structureDemoted := r.State, r.Structure, r.StructureDemoted
+
+	// The card needs the pivots again only to explain an unreadable structure.
+	swingHighs, swingLows := swingPointsIdx(highs, lows, 3)
 
 	c := Card{
 		Agent:      "Trend Agent",
 		ShortName:  "Trend",
 		Asset:      spec.Display,
+		AssetKey:   spec.Key,
 		Command:    keyTrend,
 		HowItWorks: howTexts[keyTrend],
 		DataTime:   closeTimeOf(candles, spec.Interval),
 		Verdict:    trendVerdict(state, adx),
 		State:      state, // grey/flat/conflict = confirmation WITHHELD
 	}
-	emaStructure := "bearish structure"
+	// "alignment", not "structure": the card already uses "Structure:" for the
+	// swing-pivot reading two lines down, and a card that says "bullish
+	// structure" directly above "Structure: no reading" looks like it is
+	// arguing with itself. One word, one meaning per card.
+	emaStructure := "bearish alignment"
 	if ema50 > ema200 {
-		emaStructure = "bullish structure"
+		emaStructure = "bullish alignment"
 	}
 	// ADX drives the verdict → its confirm threshold rides beside the number
 	// (batch-2 rule: thresholds in parentheses only where the number drives
@@ -1250,9 +1345,16 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 	c.Facts = append(c.Facts,
 		fmt.Sprintf("EMA50 %s vs EMA200 %s — %s", trimFloat(ema50), trimFloat(ema200), emaStructure),
 	)
-	// One structure fact: the demotion wording when the gate fired, the plain
-	// read otherwise. Silent when the window has too few pivots to classify —
-	// no claim beats an invented one.
+	// One structure fact, always present: the demotion wording when the gate
+	// fired, the plain read when the window classified, and an EXPLICIT
+	// no-reading line when it did not.
+	//
+	// The no-reading line is not decoration. After the 2026-08-27 gate fix an
+	// unreadable window is the common case (54-78% of bars), so staying silent
+	// would drop the structure line from most cards with no way for a reader
+	// to tell "could not read it" from "the feature stopped working". The
+	// line therefore states the reason AND that it carries no weight — the
+	// same thing the state machine does with it.
 	switch {
 	case structureDemoted != "":
 		c.Facts = append(c.Facts, structureDemoted)
@@ -1262,6 +1364,11 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 		c.Facts = append(c.Facts, "Structure: LH/LL (last 3 swing highs and lows falling)")
 	case structure == "mixed":
 		c.Facts = append(c.Facts, "Structure: mixed (last swings not aligned)")
+	default:
+		if why := structReadFailure(swingHighs, swingLows); why != "" {
+			c.Facts = append(c.Facts,
+				"Structure: no reading ("+why+") — counts neither for nor against the trend")
+		}
 	}
 	c.Facts = append(c.Facts,
 		fmt.Sprintf("ADX(14): %.1f (trend confirms above 25) · RSI(14): %.1f", adx, rsi),
@@ -1306,7 +1413,7 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 	case trendConflict:
 		c.Emoji, c.Short = emojiNeutral, "indicator conflict"
 	default:
-		c.Emoji, c.Short = emojiNeutral, "flat — no trade"
+		c.Emoji, c.Short = emojiNeutral, "flat — no trend"
 	}
 	// Confirmed trends count double toward the priority rule; unconfirmed
 	// states carry only the raw ADX (documented in pickTop's rule 2).
@@ -1324,6 +1431,14 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 // STRONG. Below it a level is a candidate; at 7+ distinct swing touches the
 // market has respected the price often enough to call the level established.
 // Surfaced beside the touch numbers on the card (batch-2 thresholds rule).
+// Swing/cluster parameters, named so the gold agent's untruncated search runs
+// on exactly the same clustering as the S/R card rather than a second set of
+// magic numbers.
+const (
+	srWing   = 3
+	srTolPct = 0.5
+)
+
 const srStrongTouches = 7
 
 func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
@@ -1336,7 +1451,7 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 		c.DataTime = closeTimeOf(candles, spec.Interval)
 		return c
 	}
-	sup, res := supportResistance(candles, 3, 0.5)
+	sup, res := supportResistance(candles, srWing, srTolPct)
 	last := candles[len(candles)-1].Close
 	// Both sides empty is never "Key levels around …" (review fix 2). Two
 	// distinct causes, two honest states:
@@ -1359,6 +1474,7 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 			Agent:      "S/R Agent",
 			ShortName:  "S/R",
 			Asset:      spec.Display,
+			AssetKey:   spec.Key,
 			Command:    keySR,
 			HowItWorks: howTexts[keySR],
 			DataTime:   closeTimeOf(candles, spec.Interval),
@@ -1381,6 +1497,7 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 		Agent:      "S/R Agent",
 		ShortName:  "S/R",
 		Asset:      spec.Display,
+		AssetKey:   spec.Key,
 		Command:    keySR,
 		HowItWorks: howTexts[keySR],
 		DataTime:   closeTimeOf(candles, spec.Interval),
@@ -1535,16 +1652,24 @@ func (a *Agents) VolCard(ctx context.Context, spec assetSpec) Card {
 		sum += v
 	}
 	avg := sum / 30
-	ratio := 0.0
-	if avg > 0 {
-		ratio = now / avg
+	if avg <= 0 {
+		// A zero 30-bar ATR baseline makes the ratio 0/0. It used to be left
+		// at 0.0, which volState reads as CONFIRMED COMPRESSION — a claim
+		// manufactured out of missing data. There is nothing to compare
+		// against, so the card says exactly that.
+		c := insufficientCard(spec, "Volatility Agent", "Volatility", keyVol, howTexts[keyVol],
+			"ATR(14) 30-bar baseline (the baseline is flat zero — nothing to compare against)")
+		c.DataTime = closeTimeOf(candles, spec.Interval)
+		return c
 	}
+	ratio := now / avg
 	state := volState(ratio)
 	c := Card{
 		Emoji:      emojiNeutral,
 		Agent:      "Volatility Agent",
 		ShortName:  "Volatility",
 		Asset:      spec.Display,
+		AssetKey:   spec.Key,
 		Command:    keyVol,
 		HowItWorks: howTexts[keyVol],
 		DataTime:   closeTimeOf(candles, spec.Interval),

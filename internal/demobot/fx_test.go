@@ -57,9 +57,13 @@ func TestResolveAsset(t *testing.T) {
 		{"EURUSD", "EURUSD", srcYahoo, "EURUSD=X"},
 		{"gbpusd", "GBPUSD", srcYahoo, "GBPUSD=X"},
 		{"usdjpy", "USDJPY", srcYahoo, "USDJPY=X"},
-		{"xau", "XAUUSD", srcYahoo, "XAUUSD=X"},
-		{"gold", "XAUUSD", srcYahoo, "XAUUSD=X"},
-		{"xauusd", "XAUUSD", srcYahoo, "XAUUSD=X"},
+		// Gold's human label names the CONTRACT: the feed serves COMEX
+		// futures, not spot, so a card headed "XAUUSD" would be off by the
+		// basis on every level it prints. The machine key stays "XAUUSD" —
+		// asserted separately below.
+		{"xau", "GOLD · COMEX GC=F", srcYahoo, "XAUUSD=X"},
+		{"gold", "GOLD · COMEX GC=F", srcYahoo, "XAUUSD=X"},
+		{"xauusd", "GOLD · COMEX GC=F", srcYahoo, "XAUUSD=X"},
 	}
 	for _, tc := range cases {
 		spec, err := resolveAsset(tc.arg)
@@ -74,6 +78,19 @@ func TestResolveAsset(t *testing.T) {
 	// Gold must carry the GC=F fallback (XAUUSD=X is dead on Yahoo right now).
 	if spec, _ := resolveAsset("gold"); spec.Fallback != "GC=F" {
 		t.Errorf("gold fallback: got %q, want GC=F", spec.Fallback)
+	}
+	// The documented HTTP contract must survive the honest relabelling: every
+	// asset serves a plain ticker as its machine key, gold included.
+	for _, arg := range []string{"xau", "gold", "xauusd"} {
+		if spec, _ := resolveAsset(arg); spec.Key != "XAUUSD" {
+			t.Errorf("resolveAsset(%q).Key = %q, want XAUUSD — integrations branch on it", arg, spec.Key)
+		}
+	}
+	for _, arg := range []string{"btc", "eurusd"} {
+		spec, _ := resolveAsset(arg)
+		if got := (Card{Asset: spec.Display, AssetKey: spec.Key}).assetKey(); got != spec.Display {
+			t.Errorf("%s: machine key %q must equal the label %q when they do not differ", arg, got, spec.Display)
+		}
 	}
 	if _, err := resolveAsset("doge"); err == nil {
 		t.Error("unknown asset must error")

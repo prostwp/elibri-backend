@@ -37,7 +37,7 @@ func TestClassifyTrend(t *testing.T) {
 // The flat state must carry the exact advisory wording from the spec.
 func TestTrendVerdictWording(t *testing.T) {
 	v := trendVerdict(trendFlat, 0)
-	if !strings.Contains(v, "Flat. Trading not advised") {
+	if !strings.Contains(v, "Flat — no trend to read") {
 		t.Fatalf("flat verdict must contain the advisory, got %q", v)
 	}
 }

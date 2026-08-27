@@ -15,7 +15,11 @@ const (
 
 // assetSpec describes one tradeable asset the analysis commands accept.
 type assetSpec struct {
-	Display  string // card label: "BTC", "EURUSD"
+	Display string // card label shown to a reader: "BTC", "GOLD · COMEX GC=F"
+	// Key is the machine asset value served by the HTTP envelope. Empty means
+	// "same as Display" — they only differ where the honest human label is not
+	// a plain ticker (gold).
+	Key      string
 	Source   string // srcBinance | srcYahoo
 	Symbol   string // exchange-native symbol: "BTCUSDT", "EURUSD=X"
 	Fallback string // secondary Yahoo symbol tried when the primary fails
@@ -24,10 +28,22 @@ type assetSpec struct {
 
 var btcSpec = assetSpec{Display: "BTC", Source: srcBinance, Symbol: "BTCUSDT", Interval: "4h"}
 
-// xauSpec: XAUUSD=X is currently dead on Yahoo ("Not Found", verified live
-// 2026-08-18) — GC=F (COMEX gold futures) is the working fallback and in
-// practice the actual gold source.
-var xauSpec = assetSpec{Display: "XAUUSD", Source: srcYahoo, Symbol: "XAUUSD=X", Fallback: "GC=F", Interval: "1h"}
+// xauSpec: spot XAUUSD does not exist on this feed — XAUUSD=X and XAU=X both
+// answer 404 (verified live 2026-08-18 and again 2026-08-26). GC=F (COMEX gold
+// futures) is not a fallback in practice, it IS the source.
+//
+// Display therefore names the contract: a card printing levels off futures
+// prices under the label "XAUUSD" is off by the basis on every number it
+// shows. Key keeps "XAUUSD" so the documented HTTP contract is untouched —
+// see Card.AssetKey for why the two are separate fields.
+var xauSpec = assetSpec{
+	Display:  "GOLD · COMEX GC=F",
+	Key:      "XAUUSD",
+	Source:   srcYahoo,
+	Symbol:   "XAUUSD=X",
+	Fallback: "GC=F",
+	Interval: "1h",
+}
 
 var assetTable = map[string]assetSpec{
 	"btc":    btcSpec,
@@ -126,6 +142,30 @@ func specWithTF(spec assetSpec, tf string) (assetSpec, error) {
 	spec.Interval = tf
 	return spec, nil
 }
+
+// offlineVerdict is the degraded wording for this asset's source. FX pairs get
+// the FX phrasing; gold does not — telling a reader that the "FX data source"
+// failed on a card headed "GOLD · COMEX GC=F" names the wrong market.
+func (s assetSpec) offlineVerdict() string {
+	if s.isGold() {
+		return "Gold futures data source unavailable right now"
+	}
+	return fxOfflineVerdict
+}
+
+// sourceNote is the footer line. The gold note carries the instrument
+// disclosure, which the spec requires on EVERY card — degraded ones included,
+// where it used to be dropped in favour of the bare Yahoo credit.
+func (s assetSpec) sourceNote() string {
+	if s.isGold() {
+		return goldSourceNote
+	}
+	return "data: Yahoo Finance"
+}
+
+// isGold marks the COMEX contract, the one asset whose human label is not its
+// ticker.
+func (s assetSpec) isGold() bool { return s.Key == "XAUUSD" }
 
 // ── Market hours ─────────────────────────────────────────────────────────────
 

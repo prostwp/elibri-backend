@@ -89,19 +89,44 @@ func parseYahooChart(data []byte) ([]types.OHLCVCandle, error) {
 		if !isFinite(*q.Open[i]) || !isFinite(*q.High[i]) || !isFinite(*q.Low[i]) || !isFinite(*q.Close[i]) {
 			continue
 		}
+		// Semantic sanity. Finiteness alone let through bars that cannot
+		// exist — a High below its Low renders as the impossible range
+		// "4600 – 4500", and every level comparison built on it is wrong.
+		// A malformed bar is dropped, never repaired: guessing which of the
+		// four numbers is the broken one would be inventing data.
+		o, hi, lo, cl := *q.Open[i], *q.High[i], *q.Low[i], *q.Close[i]
+		if hi < lo || o <= 0 || cl <= 0 || hi <= 0 || lo <= 0 ||
+			o > hi || o < lo || cl > hi || cl < lo {
+			continue
+		}
 		var vol float64
-		if i < len(q.Volume) && q.Volume[i] != nil && isFinite(*q.Volume[i]) {
+		if i < len(q.Volume) && q.Volume[i] != nil && isFinite(*q.Volume[i]) && *q.Volume[i] >= 0 {
 			vol = *q.Volume[i]
 		}
 		candles = append(candles, types.OHLCVCandle{
 			Time:   r.Timestamp[i],
-			Open:   *q.Open[i],
-			High:   *q.High[i],
-			Low:    *q.Low[i],
-			Close:  *q.Close[i],
+			Open:   o,
+			High:   hi,
+			Low:    lo,
+			Close:  cl,
 			Volume: vol,
 		})
 	}
+	// Chronological order and unique stamps are assumed EVERYWHERE downstream:
+	// dropUnclosedBars trims from the tail, the day-levels walk reads
+	// backwards, every indicator treats index order as time order. An
+	// out-of-order response would leave a still-forming bar sitting mid-series
+	// where the tail trim cannot see it — a look-ahead path that no amount of
+	// care further down would catch. Enforced here, at the boundary.
+	sort.SliceStable(candles, func(i, j int) bool { return candles[i].Time < candles[j].Time })
+	deduped := candles[:0]
+	for i, c := range candles {
+		if i > 0 && c.Time == candles[i-1].Time {
+			continue // keep the first of a duplicated stamp
+		}
+		deduped = append(deduped, c)
+	}
+	candles = deduped
 	if len(candles) == 0 {
 		return nil, errors.New("yahoo chart: no usable bars (all null-padded)")
 	}

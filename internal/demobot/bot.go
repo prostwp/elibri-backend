@@ -243,10 +243,10 @@ func parseCommand(text string) (string, []string) {
 
 // ── Zero-typing navigation ───────────────────────────────────────────────────
 
-// botCommands fills the native Telegram "/" menu (setMyCommands). Exactly 14
+// botCommands fills the native Telegram "/" menu (setMyCommands). Exactly 15
 // entries: /start is the platform's own entry point and needs no slot;
 // /help lost its grid button to 📰 News, so it lives here (and stays a typed
-// command), alongside the new /news.
+// command), alongside /news and /gold.
 var botCommands = []BotCommand{
 	{Command: "menu", Description: "Button navigation"},
 	{Command: "digest", Description: "All agents, prioritized"},
@@ -260,6 +260,7 @@ var botCommands = []BotCommand{
 	{Command: "trend", Description: "Trend state machine"},
 	{Command: "sr", Description: "Support/resistance levels"},
 	{Command: "vol", Description: "Volatility expansion check"},
+	{Command: "gold", Description: "Gold: day regime & levels"},
 	{Command: "risk", Description: "Position-size calculator"},
 	{Command: "help", Description: "Command list & usage"},
 }
@@ -280,6 +281,7 @@ func menuKeyboard() *InlineKeyboardMarkup {
 		{btn("⚡ Momentum", keyMomentum), btn("📈 Trend", keyTrend)},
 		{btn("🎯 Levels", keySR), btn("🌪 Volatility", keyVol)},
 		{btn("🧮 Risk", keyRisk), btn("📰 News", keyNews)},
+		{btn("🥇 Gold", keyGold)},
 	}}
 }
 
@@ -322,6 +324,8 @@ func (b *Bot) buildReply(ctx context.Context, cmd string, args []string) (string
 		return b.ag.FXCard(ctx).RenderHTML(), cardKeyboard(keyFX, true)
 	case keyNews:
 		return b.ag.NewsCard(ctx).RenderHTML(), cardKeyboard(keyNews, true)
+	case keyGold:
+		return b.ag.GoldCard(ctx).RenderHTML(), cardKeyboard(keyGold, true)
 	case keyMomentum:
 		return b.momentumReply(ctx, args)
 	case keyTrend:

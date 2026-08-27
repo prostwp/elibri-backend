@@ -292,7 +292,7 @@ narrative radar).
 | `ok` / `reason` | The same machine-readable pair the agent envelopes carry (`source_offline`, `insufficient_history`, `below_threshold`, `no_data`, `market_closed`), `null` when `ok` |
 | `headline` | The card's verdict line — for `digest`, the prioritized "Top signal: …" line |
 | `one_liner` | The digest-style one-liner, plain text |
-| `category` | `crypto` \| `forex` \| `macro` \| `onchain` \| `derivatives` \| `news` \| `tools`. `tools` holds the three that are not a single-market read: `digest`, `top`, `risk` |
+| `category` | `crypto` \| `forex` \| `metals` \| `macro` \| `onchain` \| `derivatives` \| `news` \| `tools`. `tools` holds the three that are not a single-market read: `digest`, `top`, `risk`; `metals` holds the gold agent |
 | `example_url` | Where the landing links for the full card: `/agents/<slug>` |
 
 **Degraded agents stay in the list.** They are not hidden and they are not

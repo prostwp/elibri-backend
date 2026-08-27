@@ -114,3 +114,40 @@ func TestParseYahooChartMalformed(t *testing.T) {
 		}
 	}
 }
+
+// Д9 (Этап 6): the parser is the boundary where impossible bars and broken
+// ordering must die. Finiteness alone used to be the only check.
+func TestParseYahooChartRejectsImpossibleBars(t *testing.T) {
+	body := []byte(`{"chart":{"result":[{"timestamp":[300,100,200,200,400],
+	 "indicators":{"quote":[{
+	   "open":[10,10,10,10,-5],
+	   "high":[12,12,9,12,12],
+	   "low":[9,9,11,9,9],
+	   "close":[11,11,10,11,11],
+	   "volume":[1,1,1,1,1]}]}}]}}`)
+	got, err := parseYahooChart(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// t=200 appears twice (one copy has High 9 < Low 11 and is dropped),
+	// t=400 has a negative open. Survivors: 100, 200, 300 — in order.
+	var stamps []int64
+	for _, c := range got {
+		stamps = append(stamps, c.Time)
+		if c.High < c.Low {
+			t.Errorf("impossible bar survived: %+v", c)
+		}
+		if c.Open <= 0 || c.Close <= 0 {
+			t.Errorf("non-positive price survived: %+v", c)
+		}
+	}
+	want := []int64{100, 200, 300}
+	if len(stamps) != len(want) {
+		t.Fatalf("stamps = %v, want %v", stamps, want)
+	}
+	for i := range want {
+		if stamps[i] != want[i] {
+			t.Fatalf("stamps = %v, want %v (sorted and deduplicated)", stamps, want)
+		}
+	}
+}

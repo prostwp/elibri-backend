@@ -142,7 +142,7 @@ func TestShowcaseCatalogShape(t *testing.T) {
 	}
 	validCategory := map[string]bool{
 		"crypto": true, "forex": true, "macro": true, "onchain": true,
-		"derivatives": true, "news": true, "tools": true,
+		"derivatives": true, "news": true, "tools": true, "metals": true,
 	}
 	live := 0
 	for i, row := range sc.Agents {

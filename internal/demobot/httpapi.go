@@ -52,7 +52,7 @@ const (
 // (mirrors the bot's menu grid).
 var httpAgentNames = []string{
 	keyDigest, keyTop, keyFX, keyMacro, keyWhale, keyFunding,
-	keyMomentum, keyTrend, keySR, keyVol, keyRisk, keyNews,
+	keyMomentum, keyTrend, keySR, keyVol, keyRisk, keyNews, keyGold,
 }
 
 // assetAgents take the optional ?asset= parameter; every other agent
@@ -129,7 +129,7 @@ func cardEnvelope(c Card) httpEnvelope {
 	st := c.effectiveStatus()
 	env := httpEnvelope{
 		Agent:      c.Agent,
-		Asset:      c.Asset,
+		Asset:      c.assetKey(),
 		OK:         st == statusOK,
 		Verdict:    c.Verdict,
 		Semaphore:  semaphoreOf(c.Emoji),
@@ -504,6 +504,10 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 		default:
 			s.writeCard(w, s.ag.VolCard(ctx, spec))
 		}
+	case keyGold:
+		// Fixed asset by design: this agent IS the gold read, so it takes no
+		// ?asset= (the guard above already rejects one).
+		s.writeCard(w, s.ag.GoldCard(ctx))
 	case keyRisk:
 		s.handleRisk(w, q)
 	case keyDigest:

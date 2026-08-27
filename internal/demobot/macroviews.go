@@ -287,6 +287,9 @@ func buildGoldView(c *Card, m *MacroResp) {
 	score := goldViewScore(m.Lamps)
 	sup, prs, neu := goldViewCounts(m.Lamps)
 
+	// State carries the same outcome machine-readably (Card.State contract),
+	// so a composing agent branches on the state instead of sniffing the
+	// verdict string. "" when there is no read at all.
 	switch {
 	case score == nil:
 		voters := sup + prs + neu
@@ -298,14 +301,17 @@ func buildGoldView(c *Card, m *MacroResp) {
 		c.Emoji = emojiBull
 		c.Verdict = "GOLD VIEW: SUPPORT — macro lamps lean toward gold"
 		c.Short = "gold: support"
+		c.State = goldSupport
 	case *score < goldPressureBelow:
 		c.Emoji = emojiBear
 		c.Verdict = "GOLD VIEW: PRESSURE — macro lamps lean against gold"
 		c.Short = "gold: pressure"
+		c.State = goldPressure
 	default:
 		c.Emoji = emojiNeutral
 		c.Verdict = "GOLD VIEW: MIXED — lamps split on gold"
 		c.Short = "gold: mixed"
+		c.State = goldNeutral
 	}
 
 	// Per-lamp lines in render order: value + session delta + the gold

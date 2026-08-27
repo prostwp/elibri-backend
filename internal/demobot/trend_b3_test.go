@@ -129,16 +129,17 @@ func TestHHHLStructure(t *testing.T) {
 		},
 		{
 			// Two consecutive highs without a low between them (a double top
-			// inside the window) is NOT an alternating structure.
+			// inside the window) is NOT an alternating structure — and a
+			// double top is ordinary price, never proof the trend is over.
 			"non-alternating: adjacent highs",
 			pts(1, 10, 3, 11, 9, 12), pts(5, 5, 7, 6, 11, 7),
-			"mixed", // order: H1 H3 L5 L7? → H1,H3 adjacent → mixed
+			"", // H1,H3 adjacent → unreadable, not a claim against the trend
 		},
 		{
 			// A same-bar high+low (outside bar) cannot alternate.
 			"non-alternating: same-bar pivot pair",
 			pts(1, 10, 5, 11, 9, 12), pts(3, 5, 7, 6, 9, 7),
-			"mixed",
+			"",
 		},
 		{
 			// Only the LAST six pivots are read: early junk is ignored.
@@ -379,12 +380,129 @@ func TestTrendCardStructureDisagreementDemotes(t *testing.T) {
 }
 
 func TestTrendCardMonotoneHasNoStructureClaim(t *testing.T) {
-	// The plain rising stub is monotone — zero swing points, so the card must
-	// stay silent about HH/HL rather than invent a claim.
+	// The plain rising stub is monotone — zero swing points. The card must not
+	// invent an HH/HL claim; it states that there is nothing to read instead.
 	stubBinanceKlines(t, 250, flatVol)
 	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
 	c := ag.TrendCard(context.Background(), btcSpec)
-	if strings.Contains(strings.Join(c.Facts, "|"), "Structure:") {
-		t.Errorf("monotone series has no swings — no structure claim allowed: %v", c.Facts)
+	joined := strings.Join(c.Facts, "|")
+	if !strings.Contains(joined, "Structure: no reading (too few swing points)") {
+		t.Errorf("monotone series must state that no structure could be read: %v", c.Facts)
+	}
+	for _, banned := range []string{"HH/HL confirmed", "Structure: LH/LL", "Structure: mixed"} {
+		if strings.Contains(joined, banned) {
+			t.Errorf("monotone series has no swings — %q is an invented claim: %v", banned, c.Facts)
+		}
+	}
+}
+
+// structReadFailure must name a reason for exactly the windows hhhlStructure
+// cannot classify, and stay silent for the ones it can. The two are read from
+// the same pivot ordering, so a disagreement here means they have drifted.
+func TestStructReadFailureAgreesWithClassifier(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		highs, lows []swingPoint
+		wantFailure string
+	}{
+		{"readable: alternating rising", pts(1, 10, 5, 11, 9, 12), pts(3, 5, 7, 6, 11, 7), ""},
+		{"too few pivots", pts(1, 10, 5, 11), pts(3, 5, 7, 6), "too few swing points"},
+		{"two highs in a row", pts(1, 10, 3, 11, 9, 12), pts(5, 5, 7, 6, 11, 7), "two highs or two lows in a row"},
+		{"same-bar pair", pts(1, 10, 5, 11, 9, 12), pts(3, 5, 7, 6, 9, 7), "a high and a low on the same bar"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gotFailure := structReadFailure(tc.highs, tc.lows)
+			if gotFailure != tc.wantFailure {
+				t.Errorf("structReadFailure = %q, want %q", gotFailure, tc.wantFailure)
+			}
+			// The invariant: a reason exists exactly when the classifier gave "".
+			gotStructure := hhhlStructure(tc.highs, tc.lows)
+			if (gotStructure == "") != (gotFailure != "") {
+				t.Errorf("drift: hhhlStructure = %q but structReadFailure = %q", gotStructure, gotFailure)
+			}
+		})
+	}
+}
+
+// hhhlUnreadableOverUptrend builds the case the B3 fixtures never covered: a
+// clean EMA/ADX uptrend whose last six pivots do NOT alternate, because the
+// window ends on two swing highs in a row (a double top).
+//
+// Pivot order by index: H218 L221 H224 L227 H230 H236 — the trailing H,H pair
+// breaks alternation. Highs rise and lows rise, so nothing here argues against
+// the trend; the sequence simply cannot be classified.
+func hhhlUnreadableOverUptrend(bars int) []types.OHLCVCandle {
+	start := time.Now().Unix() - int64(bars+2)*14400
+	out := make([]types.OHLCVCandle, bars)
+	upSpike := map[int]float64{218: 2000, 224: 3000, 230: 4000, 236: 5000}
+	downSpike := map[int]float64{221: 1500, 227: 2000}
+	for i := range out {
+		p := 60000 + 150*float64(i)
+		c := types.OHLCVCandle{
+			Time: start + int64(i)*14400,
+			Open: p - 25, High: p + 100, Low: p - 100, Close: p, Volume: 100,
+		}
+		if s, ok := upSpike[i]; ok {
+			c.High = p + s
+		}
+		if s, ok := downSpike[i]; ok {
+			c.Low = p - s
+		}
+		out[i] = c
+	}
+	return out
+}
+
+// An UNREADABLE structure must not demote a confirmed trend. This is the
+// regression guard for the 2026-08-27 defect: a non-alternating pivot window
+// used to read as "mixed" and demote, which left the Trend Agent confirming
+// 2.2% of BTC 4h bars instead of 35.3%.
+//
+// The distinction this test pins: "cannot read a structure" is not
+// "the structure disagrees". Only the latter demotes — see
+// TestTrendCardStructureDisagreementDemotes for the case that still does.
+func TestTrendCardUnreadableStructureDoesNotDemote(t *testing.T) {
+	candles := hhhlUnreadableOverUptrend(250)
+
+	closes := closesOf(candles)
+	highs, lows := highsLowsOf(candles)
+	ema50, _ := emaLast(closes, 50)
+	ema200, _ := emaLast(closes, 200)
+	adx, _ := adxWilder(highs, lows, closes, 14)
+	if got := classifyTrend(adx, ema50, ema200, closes[len(closes)-1]); got != trendUp {
+		t.Fatalf("fixture precondition: classifyTrend = %q (adx %.1f), want up", got, adx)
+	}
+	sh, sl := swingPointsIdx(highs, lows, 3)
+	if got := hhhlStructure(sh, sl); got != "" {
+		t.Fatalf("fixture precondition: structure = %q, want \"\" (unreadable); pivots %d/%d",
+			got, len(sh), len(sl))
+	}
+
+	stubBinanceCandles(t, candles)
+	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
+	c := ag.TrendCard(context.Background(), btcSpec)
+
+	if !strings.Contains(c.Verdict, "Confirmed UPTREND") {
+		t.Errorf("verdict = %q, want Confirmed UPTREND — an unreadable structure is not a veto", c.Verdict)
+	}
+	joined := strings.Join(c.Facts, "|")
+	// The card must SAY the structure could not be read, name why, and say it
+	// carries no weight — silence here is indistinguishable from a broken
+	// feature, and this is the common case on real series.
+	if !strings.Contains(joined, "Structure: no reading (two highs or two lows in a row)") {
+		t.Errorf("unreadable structure must be stated with its reason: %v", c.Facts)
+	}
+	if !strings.Contains(joined, "counts neither for nor against the trend") {
+		t.Errorf("no-reading line must say it carries no weight: %v", c.Facts)
+	}
+	// It must never read as a structural CLAIM.
+	for _, banned := range []string{"HH/HL confirmed", "Structure: LH/LL", "Structure: mixed", "not confirmed"} {
+		if strings.Contains(joined, banned) {
+			t.Errorf("unreadable structure must not produce %q: %v", banned, c.Facts)
+		}
+	}
+	// A confirmed state keeps its pullback zone.
+	if lv, ok := c.Levels.(TrendLevels); !ok || lv.PullbackZone == nil {
+		t.Errorf("confirmed trend must still carry a pullback zone, levels = %+v", c.Levels)
 	}
 }

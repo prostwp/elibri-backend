@@ -71,6 +71,7 @@ var showcaseNames = map[string]string{
 	keyVol:      "Volatility Agent",
 	keyRisk:     "Risk Calculator",
 	keyNews:     "Narrative Radar",
+	keyGold:     "Gold Agent",
 }
 
 // showcaseCategories is the landing's filter chip per agent. "tools" holds
@@ -89,6 +90,7 @@ var showcaseCategories = map[string]string{
 	keyTrend:    "crypto", // default asset btc
 	keySR:       "crypto",
 	keyVol:      "crypto",
+	keyGold:     "metals",
 }
 
 // exampleOrder is the fallback preference when the /top winner is degraded:
@@ -118,11 +120,14 @@ type showcaseBuild struct {
 // reads, risk is local arithmetic, digest and top are derived.
 func (a *Agents) buildShowcase(ctx context.Context) *showcaseBuild {
 	var g gathered
-	var news Card
+	var news, gold Card
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); g = a.gather(ctx) }()
 	go func() { defer wg.Done(); news = a.NewsCard(ctx) }()
+	// The gold agent is not part of gather (the digest trio is crypto-only,
+	// see priority.go), so the landing sweeps it alongside the radar.
+	go func() { defer wg.Done(); gold = a.GoldCard(ctx) }()
 	wg.Wait()
 
 	cards := make(map[string]Card, len(httpAgentNames))
@@ -131,6 +136,7 @@ func (a *Agents) buildShowcase(ctx context.Context) *showcaseBuild {
 	}
 	cards[keyFX] = fxCardFromReads(g.fx)
 	cards[keyNews] = news
+	cards[keyGold] = gold
 	cards[keyRisk] = a.RiskCard(riskExampleValues, true, nil)
 	_, top := topSelection(g)
 	cards[keyDigest] = top // the digest's head IS the winner card

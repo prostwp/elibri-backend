@@ -237,44 +237,123 @@ func swingLevels(high, low []float64, wing int) (swingHighs, swingLows []float64
 	return swingHighs, swingLows
 }
 
-// hhhlStructure classifies market structure from the swing pivots (review
-// fix 7: alternation-aware). The pivots are merged CHRONOLOGICALLY and the
-// last six must form a proper alternating sequence (H-L-H-L-H-L or the L-first
-// mirror) — a double top/bottom inside the window, or a same-bar high+low
-// pair, is not a market structure and reads as "mixed". Within an alternating
-// window (exactly 3 highs + 3 lows):
+// structNeedPivots is how many trailing swing points a structure reading is
+// built from: three highs and three lows in alternation.
+const structNeedPivots = 6
+
+// structPivot is one swing point in the merged chronological ordering that
+// both the structure classifier and its failure-reason helper read.
+type structPivot struct {
+	idx    int
+	price  float64
+	isHigh bool
+}
+
+// orderedPivots merges swing highs and lows into one chronological sequence.
+// A same-bar high+low pair is ordered low-first purely for determinism — the
+// alternation check treats such a pair as unreadable either way.
 //
-//	both strictly rising  → "hh_hl" (higher highs + higher lows)
-//	both strictly falling → "lh_ll" (lower highs + lower lows)
-//	anything else         → "mixed"
-//	fewer than 6 pivots total → "" (not computable — no claim)
-func hhhlStructure(swingHighs, swingLows []swingPoint) string {
-	type pivot struct {
-		idx    int
-		price  float64
-		isHigh bool
-	}
-	pivots := make([]pivot, 0, len(swingHighs)+len(swingLows))
+// Shared by hhhlStructure and structReadFailure so the two can never disagree
+// about which six pivots are under discussion. NOT shared with the frozen
+// pre-fix replica in structure_gate_measure_test.go: that copy exists to stay
+// out of step with this code, which is the point of it.
+func orderedPivots(swingHighs, swingLows []swingPoint) []structPivot {
+	pivots := make([]structPivot, 0, len(swingHighs)+len(swingLows))
 	for _, p := range swingHighs {
-		pivots = append(pivots, pivot{p.idx, p.price, true})
+		pivots = append(pivots, structPivot{p.idx, p.price, true})
 	}
 	for _, p := range swingLows {
-		pivots = append(pivots, pivot{p.idx, p.price, false})
-	}
-	const need = 6
-	if len(pivots) < need {
-		return ""
+		pivots = append(pivots, structPivot{p.idx, p.price, false})
 	}
 	sort.Slice(pivots, func(i, j int) bool {
 		if pivots[i].idx != pivots[j].idx {
 			return pivots[i].idx < pivots[j].idx
 		}
-		return !pivots[i].isHigh // deterministic order for same-bar pairs; alternation check flags them below
+		return !pivots[i].isHigh
 	})
-	tail := pivots[len(pivots)-need:]
+	return pivots
+}
+
+// structReadFailure names, in reader-facing words, WHY hhhlStructure could
+// not classify the window. It returns "" when the structure WAS readable.
+//
+// This exists so an unreadable structure can be SAID on the card instead of
+// silently vanishing from it. Silence is indistinguishable from a broken
+// feature, and after the 2026-08-27 gate fix an unreadable window is the
+// common case (54-78% of bars), not a rarity worth hiding.
+func structReadFailure(swingHighs, swingLows []swingPoint) string {
+	pivots := orderedPivots(swingHighs, swingLows)
+	if len(pivots) < structNeedPivots {
+		return "too few swing points"
+	}
+	tail := pivots[len(pivots)-structNeedPivots:]
+	// A window can break both ways at once (an outside bar usually also
+	// produces two same-type pivots in a row). Scan for the same-bar pair
+	// FIRST across the whole tail: it is the rarer and more specific
+	// diagnosis, so reporting the generic one over it would lose information.
+	for k := 1; k < len(tail); k++ {
+		if tail[k].idx == tail[k-1].idx {
+			return "a high and a low on the same bar"
+		}
+	}
+	for k := 1; k < len(tail); k++ {
+		if tail[k].isHigh == tail[k-1].isHigh {
+			return "two highs or two lows in a row"
+		}
+	}
+	return ""
+}
+
+// hhhlStructure classifies market structure from the swing pivots (review
+// fix 7: alternation-aware). The pivots are merged CHRONOLOGICALLY and the
+// last six are read only when they form a proper alternating sequence
+// (H-L-H-L-H-L or the L-first mirror). Within such a window (exactly 3 highs
+// + 3 lows):
+//
+//	both strictly rising  → "hh_hl" (higher highs + higher lows)
+//	both strictly falling → "lh_ll" (lower highs + lower lows)
+//	anything else         → "mixed" (a REAL disagreement: the pivots alternate
+//	                        and still refuse to line up)
+//
+// Everything the function cannot read returns "" — no claim, and therefore no
+// evidence against a trend:
+//
+//	fewer than 6 pivots total          → "" (e.g. a monotone series)
+//	last six do not alternate          → "" (double top/bottom, same-bar pair)
+//
+// The distinction between "" and "mixed" carries the whole weight of the gate
+// in TrendCard: "" never demotes, "mixed" does. Returning "mixed" for an
+// unreadable window is therefore not a wording choice but a false claim —
+// see the alternation branch below for what that cost when it was one.
+func hhhlStructure(swingHighs, swingLows []swingPoint) string {
+	pivots := orderedPivots(swingHighs, swingLows)
+	if len(pivots) < structNeedPivots {
+		return ""
+	}
+	tail := pivots[len(pivots)-structNeedPivots:]
 	for k := 1; k < len(tail); k++ {
 		if tail[k].isHigh == tail[k-1].isHigh || tail[k].idx == tail[k-1].idx {
-			return "mixed" // not an alternating pivot sequence
+			// NOT an alternating sequence → the structure is UNREADABLE here,
+			// which is the same epistemic state as "too few pivots": we have
+			// no structural claim to make. It is NOT evidence against a trend,
+			// so it returns "" and never demotes.
+			//
+			// This branch used to return "mixed", and that conflation was a
+			// defect with a measured price: consecutive same-type pivots (a
+			// double top, two pushes, any pullback whose middle pivot misses
+			// the wing-3 filter) are ordinary price, and they carry 54-78% of
+			// bars depending on the series. Demoting on them left the Trend
+			// Agent confirming 2.2% of BTC 4h bars instead of 35.3%, and state
+			// "up" never fired once in 779 bars (0.0%). Measured 2026-08-27;
+			// reproduce with:
+			//
+			//	MEASURE_STRUCTURE_GATE=1 go test ./internal/demobot/ \
+			//	    -run TestMeasureStructureGate -v
+			//
+			// The harness keeps a byte-for-byte replica of the pre-fix branch
+			// (hhhlStructurePreFix) precisely so this number stays checkable
+			// after the production function was fixed.
+			return ""
 		}
 	}
 	var highs, lows []float64 // 3 each, chronological, by alternation
@@ -616,13 +695,41 @@ func breakHoldStats(level float64, closes, atr []float64) breakHoldResult {
 	return r
 }
 
+// supportResistanceAll is supportResistance WITHOUT the top-3-by-strength
+// truncation: every clustered level, split around the last close.
+//
+// It exists because "nearest" and "strongest" are different questions. The S/R
+// card answers the second and is right to show only the top three. The gold
+// card answers the first, and asking it of a strength-ranked top-3 gave wrong
+// answers: with price at 4500 and levels 4499 (weak), 4400, 4300, 4200
+// (strong), the weak 4499 is dropped before the search runs and the card calls
+// 4400 the nearest support.
+func supportResistanceAll(candles []types.OHLCVCandle, wing int, tolPct float64) (supports, resistances []SRLevel) {
+	all := srLevelsOf(candles, wing, tolPct)
+	if len(all) == 0 {
+		return nil, nil
+	}
+	last := candles[len(candles)-1].Close
+	for _, c := range all {
+		if c.Raw < last {
+			supports = append(supports, c)
+		} else if c.Raw > last {
+			resistances = append(resistances, c)
+		}
+	}
+	return supports, resistances
+}
+
 // supportResistance clusters all swing points, enriches each level with the
 // B4 metrics (volume-weighted strength, weakening, break/hold frequency,
 // last-touch date), then splits them around the last close: supports below,
 // resistances above, top-3 each by strength.
-func supportResistance(candles []types.OHLCVCandle, wing int, tolPct float64) (supports, resistances []SRLevel) {
+// srLevelsOf builds every clustered level with its B4 metrics, strength-sorted.
+// Shared by supportResistance (which then keeps the top 3 per side) and
+// supportResistanceAll (which keeps them all).
+func srLevelsOf(candles []types.OHLCVCandle, wing int, tolPct float64) []SRLevel {
 	if len(candles) == 0 {
-		return nil, nil
+		return nil
 	}
 	highs := make([]float64, len(candles))
 	lows := make([]float64, len(candles))
@@ -661,7 +768,15 @@ func supportResistance(candles []types.OHLCVCandle, wing int, tolPct float64) (s
 		levels = append(levels, lvl)
 	}
 	sortSRLevels(levels)
+	return levels
+}
 
+// supportResistance keeps the top-3 strongest per side — the S/R card contract.
+func supportResistance(candles []types.OHLCVCandle, wing int, tolPct float64) (supports, resistances []SRLevel) {
+	levels := srLevelsOf(candles, wing, tolPct)
+	if len(levels) == 0 {
+		return nil, nil
+	}
 	last := candles[len(candles)-1].Close
 	for _, c := range levels {
 		// Split on the full-precision mean: integer rounding would put every

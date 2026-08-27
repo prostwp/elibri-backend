@@ -48,13 +48,15 @@ func TestMenuCardGolden(t *testing.T) {
 		{{"⚡ Momentum", "cmd|momentum"}, {"📈 Trend", "cmd|trend"}},
 		{{"🎯 Levels", "cmd|sr"}, {"🌪 Volatility", "cmd|vol"}},
 		{{"🧮 Risk", "cmd|risk"}, {"📰 News", "cmd|news"}},
+		// Thirteen agents do not divide by two — the gold row carries one.
+		{{"🥇 Gold", "cmd|gold"}},
 	}
 	if len(kb.InlineKeyboard) != len(wantGrid) {
 		t.Fatalf("grid rows: got %d, want %d", len(kb.InlineKeyboard), len(wantGrid))
 	}
 	for r, wantRow := range wantGrid {
-		if len(kb.InlineKeyboard[r]) != 2 {
-			t.Fatalf("row %d: got %d buttons, want 2", r, len(kb.InlineKeyboard[r]))
+		if len(kb.InlineKeyboard[r]) != len(wantRow) {
+			t.Fatalf("row %d: got %d buttons, want %d", r, len(kb.InlineKeyboard[r]), len(wantRow))
 		}
 		for c, want := range wantRow {
 			b := kb.InlineKeyboard[r][c]
@@ -74,15 +76,15 @@ func TestMenuRouting(t *testing.T) {
 		if text != menuText {
 			t.Errorf("/%s must serve the menu card", cmd)
 		}
-		if kb == nil || len(kb.InlineKeyboard) != 6 {
-			t.Errorf("/%s must carry the 6-row grid", cmd)
+		if kb == nil || len(kb.InlineKeyboard) != 7 {
+			t.Errorf("/%s must carry the 7-row grid", cmd)
 		}
 	}
 	text, kb := bot.buildReply(ctx, "help", nil)
 	if text != helpText {
 		t.Error("/help keeps its text")
 	}
-	if kb == nil || len(kb.InlineKeyboard) != 6 {
+	if kb == nil || len(kb.InlineKeyboard) != 7 {
 		t.Error("/help must carry the same grid appended")
 	}
 }
@@ -269,11 +271,11 @@ func TestStartupSetsCommandMenu(t *testing.T) {
 	}
 	body := f.request("setMyCommands", 0)
 	cmds, _ := body["commands"].([]any)
-	if len(cmds) != 14 {
-		t.Fatalf("command menu entries: got %d, want 14", len(cmds))
+	if len(cmds) != 15 {
+		t.Fatalf("command menu entries: got %d, want 15", len(cmds))
 	}
-	// /news and /help must be reachable from the native "/" menu — news is
-	// new, help lost its grid button to it.
+	// /news, /gold and /help must be reachable from the native "/" menu —
+	// help lost its grid button to news, and gold is the thirteenth agent.
 	found := map[string]bool{}
 	for _, raw := range cmds {
 		entry, _ := raw.(map[string]any)
@@ -281,7 +283,7 @@ func TestStartupSetsCommandMenu(t *testing.T) {
 			found[cmd] = true
 		}
 	}
-	for _, want := range []string{"news", "help"} {
+	for _, want := range []string{"news", "gold", "help"} {
 		if !found[want] {
 			t.Errorf("native menu missing /%s", want)
 		}

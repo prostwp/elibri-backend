@@ -134,10 +134,19 @@ type AssetResult struct {
 // Card is one agent's reply. RenderHTML produces the exact Telegram
 // HTML-parse-mode body (golden-tested in card_test.go).
 type Card struct {
-	Emoji      string // one of emojiBull / emojiBear / emojiNeutral
-	Agent      string // full agent name, e.g. "Momentum Agent"
-	ShortName  string // digest one-liner name, e.g. "Momentum"
-	Asset      string // "" when the agent is not asset-specific
+	Emoji     string // one of emojiBull / emojiBear / emojiNeutral
+	Agent     string // full agent name, e.g. "Momentum Agent"
+	ShortName string // digest one-liner name, e.g. "Momentum"
+	Asset     string // "" when the agent is not asset-specific — HUMAN label
+	// AssetKey is the MACHINE value the HTTP envelope serves as "asset".
+	// Empty means "same as Asset", which is the case for every agent whose
+	// human label already is a plain ticker.
+	//
+	// It exists because the two jobs pulled apart on gold: the card must say
+	// "GOLD · COMEX GC=F" (the reader has to know these are futures, not
+	// spot), while integrations branch on the documented "XAUUSD" and must
+	// not break over our honesty. One field per job.
+	AssetKey   string
 	Verdict    string // bold verdict line
 	Short      string // short verdict for digest one-liners
 	Facts      []string
@@ -169,6 +178,15 @@ type Card struct {
 	// after the facts and confidence bar. Builders MUST esc() every dynamic
 	// value when composing it — RenderHTML writes it verbatim.
 	AIHTML string
+}
+
+// assetKey is the machine asset value: AssetKey when the card set one, else
+// the human label (identical for every agent but gold).
+func (c Card) assetKey() string {
+	if c.AssetKey != "" {
+		return c.AssetKey
+	}
+	return c.Asset
 }
 
 func esc(s string) string { return html.EscapeString(s) }
@@ -273,10 +291,12 @@ func (c Card) effectiveStatus() cardStatus {
 // offlineCard is the honest degraded state — never fake data.
 func offlineCard(agent, shortName, asset, command, how string) Card {
 	return Card{
-		Emoji:      emojiNeutral,
-		Agent:      agent,
-		ShortName:  shortName,
-		Asset:      asset,
+		Emoji:     emojiNeutral,
+		Agent:     agent,
+		ShortName: shortName,
+		Asset:     asset,
+		// AssetKey is set by the spec-aware wrappers (assetOffline /
+		// insufficientCard); a bare string caller has no key to give.
 		Verdict:    "Data source offline right now. The team is on it.",
 		Short:      "offline",
 		DataTime:   time.Now().UTC(),

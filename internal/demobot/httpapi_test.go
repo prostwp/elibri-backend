@@ -150,6 +150,7 @@ func TestHTTPRoutingTable(t *testing.T) {
 		{"/agents/vol", 503},
 		{"/agents/fx", 503},
 		{"/agents/news", 503},
+		{"/agents/gold", 503},
 		{"/agents/risk?balance=10000&risk=1&entry=64000&stop=62500", 200},
 		{"/agents/digest", 200},
 		{"/agents/top", 200},
@@ -200,8 +201,8 @@ func TestHTTPAgentsListComplete(t *testing.T) {
 	if err := json.Unmarshal(body, &list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Agents) != 12 {
-		t.Fatalf("want 12 agents, got %d", len(list.Agents))
+	if len(list.Agents) != 13 {
+		t.Fatalf("want 13 agents, got %d", len(list.Agents))
 	}
 	if list.Disclaimer != disclaimerText {
 		t.Errorf("disclaimer: %q", list.Disclaimer)

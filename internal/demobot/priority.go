@@ -14,6 +14,7 @@ const (
 	keyRisk     = "risk"
 	keyFX       = "fx"
 	keyNews     = "news"
+	keyGold     = "gold"
 )
 
 // signalOrder is the fixed tie-break order of the "hook" rule. Only these
