@@ -273,7 +273,11 @@ func (b *showcaseBuild) row(slug string) showcaseAgent {
 		// The digest composes at request time and speaks for the sweep, not
 		// for one card — same wording and same stamp /agents/digest serves.
 		row.Headline = digestHeadline(c)
-		row.DataAsOf = b.at.Format(time.RFC3339)
+		// The oldest reading the digest renders, not the sweep time — the same
+		// rule as /agents/digest. This line kept the original defect after
+		// that one was fixed: the collapsed row claimed a fresh stamp and the
+		// expanded card an older one, for identical content.
+		row.DataAsOf = digestDataTime(b.g).Format(time.RFC3339)
 	}
 	if !row.OK {
 		row.Status = showcaseDegraded

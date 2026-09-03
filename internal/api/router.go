@@ -168,6 +168,13 @@ func NewRouter(cfg *config.Config) http.Handler {
 	// /api/v1/agents/ through without a Bearer token.
 	mux.HandleFunc("GET /api/v1/agents/{slug}/output", serveAgentOutput)
 
+	// Live demobot agents, read-only pass-through (see demobot_proxy.go).
+	// Distinct from the mock above: this one forwards to the running bot and
+	// returns what the agent actually says right now. The browser cannot
+	// reach the demobot directly — its port is closed from outside on
+	// purpose — so this is the only path to the live agents from the site.
+	mux.HandleFunc("GET /api/v1/demobot/{path...}", handleDemobotProxy)
+
 	// Middleware chain: CORS → Auth (JWT)
 	var handler http.Handler = mux
 	handler = auth.Middleware(cfg.JWTSecret)(handler)

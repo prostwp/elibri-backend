@@ -553,6 +553,71 @@ func (a *Agents) gather(ctx context.Context) gathered {
 	return g
 }
 
+// oldestData is the honest freshness stamp for a COMPOSITE card.
+//
+// A digest shows several agents at once, and they are not equally fresh: the
+// funding read is seconds old while a 4h momentum read can be 84 minutes old.
+// One timestamp cannot be right for all of them, so it has to be wrong in the
+// safe direction — the oldest thing on the card. "Nothing here is newer than
+// X" understates the fresh parts; stamping now() overstates the stale ones,
+// and a reader acting on a 4h-old number believing it is current is the
+// failure this whole card contract exists to prevent.
+//
+// Offline cards are skipped: their DataTime is the moment the failure was
+// noticed, not the age of any data, and letting it win would report a
+// freshness that no fact on the card came from.
+func oldestData(cards ...Card) time.Time {
+	var oldest time.Time
+	for _, c := range cards {
+		// Offline cards carry no data age — their DataTime is when the failure
+		// was noticed. A LIVE card with no DataTime is a different problem: a
+		// builder forgot to set it, and skipping it would let facts of unknown
+		// age ride along looking as fresh as the rest. Neither can set the
+		// stamp, but the second must not be silently trusted either — it is
+		// reported by the caller-visible zero it produces only when nothing
+		// else is usable.
+		if c.Offline || c.DataTime.IsZero() {
+			continue
+		}
+		if oldest.IsZero() || c.DataTime.Before(oldest) {
+			oldest = c.DataTime
+		}
+	}
+	if oldest.IsZero() {
+		return time.Now().UTC()
+	}
+	return oldest.UTC()
+}
+
+// digestDataTime is oldestData over everything a digest actually renders: the
+// winning card, every one-liner section, AND the FX block.
+//
+// FX was missed on the first pass while the comment already claimed "over
+// everything a digest actually renders" — a comment that overstates what the
+// code does is worse than no comment, because the next reader trusts it. FX
+// pairs carry their own bar close times and are rendered right below the
+// one-liners, so a stale pair must be able to hold the stamp back.
+func digestDataTime(g gathered) time.Time {
+	cards := make([]Card, 0, len(digestOrder)+1)
+	_, top := topSelection(g)
+	cards = append(cards, top)
+	for _, k := range digestOrder {
+		if c, ok := g.cards[k]; ok {
+			cards = append(cards, c)
+		}
+	}
+	oldest := oldestData(cards...)
+	for _, r := range g.fx {
+		if !r.OK || r.CloseAt.IsZero() {
+			continue
+		}
+		if r.CloseAt.Before(oldest) {
+			oldest = r.CloseAt.UTC()
+		}
+	}
+	return oldest
+}
+
 // deviations extracts the priority inputs: offline agents drop out.
 func (g gathered) deviations() map[string]int {
 	out := map[string]int{}
@@ -617,7 +682,8 @@ func renderDigestHTML(g gathered, brief string) string {
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n<i>Analytics, not financial advice · AlphaVizor · ")
-	sb.WriteString(time.Now().UTC().Format("2006-01-02 15:04"))
+	// The oldest reading on the card, not now(): see oldestData.
+	sb.WriteString(digestDataTime(g).Format("2006-01-02 15:04"))
 	sb.WriteString(" UTC</i>")
 	return sb.String()
 }

@@ -463,3 +463,54 @@ func TestHTTPStatusWhaleNoSnapshot(t *testing.T) {
 		t.Errorf("no-snapshot whale card: ok=%v reason=%v, want false/no_data", env.OK, env.Reason)
 	}
 }
+
+// The digest is a composite, and its freshness stamp used to be now() — which
+// reported a card carrying an 84-minute-old 4h reading as current. Found by
+// reading prod output by hand: /agents/digest said 09:24 while /agents/top,
+// showing the SAME content, honestly said 08:00.
+func TestDigestStampsOldestReadingNotNow(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	stale := now.Add(-84 * time.Minute)
+	fresh := now.Add(-30 * time.Second)
+
+	g := gathered{cards: map[string]Card{
+		keyMomentum: {Agent: "Momentum", DataTime: stale, Deviation: 40},
+		keyFunding:  {Agent: "Funding", DataTime: fresh, Deviation: 10},
+		keyMacro:    {Agent: "Macro", DataTime: now},
+	}}
+
+	got := digestDataTime(g)
+	if !got.Equal(stale) {
+		t.Errorf("digestDataTime = %s, want the oldest rendered reading %s", got, stale)
+	}
+	if got.After(stale) {
+		t.Error("a composite card must never claim data fresher than its stalest part")
+	}
+}
+
+// An offline card's DataTime is when the failure was noticed, not the age of
+// any data — letting it win would report a freshness no fact came from.
+func TestDigestStampIgnoresOfflineCards(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	real := now.Add(-2 * time.Hour)
+
+	g := gathered{cards: map[string]Card{
+		keyMomentum: {Agent: "Momentum", DataTime: real, Deviation: 40},
+		// Offline, and "older" than the real reading — must not be picked.
+		keyWhale: {Agent: "Whale", DataTime: now.Add(-9 * time.Hour), Offline: true},
+	}}
+
+	if got := digestDataTime(g); !got.Equal(real) {
+		t.Errorf("digestDataTime = %s, want %s — offline cards carry no data age", got, real)
+	}
+}
+
+// With nothing usable at all the stamp must still be a real time, never zero.
+func TestDigestStampNeverZero(t *testing.T) {
+	g := gathered{cards: map[string]Card{
+		keyMacro: {Agent: "Macro", Offline: true},
+	}}
+	if got := digestDataTime(g); got.IsZero() {
+		t.Error("stamp must never render as the zero time")
+	}
+}

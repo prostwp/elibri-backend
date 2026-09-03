@@ -597,7 +597,10 @@ func (s *HTTPServer) handleDigest(w http.ResponseWriter, ctx context.Context) {
 		}
 	}
 	env.Sections = sections
-	env.DataAsOf = time.Now().UTC().Format(time.RFC3339) // digest composes at request time, like its footer
+	// The oldest reading the digest renders, NOT the sweep time. This used to
+	// be now(), which stamped a card carrying an 84-minute-old 4h momentum
+	// read as current — see oldestData in bot.go.
+	env.DataAsOf = digestDataTime(g).Format(time.RFC3339)
 	env.CardHTML = renderDigestHTML(g, brief)
 	writeJSON(w, http.StatusOK, env)
 }
