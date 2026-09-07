@@ -295,6 +295,54 @@ func encodeJSON(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// writeJSONAt is writeJSON plus the caching contract for a response whose
+// content has a known data time.
+//
+// Last-Modified carries the SAME instant as the body's data_as_of: the close
+// of the bar the reading came from, not the moment we answered. That is the
+// only value a cache can act on — answering time changes on every request and
+// would make every response look new.
+//
+// A client that sends If-Modified-Since gets 304 with no body when nothing has
+// changed since. Second granularity is HTTP's, and our data times are bar
+// closes on the minute, so truncation costs nothing here.
+//
+// Deliberately NOT applied to degraded responses: see writeCard. Caching a
+// failure keeps an agent dark long after its source recovers, which is a worse
+// outcome than re-asking.
+func writeJSONAt(w http.ResponseWriter, r *http.Request, status int, dataTime time.Time, v any) {
+	if dataTime.IsZero() {
+		writeJSON(w, status, v)
+		return
+	}
+	mod := dataTime.UTC().Truncate(time.Second)
+	w.Header().Set("Last-Modified", mod.Format(http.TimeFormat))
+	if notModifiedSince(r, mod) {
+		// RFC 9110: a 304 carries no body and repeats the validators.
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSON(w, status, v)
+}
+
+// notModifiedSince reports whether the client already holds this version.
+// An unparseable header is treated as absent — a malformed date must never
+// suppress real data.
+func notModifiedSince(r *http.Request, mod time.Time) bool {
+	if r == nil {
+		return false
+	}
+	raw := r.Header.Get("If-Modified-Since")
+	if raw == "" {
+		return false
+	}
+	since, err := http.ParseTime(raw)
+	if err != nil {
+		return false
+	}
+	return !mod.After(since.UTC())
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	b, err := encodeJSON(v)
 	if err != nil { // practically unreachable: all payloads are plain structs
@@ -431,7 +479,7 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 		// is a lamp re-framing, not a candle asset from the trading registry.
 		if asset == "" {
 			card, _ := s.ag.MacroCard(ctx)
-			s.writeCard(w, card)
+			s.writeCard(w, r, card)
 			return
 		}
 		view := strings.ToLower(asset)
@@ -440,15 +488,15 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 				"unknown macro asset %q — allowed: %s", asset, strings.Join(macroAssetViews, ", ")))
 			return
 		}
-		s.writeCard(w, s.ag.MacroAssetCard(ctx, view))
+		s.writeCard(w, r, s.ag.MacroAssetCard(ctx, view))
 	case keyWhale:
-		s.writeCard(w, s.ag.WhaleCard(ctx))
+		s.writeCard(w, r, s.ag.WhaleCard(ctx))
 	case keyFunding:
-		s.writeCard(w, s.ag.FundingCard(ctx))
+		s.writeCard(w, r, s.ag.FundingCard(ctx))
 	case keyFX:
-		s.writeCard(w, s.ag.FXCard(ctx))
+		s.writeCard(w, r, s.ag.FXCard(ctx))
 	case keyNews:
-		s.writeCard(w, s.ag.NewsCard(ctx))
+		s.writeCard(w, r, s.ag.NewsCard(ctx))
 	case keyMomentum:
 		// B1: ?assets=btc,eurusd (max 6, registry-validated) + ?tf=1h|4h|1d.
 		tf := strings.ToLower(strings.TrimSpace(q.Get("tf")))
@@ -471,12 +519,12 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			s.writeCard(w, s.ag.MomentumScanCard(ctx, keys, tf))
+			s.writeCard(w, r, s.ag.MomentumScanCard(ctx, keys, tf))
 		case asset == "" && tf != "":
 			// tf alone re-bases the default trio on the requested timeframe.
-			s.writeCard(w, s.ag.MomentumScanCard(ctx, defaultMomentumKeys, tf))
+			s.writeCard(w, r, s.ag.MomentumScanCard(ctx, defaultMomentumKeys, tf))
 		case asset == "": // multi-asset default, exactly like typing /momentum
-			s.writeCard(w, s.ag.MomentumCard(ctx))
+			s.writeCard(w, r, s.ag.MomentumCard(ctx))
 		default:
 			spec, err := resolveAsset(asset)
 			if err != nil {
@@ -488,7 +536,7 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			s.writeCard(w, s.ag.MomentumAssetCard(ctx, spec))
+			s.writeCard(w, r, s.ag.MomentumAssetCard(ctx, spec))
 		}
 	case keyTrend, keySR, keyVol:
 		spec, err := resolveAsset(asset) // "" resolves to BTC, same as the bot
@@ -498,22 +546,22 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		switch name {
 		case keyTrend:
-			s.writeCard(w, s.ag.TrendCard(ctx, spec))
+			s.writeCard(w, r, s.ag.TrendCard(ctx, spec))
 		case keySR:
-			s.writeCard(w, s.ag.SRCard(ctx, spec))
+			s.writeCard(w, r, s.ag.SRCard(ctx, spec))
 		default:
-			s.writeCard(w, s.ag.VolCard(ctx, spec))
+			s.writeCard(w, r, s.ag.VolCard(ctx, spec))
 		}
 	case keyGold:
 		// Fixed asset by design: this agent IS the gold read, so it takes no
 		// ?asset= (the guard above already rejects one).
-		s.writeCard(w, s.ag.GoldCard(ctx))
+		s.writeCard(w, r, s.ag.GoldCard(ctx))
 	case keyRisk:
-		s.handleRisk(w, q)
+		s.handleRisk(w, r, q)
 	case keyDigest:
-		s.handleDigest(w, ctx)
+		s.handleDigest(w, r, ctx)
 	case keyTop:
-		s.handleTop(w, ctx)
+		s.handleTop(w, r, ctx)
 	}
 }
 
@@ -523,8 +571,10 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 // The 503 body carries the same machine-readable ok/reason pair as the
 // envelope, so templates can branch on WHY (offline vs insufficient vs
 // warming up) without parsing the error string.
-func (s *HTTPServer) writeCard(w http.ResponseWriter, card Card) {
+func (s *HTTPServer) writeCard(w http.ResponseWriter, r *http.Request, card Card) {
 	if card.Offline {
+		// No Last-Modified on a failure: a cached 503 would keep the agent
+		// dark for the whole window after its source came back.
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"error":  fmt.Sprintf("%s: %s", card.Agent, card.Verdict),
 			"ok":     false,
@@ -532,10 +582,10 @@ func (s *HTTPServer) writeCard(w http.ResponseWriter, card Card) {
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, cardEnvelope(card))
+	writeJSONAt(w, r, http.StatusOK, card.DataTime, cardEnvelope(card))
 }
 
-func (s *HTTPServer) handleRisk(w http.ResponseWriter, q url.Values) {
+func (s *HTTPServer) handleRisk(w http.ResponseWriter, r *http.Request, q url.Values) {
 	params := []string{"balance", "risk", "entry", "stop"}
 	vals := make([]float64, len(params))
 	for i, p := range params {
@@ -558,7 +608,10 @@ func (s *HTTPServer) handleRisk(w http.ResponseWriter, q url.Values) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.writeCard(w, s.ag.RiskCard(vals, false, nil))
+	// No Last-Modified: the risk card's DataTime is the answering time, not a
+	// data time. This result is a pure function of the query params, so a
+	// validator built from "now" would never match and only add noise.
+	writeJSON(w, http.StatusOK, cardEnvelope(s.ag.RiskCard(vals, false, nil)))
 }
 
 // digestAgentName / digestHeadline are the digest's own identity line, shared
@@ -574,7 +627,7 @@ func digestHeadline(top Card) string {
 // envelope head, the remaining one-liners as sections and the AI brief as
 // ai_text. Partial upstream failures stay inside the 200 as honest offline
 // one-liners — exactly like the Telegram digest.
-func (s *HTTPServer) handleDigest(w http.ResponseWriter, ctx context.Context) {
+func (s *HTTPServer) handleDigest(w http.ResponseWriter, r *http.Request, ctx context.Context) {
 	g := s.ag.gather(ctx)
 	winner, top := topSelection(g)
 	brief := s.ag.aiBrief(ctx, g) // same aiMemo as the Telegram path
@@ -602,13 +655,13 @@ func (s *HTTPServer) handleDigest(w http.ResponseWriter, ctx context.Context) {
 	// read as current — see oldestData in bot.go.
 	env.DataAsOf = digestDataTime(g).Format(time.RFC3339)
 	env.CardHTML = renderDigestHTML(g, brief)
-	writeJSON(w, http.StatusOK, env)
+	writeJSONAt(w, r, http.StatusOK, digestDataTime(g), env)
 }
 
 // handleTop serves the single strongest signal: the winner card's envelope
 // with the AI brief and why-line (when enabled) joined into ai_text, and the
 // full Telegram /top message in card_html.
-func (s *HTTPServer) handleTop(w http.ResponseWriter, ctx context.Context) {
+func (s *HTTPServer) handleTop(w http.ResponseWriter, r *http.Request, ctx context.Context) {
 	g := s.ag.gather(ctx)
 	winner, card := topSelection(g)
 	brief, why := s.ag.aiTopTexts(ctx, winner, g) // same aiMemo as the Telegram path
@@ -627,5 +680,7 @@ func (s *HTTPServer) handleTop(w http.ResponseWriter, ctx context.Context) {
 		env.AIText = &joined
 	}
 	env.CardHTML = renderTopHTML(card, brief, why)
-	writeJSON(w, http.StatusOK, env)
+	// The winner's own data time: /top serves one card, so unlike /digest it
+	// has a single honest instant.
+	writeJSONAt(w, r, http.StatusOK, card.DataTime, env)
 }

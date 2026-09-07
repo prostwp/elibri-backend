@@ -288,6 +288,36 @@ func (b *showcaseBuild) row(slug string) showcaseAgent {
 }
 
 // rows renders the catalog in the /agents listing order (the bot's menu grid).
+// lastModified is when this page's content last CHANGED: the newest data time
+// across the rows.
+//
+// Note it is the opposite end of the range from the digest's data_as_of, and
+// deliberately so. The two answer different questions:
+//
+//	data_as_of    "how stale can anything here be"  → the OLDEST reading
+//	Last-Modified "when did this representation change" → the NEWEST
+//
+// Taking the oldest here would be a correctness bug, not just conservatism: if
+// one agent gets a new reading while the oldest stays put, the validator would
+// not move and a conditional request would get 304 for content that changed.
+//
+// The sweep time (b.at) is wrong for the opposite reason — it advances on
+// every memo refresh even when no reading moved, so no client would ever get
+// a 304 and the header would carry no value.
+func (b *showcaseBuild) lastModified() time.Time {
+	var newest time.Time
+	for _, slug := range httpAgentNames {
+		c, ok := b.cards[slug]
+		if !ok || c.Offline || c.DataTime.IsZero() {
+			continue
+		}
+		if c.DataTime.After(newest) {
+			newest = c.DataTime
+		}
+	}
+	return newest.UTC()
+}
+
 func (b *showcaseBuild) rows() []showcaseAgent {
 	out := make([]showcaseAgent, 0, len(httpAgentNames))
 	for _, slug := range httpAgentNames {
@@ -341,7 +371,7 @@ func showcaseOneLiner(name string, c Card) string {
 func (s *HTTPServer) handleShowcase(w http.ResponseWriter, r *http.Request) {
 	b := s.showcase(r.Context())
 	rows := b.rows()
-	writeJSON(w, http.StatusOK, showcaseResp{
+	writeJSONAt(w, r, http.StatusOK, b.lastModified(), showcaseResp{
 		// The sweep time, not the request time: with the 60s memo a landing
 		// render can legitimately serve a payload up to a minute old, and
 		// saying so is the honest version of a cache.
@@ -527,7 +557,7 @@ func (s *HTTPServer) handleShowcaseExample(w http.ResponseWriter, r *http.Reques
 		explained = strongestFact(card)
 	}
 
-	writeJSON(w, http.StatusOK, showcaseExampleResp{
+	writeJSONAt(w, r, http.StatusOK, card.DataTime, showcaseExampleResp{
 		GeneratedAt: b.at.Format(time.RFC3339),
 		Agent:       card.Agent,
 		Slug:        slug,

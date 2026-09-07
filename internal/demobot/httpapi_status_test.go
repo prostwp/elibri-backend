@@ -15,6 +15,7 @@ package demobot
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -512,5 +513,173 @@ func TestDigestStampNeverZero(t *testing.T) {
 	}}
 	if got := digestDataTime(g); got.IsZero() {
 		t.Error("stamp must never render as the zero time")
+	}
+}
+
+// ── Last-Modified / conditional GET ──────────────────────────────────────────
+
+// getWithHeader is a GET carrying one request header, so the conditional-GET
+// path can be exercised through the real handler chain.
+func getWithHeader(t *testing.T, url, key, val string) (int, http.Header, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if key != "" {
+		req.Header.Set(key, val)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, resp.Header, body
+}
+
+// Last-Modified must carry the DATA time, not the answering time: a validator
+// built from now() never matches and makes every response look new.
+func TestLastModifiedMatchesDataAsOf(t *testing.T) {
+	stubBinanceKlines(t, 250, flatVol)
+	_, srv := newTestAPI(t, NewAgents(NewBackendClient("http://127.0.0.1:1")), true)
+
+	code, hdr, body := httpGet(t, srv.URL+"/agents/trend")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	lm := hdr.Get("Last-Modified")
+	if lm == "" {
+		t.Fatal("Last-Modified missing on a successful card")
+	}
+	var env struct {
+		DataAsOf string `json:"data_as_of"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, err := http.ParseTime(lm)
+	if err != nil {
+		t.Fatalf("Last-Modified %q is not an HTTP date: %v", lm, err)
+	}
+	want, err := time.Parse(time.RFC3339, env.DataAsOf)
+	if err != nil {
+		t.Fatalf("data_as_of %q unparseable: %v", env.DataAsOf, err)
+	}
+	if !got.Equal(want.Truncate(time.Second)) {
+		t.Errorf("Last-Modified = %s, data_as_of = %s — they must be the same instant",
+			got.UTC(), want.UTC())
+	}
+}
+
+// A client that already holds this version gets 304 and no body; one holding
+// an older version gets the data.
+func TestConditionalGetReturns304OnlyWhenUnchanged(t *testing.T) {
+	stubBinanceKlines(t, 250, flatVol)
+	_, srv := newTestAPI(t, NewAgents(NewBackendClient("http://127.0.0.1:1")), true)
+
+	_, hdr, _ := httpGet(t, srv.URL+"/agents/trend")
+	lm := hdr.Get("Last-Modified")
+	mod, err := http.ParseTime(lm)
+	if err != nil {
+		t.Fatalf("Last-Modified %q unparseable: %v", lm, err)
+	}
+
+	t.Run("same instant → 304, empty body", func(t *testing.T) {
+		code, _, body := getWithHeader(t, srv.URL+"/agents/trend", "If-Modified-Since", lm)
+		if code != http.StatusNotModified {
+			t.Errorf("status = %d, want 304", code)
+		}
+		if len(body) != 0 {
+			t.Errorf("304 must carry no body, got %d bytes", len(body))
+		}
+	})
+
+	t.Run("older held version → 200 with data", func(t *testing.T) {
+		older := mod.Add(-2 * time.Hour).Format(http.TimeFormat)
+		code, _, body := getWithHeader(t, srv.URL+"/agents/trend", "If-Modified-Since", older)
+		if code != http.StatusOK {
+			t.Errorf("status = %d, want 200", code)
+		}
+		if len(body) == 0 {
+			t.Error("200 must carry the card")
+		}
+	})
+
+	t.Run("malformed header must never suppress data", func(t *testing.T) {
+		code, _, body := getWithHeader(t, srv.URL+"/agents/trend", "If-Modified-Since", "not-a-date")
+		if code != http.StatusOK || len(body) == 0 {
+			t.Errorf("status = %d, body %d bytes — a bad date must be ignored, not honoured",
+				code, len(body))
+		}
+	})
+}
+
+// A failure must never be cacheable: a cached 503 keeps the agent dark long
+// after its source recovers.
+func TestDegradedResponseCarriesNoValidator(t *testing.T) {
+	// Binance unreachable: the trend card degrades to an honest 503.
+	srvDown := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srvDown.Close()
+	origBase := binanceKlinesBase
+	binanceKlinesBase = srvDown.URL
+	defer func() { binanceKlinesBase = origBase }()
+
+	_, srv := newTestAPI(t, NewAgents(NewBackendClient("http://127.0.0.1:1")), true)
+
+	code, hdr, _ := httpGet(t, srv.URL+"/agents/trend")
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", code)
+	}
+	if lm := hdr.Get("Last-Modified"); lm != "" {
+		t.Errorf("503 carries Last-Modified %q — a cached failure outlives the outage", lm)
+	}
+}
+
+// Risk is a pure function of its query params; its DataTime is the answering
+// time, so a validator there would be noise that never matches.
+func TestRiskCarriesNoValidator(t *testing.T) {
+	_, srv := newTestAPI(t, NewAgents(NewBackendClient("http://127.0.0.1:1")), true)
+
+	code, hdr, _ := httpGet(t, srv.URL+"/agents/risk?balance=10000&risk=1&entry=64000&stop=62500")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if lm := hdr.Get("Last-Modified"); lm != "" {
+		t.Errorf("risk carries Last-Modified %q, built from now() — it would never match", lm)
+	}
+}
+
+// The showcase validator is the NEWEST reading, not the oldest. Taking the
+// oldest would be a correctness bug: one agent could get new data while the
+// oldest stayed put, and a conditional request would answer 304 for content
+// that had changed.
+func TestShowcaseValidatorIsNewestReading(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	oldest := now.Add(-6 * time.Hour)
+	newest := now.Add(-5 * time.Minute)
+
+	b := &showcaseBuild{
+		at: now,
+		cards: map[string]Card{
+			keyTrend:    {Agent: "Trend", DataTime: oldest},
+			keyFunding:  {Agent: "Funding", DataTime: newest},
+			keyMomentum: {Agent: "Momentum", DataTime: now.Add(-2 * time.Hour)},
+			// Offline: DataTime is when the failure was noticed, not data age.
+			keyWhale: {Agent: "Whale", DataTime: now, Offline: true},
+		},
+	}
+
+	got := b.lastModified()
+	if !got.Equal(newest) {
+		t.Errorf("lastModified = %s, want the newest reading %s", got, newest)
+	}
+	if got.Equal(oldest) {
+		t.Error("taking the oldest would answer 304 for content that changed")
+	}
+	if got.Equal(now) {
+		t.Error("an offline card's timestamp must not become the validator")
 	}
 }
