@@ -618,11 +618,15 @@ func digestDataTime(g gathered) time.Time {
 	return oldest
 }
 
-// deviations extracts the priority inputs: offline agents drop out.
+// deviations extracts the priority inputs: only cards whose headline reading
+// was produced compete. Checking the Offline flag alone let a funding card
+// with its rate source down (Status source_offline, Offline false, deviation
+// 0) win a tie against live neutral momentum/trend and top the digest with
+// "Funding rates unavailable".
 func (g gathered) deviations() map[string]int {
 	out := map[string]int{}
 	for _, k := range signalOrder {
-		if c, ok := g.cards[k]; ok && !c.Offline {
+		if c, ok := g.cards[k]; ok && c.effectiveStatus() == statusOK {
 			out[k] = c.Deviation
 		}
 	}

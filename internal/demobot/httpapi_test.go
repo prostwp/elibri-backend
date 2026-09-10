@@ -548,6 +548,23 @@ func TestDigestHeadlineNamesWinnerAsset(t *testing.T) {
 	}
 }
 
+// A funding card whose rate source is down renders (liquidation facts) but
+// produced no reading, so it must not compete for the top slot — even on a
+// tie, where funding would otherwise win by the fixed order.
+func TestDegradedFundingNeverTopsDigest(t *testing.T) {
+	g := gathered{cards: map[string]Card{
+		keyFunding:  {Agent: "Funding Agent", Verdict: "Funding rates unavailable — liquidations only", Status: statusSourceOffline},
+		keyMomentum: {Agent: "Momentum Agent", Verdict: "BTC: NEUTRAL"},
+		keyTrend:    {Agent: "Trend Agent", Asset: "BTC", Verdict: "Flat — no readable trend"},
+	}}
+	if _, ok := g.deviations()[keyFunding]; ok {
+		t.Fatal("degraded funding must drop out of the priority inputs")
+	}
+	if winner, _ := topSelection(g); winner != keyMomentum {
+		t.Fatalf("tie among live cards must go to momentum, got %q", winner)
+	}
+}
+
 // ── Lifecycle: bind, serve, second-bind failure, graceful shutdown ───────────
 
 func TestHTTPServerLifecycle(t *testing.T) {
