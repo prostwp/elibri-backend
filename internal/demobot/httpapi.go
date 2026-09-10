@@ -619,8 +619,19 @@ func (s *HTTPServer) handleRisk(w http.ResponseWriter, r *http.Request, q url.Va
 // never word the same sweep differently.
 const digestAgentName = "AlphaVizor Digest"
 
+// digestHeadline names the winner's asset in the same "Agent · Asset" form as
+// the card header, because the digest envelope's own "asset" stays empty (the
+// sweep covers many markets) and without it "Confirmed UPTREND" said nothing
+// about WHICH market. Market-wide winners (funding, macro) carry no asset and
+// keep the bare form; a multi-asset momentum card already names every asset
+// in its verdict ("BTC: BEARISH · ETH: NEUTRAL · …"), so repeating the joined
+// label would only double it.
 func digestHeadline(top Card) string {
-	return "Top signal: " + top.Agent + " — " + top.Verdict
+	who := top.Agent
+	if top.Asset != "" && len(top.Results) == 0 {
+		who += " · " + top.Asset
+	}
+	return "Top signal: " + who + " — " + top.Verdict
 }
 
 // handleDigest runs the exact digest sweep and serves the top card as the

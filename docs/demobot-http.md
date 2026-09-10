@@ -275,7 +275,7 @@ narrative radar).
       "status": "live",
       "ok": true,
       "reason": null,
-      "headline": "Top signal: Trend Agent — Confirmed UPTREND",
+      "headline": "Top signal: Trend Agent · BTC — Confirmed UPTREND",
       "one_liner": "🟢 Trend BTC: confirmed uptrend",
       "data_as_of": "2026-08-25T12:31:04Z",
       "example_url": "/agents/digest"

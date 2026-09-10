@@ -523,6 +523,31 @@ func TestHTTPDigestTopEnvelopeAndSharedAIMemo(t *testing.T) {
 	}
 }
 
+// The digest envelope's asset is empty by design, so the headline is the only
+// place the reader learns which market the top signal is about.
+func TestDigestHeadlineNamesWinnerAsset(t *testing.T) {
+	cases := []struct {
+		card Card
+		want string
+	}{
+		{Card{Agent: "Trend Agent", Asset: "BTC", Verdict: "Confirmed UPTREND"},
+			"Top signal: Trend Agent · BTC — Confirmed UPTREND"},
+		// Multi-asset momentum names each asset in its verdict already.
+		{Card{Agent: "Momentum Agent", Asset: "BTC/ETH/XAUUSD",
+			Verdict: "BTC: BEARISH · ETH: NEUTRAL",
+			Results: []AssetResult{{Asset: "BTC", OK: true}, {Asset: "ETH", OK: true}}},
+			"Top signal: Momentum Agent — BTC: BEARISH · ETH: NEUTRAL"},
+		// Market-wide winners have no asset: no dangling separator.
+		{Card{Agent: "Funding Agent", Verdict: "Funding balanced"},
+			"Top signal: Funding Agent — Funding balanced"},
+	}
+	for _, tc := range cases {
+		if got := digestHeadline(tc.card); got != tc.want {
+			t.Errorf("digestHeadline(%s):\n got %q\nwant %q", tc.card.Agent, got, tc.want)
+		}
+	}
+}
+
 // ── Lifecycle: bind, serve, second-bind failure, graceful shutdown ───────────
 
 func TestHTTPServerLifecycle(t *testing.T) {
