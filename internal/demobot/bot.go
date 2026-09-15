@@ -255,7 +255,7 @@ var botCommands = []BotCommand{
 	{Command: "fx", Description: "Forex overview"},
 	{Command: "macro", Description: "Risk-on/off regime"},
 	{Command: "whale", Description: "Large BTC transfers"},
-	{Command: "funding", Description: "Funding pressure & liquidations"},
+	{Command: "funding", Description: "Funding rate vs thresholds & liquidations"},
 	{Command: "momentum", Description: "RSI/MACD reads"},
 	{Command: "trend", Description: "Trend state machine"},
 	{Command: "sr", Description: "Support/resistance levels"},
@@ -871,7 +871,7 @@ Live market agents from the AlphaVizor platform:
 /menu — button navigation, no typing needed
 /macro — risk-on/off regime from tradfin markets
 /whale — large on-chain BTC transfers, net flow
-/funding — perp funding pressure &amp; liquidations
+/funding — last perp funding rate vs thresholds &amp; 1h liquidations
 /fx — forex overview: EURUSD, GBPUSD, USDJPY, XAUUSD
 /news — trending crypto narratives (48h) with an AI idea
 /momentum — RSI/MACD reads for BTC, ETH &amp; gold

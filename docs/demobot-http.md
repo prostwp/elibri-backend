@@ -27,7 +27,7 @@ Telegram.
 | `GET /agents` | — | The agent list: name, description, supported assets, example URLs |
 | `GET /agents/macro` | `?asset=btc\|gold` optional | Risk-on/off regime read from 5 tradfin lamps; with `asset` the lamps re-framed for that asset (see [macro asset views](#macro-asset-views)) |
 | `GET /agents/whale` | — | Large on-chain BTC transfers, net flow |
-| `GET /agents/funding` | — | Perp funding pressure & liquidations |
+| `GET /agents/funding` | — | Last perp funding rate of 5 Binance majors against the agent's thresholds, the coin named in `asset`, 1h liquidations, machine readout in `funding` and `results`, content `blocks` (see [funding card](#funding-card-and-content-blocks)) |
 | `GET /agents/momentum` | `?asset=` \| `?assets=` \| `?tf=` all optional | RSI/MACD; without params the multi-asset BTC/ETH/XAUUSD card (see [momentum scan](#momentum-scan-assets--tf)) |
 | `GET /agents/trend` | `?asset=` optional (default `btc`) | Trend state machine (ADX + EMA50/EMA200), pullback zone in confirmed trends |
 | `GET /agents/trend/chart` | `?asset=` optional (default `btc`) | Chart data for the Trend Agent: the candles it reads, EMA20/50/200, pivots, zone and invalidation (see [trend chart](#trend-chart)) |
@@ -620,7 +620,7 @@ narrative radar).
 | `status` | `live` \| `degraded` — **never `planned`**. This endpoint only lists agents whose builder actually ran; there is no fictional state and no roadmap entry here. For `digest`, `partial` reads `live` here; the three-state value is `digest_status` |
 | `ok` / `reason` | The same machine-readable pair the agent envelopes carry (`source_offline`, `insufficient_history`, `below_threshold`, `no_data`, `market_closed`), `null` when `ok`. **Exception — the `digest` row:** the pair speaks for the whole sweep (`ok: false` only when no section is live, `reason` = the first degraded section's), so it can differ from the top-level pair of `/agents/digest`, which describes the highlighted card. Example: macro and the funding/momentum/trend trio offline, whale live → this row `ok: true`, `digest_status: "partial"`; `/agents/digest` `ok: false`, `"reason": "source_offline"` |
 | `digest_status` | `digest` row only: `live` \| `partial` \| `degraded` — the same value `/agents/digest` serves as `digest.status`. Absent on every other row |
-| `headline` | The card's verdict line — for `digest`, the prioritized `Top signal: <agent> · <asset> — <verdict>` line (the same line as `/agents/digest` `verdict`). The asset is named whenever the winning card has one — since 2026-09-15 the multi-asset momentum card too (`Momentum Agent · BTC/ETH/XAUUSD`), because its verdict became a counter; funding and macro stay bare |
+| `headline` | The card's verdict line — for `digest`, the prioritized `Top signal: <agent> · <asset> — <verdict>` line (the same line as `/agents/digest` `verdict`). The asset is named whenever the winning card has one — since 2026-09-15 the multi-asset momentum card too (`Momentum Agent · BTC/ETH/XAUUSD`), because its verdict became a counter — and since the funding stage 1 (2026-09-15) the funding card (`Funding Agent · SOLUSDT`); macro stays bare |
 | `one_liner` | The digest-style one-liner, plain text |
 | `category` | `crypto` \| `forex` \| `metals` \| `macro` \| `onchain` \| `derivatives` \| `news` \| `tools`. `tools` holds the three that are not a single-market read: `digest`, `top`, `risk`; `metals` holds the gold agent |
 | `example_url` | Where the landing links for the full card: `/agents/<slug>` |
@@ -668,6 +668,11 @@ reads it: **detected → explained → data → conclusion**.
   those scales are not comparable. `digest`, `top` and `risk` are never the
   subject (an aggregate is not one agent's story, and the calculator has no
   "detected" moment).
+- **`asset`** is the machine value, the same as `asset` in the
+  `/agents/{slug}` envelope: the base coin for funding (`XRP`, not
+  `XRPUSDT`). For every other agent the example can show it is unchanged.
+  The display name stays in `detected`. (Before 2026-09-15 a funding example
+  carried the full symbol.)
 - **`explained`** is the AI why-line when one is available, taken from the
   **same 5-minute memo `/top` uses** — the landing costs no extra LLM spend
   and opens no new prompt kind. On the fallback path there is deliberately no
@@ -801,9 +806,10 @@ Every agent endpoint answers with one shape:
 | `semaphore` | string | `bullish` \| `bearish` \| `neutral` — the card's traffic light |
 | `facts` | string[] | The card's bullet facts, `[]` when none |
 | `levels` | object | **trend / sr / vol only**: raw-precision numeric levels — see [levels](#machine-readable-levels). Absent for other agents, on `ok: false` cards, and **on trend cards that are not a confirmed trend** (flat / grey / conflict — since 2026-09-15 there is nothing to invalidate there) |
-| `results` | array | **momentum and fx**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Since 2026-09-15 also on the single-asset momentum card (one entry), and every `ok` entry carries the read itself (`rsi`, `macd_histogram`, `verdict`, `state`, `why`, `timeframe`, `data_as_of`, `freshness`, `blocks`) — see [momentum card](#momentum-card-and-content-blocks). On `/agents/fx` (since 2026-09-15) one entry per instrument with `price`, `change_pct`, `change_window`, `change_from`, `rsi`, `ema_relation`, `range_position_pct`, `timeframe`, `data_as_of`, `freshness` — see [FX card](#fx-card). Absent elsewhere |
-| `blocks` | object | **trend, sr, vol, the global macro card and the single-asset momentum card** (additive): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks), [volatility card](#volatility-card-and-content-blocks), [macro card and content blocks](#macro-card-and-content-blocks) and [momentum card](#momentum-card-and-content-blocks) (multi-asset momentum cards carry them per asset, in `results[].blocks`). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they belong to the winning card (never on the digest, below) |
+| `results` | array | **momentum and fx**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Since 2026-09-15 also on the single-asset momentum card (one entry), and every `ok` entry carries the read itself (`rsi`, `macd_histogram`, `verdict`, `state`, `why`, `timeframe`, `data_as_of`, `freshness`, `blocks`) — see [momentum card](#momentum-card-and-content-blocks). On `/agents/fx` (since 2026-09-15) one entry per instrument with `price`, `change_pct`, `change_window`, `change_from`, `rsi`, `ema_relation`, `range_position_pct`, `timeframe`, `data_as_of`, `freshness` — see [FX card](#fx-card). On `/agents/funding` (since 2026-09-15) one entry per major with `symbol`, `rate`, `side_threshold`, `crossed`, `ratio_to_threshold`, `selected` — see [funding card](#funding-card-and-content-blocks). Absent elsewhere |
+| `blocks` | object | **trend, sr, vol, funding, the global macro card and the single-asset momentum card** (additive; funding since 2026-09-15, see [funding card](#funding-card-and-content-blocks)): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks), [volatility card](#volatility-card-and-content-blocks), [macro card and content blocks](#macro-card-and-content-blocks) and [momentum card](#momentum-card-and-content-blocks) (multi-asset momentum cards carry them per asset, in `results[].blocks`). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they belong to the winning card (never on the digest, below) |
 | `macro` | object | **macro cards only** (additive, 2026-09-15): the numbers behind the card — rule score, bands, per-lamp rule / weight / contribution / source / `as_of`, freshness, Fear & Greed age. See [macro card](#macro-card-and-content-blocks). Absent for every other agent and on macro cards without a reading (`UNKNOWN`, offline) |
+| `funding` | object | **funding card only** (additive, 2026-09-15): `state`, `selected_symbol`, `coverage`, `liquidations` — see [funding card](#funding-card-and-content-blocks). Absent for every other agent and on the all-offline funding `503` |
 | `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a **rule score**, not a confidence or a strength, and ships in the verdict (`RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)`) and in `macro.rule_score`. The `?asset=gold` view has its own `gold score` and also serves `confidence: null` |
 | `ai_text` | string \| null | Plain-text AI block (mood read / idea / brief / why-line); `null` when AI is disabled or the call failed |
 | `sections` | string[] | **digest only**: plain-text one-liners of every other agent (the winner heads the envelope) |
@@ -842,7 +848,7 @@ whale top-3 window now hangs off the snapshot's `captured_at`.
 | `/showcase` | yes | The sweep time (`generated_at`): the body is fixed for the life of the memoized sweep (up to 60 s) |
 | `/agents/gold` | **no** | Daily bars, the hourly price and its age, the macro payload and the weekend clock. The daily close versions none of the rest |
 | `/agents/fx` | **no** | Four series plus clock-driven wording (the banner, `data delayed`, gold's `no bar in the last 3h`): a pair can update, drop out or recover while the oldest close (`data_as_of`) stays put |
-| `/agents/funding` | **no** | Point-in-time reads (rates, the liquidation feed, a 1h window from the request time, the BTC price). The request time is not a version of that body |
+| `/agents/funding` | **no** | Point-in-time reads (rates, the cluster's position against the mark price, the liquidation feed, a 1h window from the request time). The request time is not a version of that body |
 | `/agents/momentum` without params, `?tf=` alone, `?assets=` with two or more assets | **no** | Composite: the oldest bar (`data_as_of`) can stay put while another asset, the ETH-vs-BTC read, an asset's freshness (`market closed` / `data delayed`) or a source failure/recovery changes the body |
 | `/agents/digest`, `/agents/top`, `/showcase/example` | **no** | The digest re-sweeps per request; `/top` and the example add per-request AI text that reads the whole sweep |
 | `/agents/risk` | **no** | A pure function of the query; its data time is the answering time |
@@ -907,8 +913,9 @@ describe that one card, not the whole sweep (fixed 2026-09-15).
    with only gold/FX read is excluded as `no_ranked_read`. The strongest **confirmed** reading wins (funding
    crowded, momentum bullish/bearish on BTC/ETH, trend up/down); ties
    funding > momentum > trend.
-3. Scores (0–100, **not calibrated against each other**): funding = widest
-   rate against its own side's threshold (either threshold = 30; +0.10% or
+3. Scores (0–100, **not calibrated against each other**): funding = the rate
+   of the coin the funding card shows (since 2026-09-15 the same pick, see
+   [funding card](#funding-card-and-content-blocks)) against its own side's threshold (either threshold = 30; +0.10% or
    −0.033% = 100); momentum = |RSI−50|×2 of a confirmed read, else 0; trend =
    ADX×2 when confirmed, else 0.
 4. Nothing confirmed → `selection.state: "no_highlight"`. Until the product
@@ -1184,7 +1191,7 @@ has no price level and no directional idea; two additive keys are its own:
 | `invalidates` | Always `null`: there is no directional idea to invalidate |
 | `state_changes_when` | **vol only** (additive): `"A closed 4h candle with the ratio below 1.25 ends the elevated state"`; normal: `"A closed 4h candle with the ratio at 0.80 or below (compressed) or 1.25 or above (elevated) changes the state"` |
 | `regime` | The **local amplitude** regime, not a market regime: `"Local amplitude regime · BTC 4h · normal: ATR 1.050× its 30-bar baseline"` |
-| `limitations` | **vol only** (additive): `"Measures how far price moves per candle, not its direction; it does not confirm a breakout"` |
+| `limitations` | **vol and funding only** (additive): `"Measures how far price moves per candle, not its direction; it does not confirm a breakout"` (funding: see [funding card](#funding-card-and-content-blocks)) |
 
 The Gold card's volatility line uses the same words (daily gold series):
 `Volatility: normal · 1d · ATR 1.000× its 30-bar baseline` (before:
@@ -1194,6 +1201,163 @@ Degraded reads (`insufficient_history`, the fact names the reason): too few
 bars (`ATR(14) 30-bar baseline`), a flat zero baseline, non-finite input
 (overflowing prices), or a last close that is not positive (`ATR(14) as a
 share of price (the last close is not positive)`).
+
+## Funding card and content blocks
+
+> ⚠️ **Funding `verdict` format changed 2026-09-15 — do not parse it.**
+> Before: `Longs crowded — squeeze risk building`, `Shorts crowded — squeeze
+> fuel above`, `Funding balanced — no crowd to punish`; digest lines `longs
+> crowded` / `shorts crowded` / `balanced`; facts `Widest skew: BTCUSDT
+> +0.0097%/8h (longs pay shorts)`, `Magnet zone: …`, `Liquidation feed live but
+> quiet — no forced exits recently`. Now: `Positive funding above threshold —
+> longs pay an elevated rate`, `Negative funding below threshold — shorts pay
+> an elevated rate`, `Funding within the agent's thresholds`; digest lines
+> `longs pay an elevated rate · +0.0410%`, `shorts pay an elevated rate ·
+> -0.0150%`, `within thresholds · -0.0062%`. The state is machine-readable in
+> `funding.state`. `asset` is no longer `""`: it is the base coin of the shown
+> symbol (`SOL`), as on every other agent; the full symbol (`SOLUSDT`) is on the
+> card header, the digest line and headline, in `funding.selected_symbol` and
+> `results[].symbol`.
+> `verdict`, `facts` and the digest line are display text and may change again.
+
+What changed 2026-09-15: the coin pick, presentation and honesty. The
+**thresholds are unchanged**: a last funding rate at or above **+0.03%** is past
+the long threshold (🔴, `confirmed`), at or below **-0.01%** past the short
+threshold (🟢, `confirmed`), anything between is within the thresholds (⚪).
+The semaphore colours, the digest tie rules and caching are untouched.
+
+- **Which coin.** Coins past the threshold of their own side come first; among
+  them — and when none is past, among all — the one with the largest ratio to
+  its **own side's** threshold: rate ÷ 0.03% at or above zero, |rate| ÷ 0.01%
+  below. Ties resolve in the fixed order BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT,
+  XRPUSDT. The old pick took the largest |rate| and then applied the
+  asymmetric thresholds, so BTC +0.020% (not past +0.03%) hid XRP -0.015%
+  (past -0.01%) behind "balanced". The digest score is computed on the same
+  coin (the formula is unchanged), so the shown coin also carries the largest
+  score of the majors.
+- **No forecast.** "Squeeze risk", "squeeze fuel", "no crowd to punish" and
+  "magnet zone" are gone: one funding rate does not measure positioning, and a
+  liquidation cluster is a past band, not a level price is drawn to.
+- **No "/8h".** Binance `premiumIndex` serves the last funding rate without its
+  interval, and the agent does not verify one, so the card says "last funding
+  rate" and `funding.funding_interval` is always `null`.
+- **Printed rates** have four decimals of a percent, truncated toward zero,
+  so a printed rate never sits on the other side of a threshold from the real
+  one (+0.029999% prints `+0.0299%`, not `+0.0300%`). Distances and ratios on
+  the card are computed from the printed numbers.
+- **Coverage.** `Coverage: 5/5 Binance majors`, or `4/5 Binance majors ·
+  missing BNBUSDT`. With **fewer than 3 of 5** answering there is no verdict:
+  `Partial funding data — 2/5 Binance majors answered, no verdict`, neutral,
+  not confirmed, no coin, `ok: false` / `source_offline` (out of the digest
+  ranking); the received rates are listed and marked when past a threshold.
+  The envelope is `ok: false` / `source_offline` while the `results[]` entries
+  of the received symbols stay `ok: true`.
+  With no rate at all the card is `Funding rates unavailable — liquidations
+  only`, as before. A rate that is not a finite number below 100% counts as a
+  missing symbol.
+- **Liquidations.** The card now asks the backend for its largest page (200
+  events; the default was 40) and counts the events of the last hour from the
+  request time. An empty window reads `Liquidations: no events in the current
+  1h window` — the backend's window lives in memory and is empty after a
+  restart too, so the card does not claim a quiet market. It shows no feed
+  health: the backend serves `captured_at` (its response time, `""` when no
+  store is wired), which does not catch a WebSocket the worker has lost. A full
+  page whose oldest event is still inside the hour reads `Liquidations, newest
+  200 events of the 1h window · $… · long liqs … · short liqs …` (`capped:
+  true`) — the window may hold more; a full page that reaches past the hour
+  counted the whole window. One event reads `1 event`, never `1 events`.
+- **Observed cluster.** Picked without any price: among the BTCUSDT bands
+  the backend serves (every band when none is BTCUSDT), the **largest by
+  USD**; equal USD → more events, then the symbol (A→Z), then the lower band
+  (an unparsable band after a parsable one), then the band text. The served
+  order is never used, so the pick is the same for the same bands. The old
+  pick — the band nearest to the BTC price — swapped bands while the mark
+  price wandered between two of them: a different cluster (side, USD, event
+  count) and a hook push with no new data. No cluster is shown (`cluster:
+  null`) when the card's 1h window holds **no event**: the backend builds its
+  bands over its own in-memory window, pruned on its clock, while the card
+  counts the feed from the request time, so at the edge of the hour a band
+  could stand beside `no events in the current 1h window`. The card gives the band, USD, event count, the side with more USD, the time
+  of the newest event of the band in the served feed (`last event 14:32 UTC`,
+  never an age: an age would change every sweep and push the hook with the
+  same data) and where the band sits against the mark price — `band above`,
+  `band below` or `mark price is inside the band`. A position, not a price or
+  a distance: the mark moves every second, and a distance in the body would
+  push the hook (and digest/top when funding wins) every sweep with no new
+  data; the position changes only when the mark crosses a band edge. The AI
+  payload drops the event time.
+- **`/showcase/example`** with a funding winner concludes with a
+  classification, not a direction: `This is a funding classification on
+  XRPUSDT, not a forecast: its last funding rate is past the agent's short
+  threshold, so shorts pay an elevated rate; it says nothing about where price
+  goes.` (The generic sentence read the semaphore as "bullish … lean up".)
+- Just past a threshold (a rate past it by less than one printed unit) reads
+  `Past the long threshold by <0.0001 pp` and `>1.00×`; exactly on it,
+  `Exactly at the long threshold` and `1.00×`.
+- Every line (verdict, facts, digest line, each `blocks` field) is at most 110
+  characters.
+
+```
+⚪ Funding Agent · SOLUSDT
+Funding within the agent's thresholds
+• Last funding rate: -0.0100% < -0.0062% < +0.0300% → within thresholds
+• Nearest threshold: short -0.0100%, 0.0038 pp away
+• Why SOLUSDT: largest ratio to its own side's threshold of 5 majors (0.62×, rate ÷ threshold)
+• Other majors: BTCUSDT +0.0097% · ETHUSDT -0.0049% · BNBUSDT +0.0038% · XRPUSDT -0.0031%
+• Coverage: 5/5 Binance majors
+• Liquidations: no events in the current 1h window
+```
+
+(The rates of 2026-09-15 16:40 UTC; the old card showed BTCUSDT, the largest
+|rate| at 0.32 of its threshold.) Past a threshold:
+
+```
+🟢 Funding Agent · XRPUSDT
+Negative funding below threshold — shorts pay an elevated rate
+• Last funding rate: -0.0150% ≤ -0.0100% (short threshold) → shorts pay an elevated rate
+• Past the short threshold by 0.0050 pp · long threshold +0.0300%
+• Why XRPUSDT: furthest past its own side's threshold (1.50×, rate ÷ threshold) · 1 of 5 past a threshold
+• Other majors: BTCUSDT +0.0200% · ETHUSDT +0.0010% · SOLUSDT +0.0010% · BNBUSDT +0.0010%
+• Coverage: 5/5 Binance majors
+• Liquidations, last 1h: 12 events · $1.20M · long liqs $840.0K (70%) · short liqs $360.0K
+• Observed liquidation cluster, last 1h: BTCUSDT 63100-63400 · $412.0K · 9 events
+• Cluster: long liqs lead by USD · last event 14:32 UTC · band below the BTCUSDT mark price
+```
+
+(Example numbers.) Exactly on a threshold reads `Exactly at the long threshold
++0.0300% · short threshold -0.0100%`; within the thresholds the second line
+names the nearer threshold (`Nearest threshold: long +0.0300%, 0.0001 pp
+away`, or `equidistant, 0.0200 pp from both` at +0.0100%).
+
+`funding` (additive; absent only on the all-offline `503`):
+
+| Field | Meaning |
+|---|---|
+| `state` | `positive_above_threshold` \| `negative_below_threshold` \| `within_thresholds` \| `partial` \| `rates_offline` |
+| `selected_symbol` / `selection_reason` | The coin the card shows and why: `furthest_past_own_threshold` \| `closest_to_own_threshold` (the largest rate ÷ own-side threshold, none past; the card says "largest ratio", since its nearest threshold in pp can be the other side's — the machine value is unchanged); both `null` on `partial` / `rates_offline` |
+| `rate_kind` / `funding_interval` | Always `"last_funding_rate"` / `null` (not verified) |
+| `thresholds` | `{"long": 0.0003, "short": -0.0001}` — raw rates |
+| `crossed` | How many received majors are past a threshold |
+| `coverage` | `{"received": 4, "total": 5, "missing": ["BNBUSDT"], "min_for_verdict": 3}` |
+| `liquidations` | `{"window_minutes": 60, "count", "usd", "long_usd", "short_usd", "feed_limit": 200, "capped", "cluster"}`; `null` when the feed is offline. `cluster`: `{"symbol", "side" (long_liq \| short_liq, the larger USD side), "price_band", "usd", "count", "last_event_at" (RFC3339 or null: the newest feed event of the 1h window priced in [low, high) of the printed band — the backend's own banding; edges are printed rounded, so an event within that rounding of an edge may be timed to the neighbour band), "band_vs_mark" (above \| below \| inside — the band against the symbol's mark price; null without one)}`, `null` when the backend served no band |
+
+`results` (one entry per major, fixed order): `{"asset" (base coin, `SOL`), "symbol" (`SOLUSDT`), "ok": true,
+"rate", "side_threshold" (+0.0003 at or above zero, -0.0001 below), "crossed",
+"ratio_to_threshold" (|rate| ÷ |side_threshold|), "selected"}`; a symbol that
+did not answer: `{"asset", "symbol", "ok": false, "reason": "source_offline"}`.
+Raw precision.
+
+`blocks` (a card with a verdict; absent on `partial`, `rates_offline` and the
+`503`). Funding has no price level, no target and no direction:
+
+| Field | Meaning |
+|---|---|
+| `what_happened` | `"Within thresholds, largest ratio SOLUSDT -0.0062% vs -0.0100% · no liquidation events in the 1h window"`; past a threshold: `"XRPUSDT funding -0.0150% is past the short threshold -0.0100% · liquidations 1h: 12 events, $1.20M"` |
+| `why_level` | `"No price level: +0.0300% and -0.0100% are the agent's own funding thresholds, not a market benchmark"` |
+| `scenarios` | Two conditional classification changes. Within: `"If any major's funding rate reaches +0.0300% or above, the state turns positive funding above threshold"` / `"… falls to -0.0100% or below, … negative funding below threshold"`. Past: `"If every major returns inside -0.0100% to +0.0300%, the state turns within thresholds"` / `"If a major is past +0.0300% at a larger ratio than XRPUSDT, the state turns positive funding above threshold"` (the other side's threshold; crossed coins compare by ratio only, so that major becomes the shown coin). No ratio number: its print is truncated, "larger" is exact |
+| `invalidates` | Past a threshold only: `"XRPUSDT funding back above -0.0100% ends this reading (neutral once no major is past a threshold)"`; `null` within the thresholds |
+| `regime` | The **local perp funding** regime, not a market regime: `"Local perp funding regime · 5/5 Binance majors · none past a threshold · SOLUSDT 0.62× its threshold"` |
+| `limitations` | `"One funding rate per symbol: it does not measure open interest, leverage or positions on other venues"` |
 
 ## Macro card and content blocks
 
@@ -1375,7 +1539,7 @@ anything else is a bug in the address list and is logged, not sent.
 |---|---|
 | `event_id` | `agent:asset:params:data_as_of:hash8` — `hash8` is the first 8 hex of the change hash (below); an empty segment is `-`; `params` is `k=v` pairs sorted by key, joined by `,` (e.g. `tf=1d`) |
 | `agent` | Agent key as in `/agents/{agent}` |
-| `asset` | Upper-case asset of the address (`BTC`, `XAUUSD`, `GOLD` for the macro gold view); `""` for a global read (fx, whale, funding, news, gold, digest, top, macro, the momentum composite) |
+| `asset` | Upper-case asset of the address (`BTC`, `XAUUSD`, `GOLD` for the macro gold view); `""` for a global read (fx, whale, funding, news, gold, digest, top, macro, the momentum composite). Taken from the address, not the body: a funding event keeps `""` although its `data.asset` names the shown coin since 2026-09-15 |
 | `params` | Extra query parameters; `{}` in v1 |
 | `data_as_of` | The body's `data_as_of`; `null` for a `503` body (it has none) |
 | `sent_at` | RFC3339 UTC send time |

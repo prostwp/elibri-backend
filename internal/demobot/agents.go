@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -207,7 +206,7 @@ func insufficientCard(spec assetSpec, agent, shortName, command, how, what strin
 var howTexts = map[string]string{
 	keyMacro:    "Fixed rules score 5 tradfin lamps (DXY, US 10Y, VIX, S&P 500, Gold) into a 0-100 rule score: above 65 risk-on, below 35 risk-off. A backdrop, not a forecast. RISK-OFF tops the digest.",
 	keyWhale:    "Tracks large BTC transfers from the public mempool. These wallets carry no exchange labels, so the card reports transfer activity; exchange in/outflow appears only when labeled.",
-	keyFunding:  "Compares perp funding rates across majors. High positive funding = crowded longs (squeeze risk); negative = crowded shorts. Liquidation feed shows where forced exits cluster.",
+	keyFunding:  "Last perp funding rate of 5 Binance majors vs the agent's thresholds: +0.03% or above, -0.01% or below. Shows the coin with the largest rate ÷ its own side's threshold, plus 1h liquidations.",
 	keyMomentum: "RSI(14) + MACD histogram. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; else neutral. Crypto on 4h bars, FX and gold on 1h; a 1d scan is available.",
 	keyTrend:    "State machine on 4h bars (1h for FX/gold): ADX<20 flat, 20-25 grey zone, ADX 25+ with price and EMA50/200 aligned = confirmed unless swing structure disagrees; else conflict.",
 	keySR:       "Clusters swing highs/lows within 0.5% on closed 4h candles (1h FX/gold), 3 strongest per side. Test = a close within 0.25 ATR; reaction or break within 3 candles. 7+ pivots = established.",
@@ -500,10 +499,12 @@ func mentionsWord(n int) string {
 
 // ── Funding ──────────────────────────────────────────────────────────────────
 
-// Funding-rate verdict thresholds (8h rate, absolute):
-// +0.03% and above = longs crowded; -0.01% and below = shorts crowded
-// (negative funding is rarer, so its threshold is tighter). In between =
-// balanced. Deviation: see fundingDeviation.
+// Funding-rate thresholds on the symbol's LAST funding rate (premiumIndex
+// serves no interval, so none is claimed): +0.03% and above = past the long
+// threshold (longs pay an elevated rate); -0.01% and below = past the short
+// threshold (negative funding is rarer, so its threshold is tighter). In
+// between = within the thresholds. Coin pick and wording: funding_text.go.
+// Deviation: see fundingDeviation.
 const (
 	fundingLongsCrowded  = 0.0003
 	fundingShortsCrowded = -0.0001
@@ -526,173 +527,16 @@ func fundingDeviation(widest float64) int {
 	return clampInt(int(math.Round(math.Abs(widest)/th*fundingThresholdScore)), 0, 100)
 }
 
+// FundingCard reads the rates and the liquidation feed and hands them to the
+// pure builder (fundingCardFrom, funding_text.go). Both sources dead → the
+// honest offline card.
 func (a *Agents) FundingCard(ctx context.Context) Card {
-	rates, ratesErr := fetchFundingRates(ctx, fundingSymbols)
+	quotes, ratesErr := fetchFundingRates(ctx, fundingSymbols)
 	liq, liqErr := a.api.FundingLiquidations(ctx)
 	if ratesErr != nil && liqErr != nil {
 		return offlineCard("Funding Agent", "Funding", "", keyFunding, howTexts[keyFunding])
 	}
-	c := Card{
-		Agent:      "Funding Agent",
-		ShortName:  "Funding",
-		Command:    keyFunding,
-		HowItWorks: howTexts[keyFunding],
-		// Funding IS a point-in-time read — now() is honest here, and the
-		// footer labels it so (item 7 exempts funding but requires the label).
-		DataTime:   time.Now().UTC(),
-		SourceNote: "as of request time",
-		// Rates, the liquidation feed, the 1h window from now and the BTC
-		// magnet price are separate reads; the request-time DataTime (one
-		// second of header resolution) is not a version of that body.
-		noValidator: true,
-	}
-
-	if ratesErr == nil {
-		// Walk fundingSymbols, not the map: on equal |rates| the first symbol
-		// in that order wins, so the card (and its semaphore, when equal
-		// |rates| of opposite sign sit past the thresholds) is the same on
-		// every request. Ranging over the map picked a random symbol.
-		widestSym, widest := "", 0.0
-		for _, sym := range fundingSymbols {
-			r, ok := rates[sym]
-			if !ok {
-				continue
-			}
-			if widestSym == "" || math.Abs(r) > math.Abs(widest) {
-				widestSym, widest = sym, r
-			}
-		}
-		switch {
-		case widest >= fundingLongsCrowded:
-			c.Emoji, c.Verdict, c.Short = emojiBear, "Longs crowded — squeeze risk building", "longs crowded"
-			c.confirmed = true
-		case widest <= fundingShortsCrowded:
-			c.Emoji, c.Verdict, c.Short = emojiBull, "Shorts crowded — squeeze fuel above", "shorts crowded"
-			c.confirmed = true
-		default:
-			c.Emoji, c.Verdict, c.Short = emojiNeutral, "Funding balanced — no crowd to punish", "balanced"
-		}
-		side := "longs pay shorts"
-		if widest < 0 {
-			side = "shorts pay longs"
-		}
-		c.Facts = append(c.Facts, fmt.Sprintf("Widest skew: %s %+.4f%%/8h (%s)", widestSym, widest*100, side))
-		if btc, ok := rates["BTCUSDT"]; ok && widestSym != "BTCUSDT" {
-			c.Facts = append(c.Facts, fmt.Sprintf("BTC funding: %+.4f%%/8h", btc*100))
-		}
-		c.Deviation = fundingDeviation(widest)
-	} else {
-		c.Emoji, c.Verdict, c.Short = emojiNeutral, "Funding rates unavailable — liquidations only", "rates offline"
-		// The agent's headline reading (funding skew) was not produced — the
-		// envelope must say ok=false/source_offline even though the card still
-		// renders the liquidation facts as a 200.
-		c.Status = statusSourceOffline
-		c.Facts = append(c.Facts, "Funding-rate source offline right now")
-	}
-
-	switch {
-	case liqErr != nil:
-		c.Facts = append(c.Facts, "Liquidation feed offline right now")
-	case len(liq.Feed) == 0:
-		c.Facts = append(c.Facts, "Liquidation feed live but quiet — no forced exits recently")
-	default:
-		var longUSD, shortUSD float64
-		cutoff := time.Now().Add(-1 * time.Hour)
-		for _, l := range liq.Feed {
-			if l.TS.Before(cutoff) {
-				continue
-			}
-			if l.Side == "long_liq" {
-				longUSD += l.USDValue
-			} else {
-				shortUSD += l.USDValue
-			}
-		}
-		line := fmt.Sprintf("Liquidations 1h: %s longs vs %s shorts", usd(longUSD), usd(shortUSD))
-		if skew := liqSkew(longUSD, shortUSD); skew != "" {
-			line += " — " + skew
-		}
-		c.Facts = append(c.Facts, line)
-		if len(liq.Zones) > 0 {
-			z := liq.Zones[0]
-			// Prefer the BTC zone nearest to the live BTC price when the
-			// kline cache can supply one; otherwise keep the served order.
-			if btcPrice := a.lastBTCClose(ctx); btcPrice > 0 {
-				z = nearestZone(liq.Zones, "BTCUSDT", btcPrice)
-			}
-			c.Facts = append(c.Facts, fmt.Sprintf("Magnet zone: %s %s (%s, %d hits)", z.Symbol, z.PriceBand, usd(z.TotalUSD), z.Count))
-		}
-	}
-	return c
-}
-
-// liqSkew words which side the 1h liquidation flow is punishing. "" when
-// the window saw no volume.
-func liqSkew(longUSD, shortUSD float64) string {
-	total := longUSD + shortUSD
-	if total <= 0 {
-		return ""
-	}
-	longShare := longUSD / total
-	switch {
-	case longShare >= 0.65:
-		return fmt.Sprintf("longs taking %d%% of the pain", int(math.Round(longShare*100)))
-	case longShare <= 0.35:
-		return fmt.Sprintf("shorts taking %d%% of the pain", int(math.Round((1-longShare)*100)))
-	default:
-		return "both sides roughly balanced"
-	}
-}
-
-// bandMid parses a "118200-118250" price band into its midpoint.
-func bandMid(band string) (float64, bool) {
-	parts := strings.Split(band, "-")
-	if len(parts) != 2 {
-		return 0, false
-	}
-	lo, err1 := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-	hi, err2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-	if err1 != nil || err2 != nil {
-		return 0, false
-	}
-	return (lo + hi) / 2, true
-}
-
-// nearestZone picks the magnet zone for `symbol` whose band midpoint sits
-// closest to price. Falls back to the first served zone when price is
-// unknown or no band parses — exactly the pre-depth behavior.
-func nearestZone(zones []LiqZone, symbol string, price float64) LiqZone {
-	if price <= 0 {
-		return zones[0]
-	}
-	best := -1
-	bestDist := math.MaxFloat64
-	for i, z := range zones {
-		if z.Symbol != symbol {
-			continue
-		}
-		mid, ok := bandMid(z.PriceBand)
-		if !ok {
-			continue
-		}
-		if d := math.Abs(mid - price); d < bestDist {
-			bestDist, best = d, i
-		}
-	}
-	if best < 0 {
-		return zones[0]
-	}
-	return zones[best]
-}
-
-// lastBTCClose returns the last closed BTC 4h close from the kline cache,
-// 0 when unavailable — callers must treat 0 as "price unknown".
-func (a *Agents) lastBTCClose(ctx context.Context) float64 {
-	candles, err := a.candlesFor(ctx, btcSpec)
-	if err != nil || len(candles) == 0 {
-		return 0
-	}
-	return candles[len(candles)-1].Close
+	return fundingCardFrom(quotes, ratesErr, liq, liqErr, time.Now().UTC())
 }
 
 // ── Momentum ─────────────────────────────────────────────────────────────────

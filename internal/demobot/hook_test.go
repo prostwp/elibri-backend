@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -192,7 +193,11 @@ func liveHookAgentsRates(t *testing.T, rates map[string]string) *Agents {
 	stubBinanceKlinesWave(t, binanceFetchLimit)
 	stubYahooWave(t, time.Now().UTC().Truncate(time.Hour).Add(-2*time.Hour), 600)
 	prem := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"lastFundingRate":"` + rates[r.URL.Query().Get("symbol")] + `"}`))
+		// markPrice moves on every request, as the real one does; the card body
+		// must not (TestHookHashStableAcrossCalls): the cluster band below
+		// holds it inside, so only the position "inside" is served.
+		mark := strconv.FormatFloat(118000+float64(time.Now().UnixMicro()%1000)/10, 'f', 2, 64)
+		_, _ = w.Write([]byte(`{"lastFundingRate":"` + rates[r.URL.Query().Get("symbol")] + `","markPrice":"` + mark + `"}`))
 	}))
 	t.Cleanup(prem.Close)
 	premiumIndexURL = prem.URL + "/?symbol="
@@ -211,7 +216,8 @@ func liveHookAgentsRates(t *testing.T, rates map[string]string) *Agents {
 		case "/api/v1/funding/liquidations":
 			body = `{"captured_at":"` + now + `","feed":[
 			  {"symbol":"BTCUSDT","side":"long_liq","qty":1,"price":118000,"usd_value":90000,"ts":"` + liqAt + `"},
-			  {"symbol":"ETHUSDT","side":"short_liq","qty":10,"price":4500,"usd_value":45000,"ts":"` + liqAt + `"}],"zones":[]}`
+			  {"symbol":"ETHUSDT","side":"short_liq","qty":10,"price":4500,"usd_value":45000,"ts":"` + liqAt + `"}],
+			  "zones":[{"symbol":"BTCUSDT","price_band":"117900-118100","total_usd":90000,"count":1,"side":"long_liq"}]}`
 		case "/api/v1/market/momentum":
 			body = `{"baseline":"BTC","items":{"ETH":{"rs_7d":-2.4,"rs_30d":5.1}}}`
 		case "/api/v1/market/mood-read":
@@ -256,8 +262,12 @@ func TestFundingTieDeterministic(t *testing.T) {
 		{"five-way tie at 0.0100%", equalFundingRates, "BTCUSDT", "neutral"},
 		{"equal |rate|, BTC negative first", map[string]string{"BTCUSDT": "-0.00030000", "ETHUSDT": "0.00030000",
 			"SOLUSDT": "0.00001000", "BNBUSDT": "0.00001000", "XRPUSDT": "0.00001000"}, "BTCUSDT", "bullish"},
-		{"equal |rate|, ETH positive before SOL", map[string]string{"BTCUSDT": "0.00001000", "ETHUSDT": "0.00030000",
-			"SOLUSDT": "-0.00030000", "BNBUSDT": "0.00001000", "XRPUSDT": "0.00001000"}, "ETHUSDT", "bearish"},
+		// Equal |rate| no longer ties (stage 1, 2026-09-15): SOL -0.03% is 3×
+		// its own threshold, ETH +0.03% 1×. The old pick showed ETH.
+		{"equal |rate|, SOL 3× its threshold beats ETH 1×", map[string]string{"BTCUSDT": "0.00001000", "ETHUSDT": "0.00030000",
+			"SOLUSDT": "-0.00030000", "BNBUSDT": "0.00001000", "XRPUSDT": "0.00001000"}, "SOLUSDT", "bullish"},
+		{"equal ratio 1.00×, BTC first", map[string]string{"BTCUSDT": "0.00030000", "ETHUSDT": "0.00001000",
+			"SOLUSDT": "0.00001000", "BNBUSDT": "0.00001000", "XRPUSDT": "-0.00010000"}, "BTCUSDT", "bearish"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -276,8 +286,8 @@ func TestFundingTieDeterministic(t *testing.T) {
 					if err := json.Unmarshal(b, &env); err != nil {
 						t.Fatal(err)
 					}
-					if env.Semaphore != tc.sem || !strings.HasPrefix(env.Facts[0], "Widest skew: "+tc.sym+" ") {
-						t.Fatalf("GET %d: semaphore %s, %q; want %s on %s", i, env.Semaphore, env.Facts[0], tc.sem, tc.sym)
+					if env.Semaphore != tc.sem || env.Asset != strings.TrimSuffix(tc.sym, "USDT") || !strings.Contains(env.CardHTML, "· "+tc.sym+"\n") {
+						t.Fatalf("GET %d: semaphore %s, asset %q; want %s on %s", i, env.Semaphore, env.Asset, tc.sem, tc.sym)
 					}
 				}
 				if len(hashes) != 1 {
@@ -1090,6 +1100,12 @@ func TestHookHashStableAcrossCalls(t *testing.T) {
 		if a[p].status != 200 {
 			t.Errorf("%s must be live in this fixture, got %d: %s", p, a[p].status, a[p].body)
 		}
+	}
+	// The fixture's markPrice moves on every request: the funding body must
+	// carry the cluster's position (not a price or distance) and stay put.
+	if fb := string(a["/agents/funding"].body); !strings.Contains(fb, "mark price is inside the band") ||
+		!strings.Contains(fb, `"band_vs_mark":"inside"`) || strings.Contains(fb, "mark_price") {
+		t.Errorf("/agents/funding: expected the cluster position against a moving mark price: %.800s", fb)
 	}
 	for _, p := range []string{"/agents/funding", "/agents/macro", "/agents/digest"} {
 		if string(a[p].body) == string(b[p].body) {

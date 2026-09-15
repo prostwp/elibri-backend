@@ -447,50 +447,10 @@ func TestWhaleCardNoBaselineNoSentence(t *testing.T) {
 	}
 }
 
-// ── /funding: liquidation skew + nearest magnet zone ─────────────────────────
-
-func TestLiqSkew(t *testing.T) {
-	cases := []struct {
-		long, short float64
-		want        string
-	}{
-		{90000, 30000, "longs taking 75% of the pain"},
-		{30000, 90000, "shorts taking 75% of the pain"},
-		{50000, 50000, "both sides roughly balanced"},
-		{0, 0, ""},
-		{100, 0, "longs taking 100% of the pain"},
-	}
-	for _, tc := range cases {
-		if got := liqSkew(tc.long, tc.short); got != tc.want {
-			t.Errorf("liqSkew(%v, %v): got %q, want %q", tc.long, tc.short, got, tc.want)
-		}
-	}
-}
-
-func TestBandMidAndNearestZone(t *testing.T) {
-	if mid, ok := bandMid("118200-118250"); !ok || !almostEqual(mid, 118225, 1e-9) {
-		t.Errorf("bandMid: got %v/%v", mid, ok)
-	}
-	if _, ok := bandMid("garbage"); ok {
-		t.Error("bad band must not parse")
-	}
-	zones := []LiqZone{
-		{Symbol: "BTCUSDT", PriceBand: "90000-90050", TotalUSD: 100000, Count: 3},
-		{Symbol: "BTCUSDT", PriceBand: "118200-118250", TotalUSD: 412000, Count: 9},
-		{Symbol: "ETHUSDT", PriceBand: "118000-118100", TotalUSD: 999999, Count: 99},
-	}
-	z := nearestZone(zones, "BTCUSDT", 118240)
-	if z.PriceBand != "118200-118250" {
-		t.Errorf("nearest zone: got %q, want the 118200 band", z.PriceBand)
-	}
-	// Unknown price → first zone (existing behavior preserved).
-	if z := nearestZone(zones, "BTCUSDT", 0); z.PriceBand != "90000-90050" {
-		t.Errorf("no price → first zone, got %q", z.PriceBand)
-	}
-}
+// ── /funding: liquidation skew + the largest observed band ───────────────────
 
 func TestFundingCardSkewAndZoneRendering(t *testing.T) {
-	stubExternalBases(t) // funding rates + klines dead → rates-offline path, no BTC price
+	stubExternalBases(t) // funding rates + klines dead → rates-offline path, no mark price
 	now := time.Now().UTC().Format(time.RFC3339)
 	fixture := `{"captured_at":"` + now + `","feed":[
 	    {"symbol":"BTCUSDT","side":"long_liq","qty":1,"price":118000,"usd_value":90000,"ts":"` + now + `"},
@@ -502,12 +462,15 @@ func TestFundingCardSkewAndZoneRendering(t *testing.T) {
 	c := ag.FundingCard(context.Background())
 
 	joined := strings.Join(c.Facts, "|")
-	if !strings.Contains(joined, "longs taking 75% of the pain") {
-		t.Errorf("skew wording missing: %v", c.Facts)
+	if !strings.Contains(joined, "Liquidations, last 1h: 2 events · $120.0K · long liqs $90.0K (75%) · short liqs $30.0K") {
+		t.Errorf("liquidation line missing/wrong: %v", c.Facts)
 	}
-	// No BTC price available → first zone, exactly the old behavior.
-	if !strings.Contains(joined, "Magnet zone: BTCUSDT 118200-118250") {
-		t.Errorf("magnet zone line missing/wrong: %v", c.Facts)
+	// The largest BTC band, with or without a mark price (fundingClusterZone).
+	if !strings.Contains(joined, "Observed liquidation cluster, last 1h: BTCUSDT 118200-118250 · $412.0K · 9 events") {
+		t.Errorf("cluster line missing/wrong: %v", c.Facts)
+	}
+	if !strings.Contains(joined, "Coverage: 0/5 Binance majors · funding-rate source offline right now") {
+		t.Errorf("rates-offline coverage line missing: %v", c.Facts)
 	}
 }
 

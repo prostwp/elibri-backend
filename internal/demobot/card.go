@@ -104,9 +104,10 @@ type TrendLevels struct {
 //   - regime: the local regime in one line (state · timeframe · ADX)
 //   - context: macro only (additive, 2026-09-15) — the asset backdrops and
 //     Fear & Greed beside the regime; absent on every other agent
-//   - state_changes_when, limitations: volatility only (additive,
-//     2026-09-15) — what changes the state on the next closed candle, and
-//     what the agent does not measure; absent on every other agent
+//   - state_changes_when: volatility only (additive, 2026-09-15) — what
+//     changes the state on the next closed candle; limitations: volatility
+//     and funding (funding_text.go) — what the agent does not measure;
+//     absent on every other agent
 //
 // Volatility (vol_text.go) has no price level and no directional idea: its
 // why_level explains the ratio thresholds and invalidates is always null.
@@ -228,6 +229,77 @@ type AssetResult struct {
 	ChangeFrom       string   `json:"change_from,omitempty"`
 	EMARelation      string   `json:"ema_relation,omitempty"`
 	RangePositionPct *float64 `json:"range_position_pct,omitempty"`
+	// Funding rows only (additive, 2026-09-15 — see fundingResults): the
+	// symbol, its last funding rate, the threshold of the rate's own side
+	// (+0.0003 at or above zero, -0.0001 below), whether the rate is past
+	// it, |rate| ÷ |that threshold|, and whether this is the coin the card
+	// shows. Raw precision. A symbol that did not answer carries only
+	// asset/symbol/ok=false/reason.
+	Symbol           string   `json:"symbol,omitempty"`
+	Rate             *float64 `json:"rate,omitempty"`
+	SideThreshold    *float64 `json:"side_threshold,omitempty"`
+	Crossed          *bool    `json:"crossed,omitempty"`
+	RatioToThreshold *float64 `json:"ratio_to_threshold,omitempty"`
+	Selected         *bool    `json:"selected,omitempty"`
+}
+
+// FundingReadout is the envelope's "funding" object (funding cards only,
+// additive 2026-09-15; docs/demobot-http.md "Funding card").
+type FundingReadout struct {
+	State           string  `json:"state"`            // positive_above_threshold | negative_below_threshold | within_thresholds | partial | rates_offline
+	SelectedSymbol  *string `json:"selected_symbol"`  // null on partial / rates_offline
+	SelectionReason *string `json:"selection_reason"` // furthest_past_own_threshold | closest_to_own_threshold | null
+	RateKind        string  `json:"rate_kind"`        // always "last_funding_rate"
+	// FundingInterval is always null: premiumIndex serves no funding interval
+	// and the agent does not verify one, so no "/8h" is claimed.
+	FundingInterval *string              `json:"funding_interval"`
+	Thresholds      FundingThresholds    `json:"thresholds"`
+	Crossed         int                  `json:"crossed"` // received majors past a threshold
+	Coverage        FundingCoverage      `json:"coverage"`
+	Liquidations    *FundingLiquidations `json:"liquidations"` // null when the feed is offline
+}
+
+type FundingThresholds struct {
+	Long  float64 `json:"long"`
+	Short float64 `json:"short"`
+}
+
+type FundingCoverage struct {
+	Received      int      `json:"received"`
+	Total         int      `json:"total"`
+	Missing       []string `json:"missing"` // [] when none
+	MinForVerdict int      `json:"min_for_verdict"`
+}
+
+// FundingLiquidations is the 1h window as the card counted it from the
+// backend feed (newest feed_limit events; capped = the page was full, so the
+// window may hold more).
+type FundingLiquidations struct {
+	WindowMinutes int                `json:"window_minutes"`
+	Count         int                `json:"count"`
+	USD           float64            `json:"usd"`
+	LongUSD       float64            `json:"long_usd"`
+	ShortUSD      float64            `json:"short_usd"`
+	FeedLimit     int                `json:"feed_limit"`
+	Capped        bool               `json:"capped"`
+	Cluster       *FundingClusterOut `json:"cluster"` // null when the backend served no zone
+}
+
+// FundingClusterOut is the observed liquidation cluster the card shows: a
+// past 0.5% price band of the backend's 1h window, not a forecast level.
+type FundingClusterOut struct {
+	Symbol      string  `json:"symbol"`
+	Side        string  `json:"side"` // long_liq | short_liq: the larger USD side of the band
+	PriceBand   string  `json:"price_band"`
+	USD         float64 `json:"usd"`
+	Count       int     `json:"count"`
+	LastEventAt *string `json:"last_event_at"` // newest event of the band in the served feed, null when none is there
+	// BandVsMark is where the band sits against the symbol's premiumIndex
+	// mark price: "above" | "below" | "inside" (the mark within the band);
+	// null without a mark price. A position, not a price or a distance: it
+	// changes only when the mark crosses a band edge, so the body does not
+	// move with every tick.
+	BandVsMark *string `json:"band_vs_mark"`
 }
 
 // Card is one agent's reply. RenderHTML produces the exact Telegram
@@ -282,6 +354,9 @@ type Card struct {
 	// weight, contribution, source, as_of; freshness; score bands) — served
 	// as the envelope's "macro", ignored by Telegram. nil elsewhere.
 	Macro *MacroReadout
+	// Funding is the funding card's machine readout (state, coin, coverage,
+	// liquidations) — served as the envelope's "funding". nil elsewhere.
+	Funding *FundingReadout
 	// noValidator marks a card whose body is NOT a function of one stamped
 	// snapshot — composites of several sources or series, or text built from
 	// the request clock (gold, fx, funding, the composite momentum card, a

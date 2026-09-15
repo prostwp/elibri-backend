@@ -80,8 +80,8 @@ type httpEnvelope struct {
 	// agents: trend {"invalidation"}, sr {"supports","resistances"}, vol
 	// {"expansion_ratio"} — raw precision floats. Absent for other agents.
 	Levels any `json:"levels,omitempty"`
-	// Results is the per-asset outcome array of momentum cards
-	// ({"asset","ok","reason"}, plus the read itself on ok entries — see
+	// Results is the per-asset outcome array of momentum, fx and funding
+	// cards ({"asset","ok","reason"}, plus the read itself on ok entries — see
 	// AssetResult) — absent for every other agent.
 	Results []AssetResult `json:"results,omitempty"`
 	// Blocks is the content-ready sentence set (trend, S/R cards that show at
@@ -92,10 +92,13 @@ type httpEnvelope struct {
 	// Macro is the macro cards' machine readout (rule score, bands, per-lamp
 	// contributions, freshness, Fear & Greed age) — absent for every other
 	// agent and on macro cards without a reading (unknown / offline).
-	Macro      *MacroReadout `json:"macro,omitempty"`
-	Confidence *int          `json:"confidence"`         // 0-100, null when the source gave none
-	AIText     *string       `json:"ai_text"`            // plain-text AI block, null when absent
-	Sections   []string      `json:"sections,omitempty"` // digest only: the one-liners
+	Macro *MacroReadout `json:"macro,omitempty"`
+	// Funding is the funding card's machine readout (additive 2026-09-15) —
+	// absent for every other agent and on the all-offline funding card.
+	Funding    *FundingReadout `json:"funding,omitempty"`
+	Confidence *int            `json:"confidence"`         // 0-100, null when the source gave none
+	AIText     *string         `json:"ai_text"`            // plain-text AI block, null when absent
+	Sections   []string        `json:"sections,omitempty"` // digest only: the one-liners
 	// Digest is the digest's own machine readout (digest only, additive
 	// 2026-09-15): unified status, how the highlighted card was selected and
 	// every section card_html renders (FX and narrative included), each with
@@ -268,6 +271,7 @@ func cardEnvelope(c Card) httpEnvelope {
 		Results:    c.Results,
 		Blocks:     c.Blocks,
 		Macro:      c.Macro,
+		Funding:    c.Funding,
 		DataAsOf:   c.DataTime.UTC().Format(time.RFC3339),
 		Disclaimer: disclaimerText,
 		CardHTML:   c.RenderHTML(),
@@ -771,8 +775,8 @@ const digestAgentName = "AlphaVizor Digest"
 // digestHeadline names the winner's asset in the same "Agent · Asset" form as
 // the card header, because the digest envelope's own "asset" stays empty (the
 // sweep covers many markets) and without it "Confirmed UPTREND" said nothing
-// about WHICH market. Market-wide winners (funding, macro) carry no asset and
-// keep the bare form. Every card with an asset names it — since 2026-09-15
+// about WHICH market. The market-wide macro winner carries no asset and keeps
+// the bare form; funding names the coin it shows (stage 1, 2026-09-15). Every card with an asset names it — since 2026-09-15
 // the multi-asset momentum card too ("Momentum Agent · BTC/ETH/XAUUSD"): its
 // verdict became a counter ("1 bullish (ETH) · 0 bearish · …") and no longer
 // names each market.

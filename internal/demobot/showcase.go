@@ -501,6 +501,9 @@ func exampleFacts(c Card) []string {
 // instruction to enter or exit (the same rule sanitizeAdviceLanguage
 // enforces on model output).
 func conclusionFor(c Card) string {
+	if c.Command == keyFunding && c.Funding != nil && c.Funding.SelectedSymbol != nil {
+		return fundingConclusion(c) // a classification, never a direction
+	}
 	subject := c.Asset
 	if subject == "" {
 		subject = "the broader market"
@@ -587,14 +590,17 @@ func (s *HTTPServer) handleShowcaseExample(w http.ResponseWriter, r *http.Reques
 		GeneratedAt: b.at.Format(time.RFC3339),
 		Agent:       card.Agent,
 		Slug:        slug,
-		Asset:       card.Asset,
-		Detected:    detectedSentence(card),
-		Explained:   explained,
-		Data:        exampleFacts(card),
-		Conclusion:  conclusionFor(card),
-		Levels:      card.Levels,
-		ExampleURL:  "/agents/" + slug,
-		Disclaimer:  disclaimerText,
-		DataAsOf:    card.DataTime.UTC().Format(time.RFC3339),
+		// The machine asset, as in the /agents/{slug} envelope (cardEnvelope):
+		// funding's base coin (XRP); the other example agents set no separate
+		// key, so theirs is unchanged. "detected" keeps the display name.
+		Asset:      card.assetKey(),
+		Detected:   detectedSentence(card),
+		Explained:  explained,
+		Data:       exampleFacts(card),
+		Conclusion: conclusionFor(card),
+		Levels:     card.Levels,
+		ExampleURL: "/agents/" + slug,
+		Disclaimer: disclaimerText,
+		DataAsOf:   card.DataTime.UTC().Format(time.RFC3339),
 	})
 }

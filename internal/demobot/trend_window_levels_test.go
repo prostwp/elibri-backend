@@ -271,7 +271,8 @@ func TestTrendWindowIs999ClosedOthers249OneRequest(t *testing.T) {
 	_ = ag.SRCard(ctx, btcSpec)
 	_ = ag.VolCard(ctx, btcSpec)
 	_ = ag.MomentumAssetCard(ctx, btcSpec)
-	_ = ag.lastBTCClose(ctx)
+	// Funding no longer reads klines (2026-09-15): its cluster distance uses
+	// the premiumIndex mark price, not the last 4h close.
 	_, srv := newTestAPI(t, ag, true)
 	if code, _, _, body := getChart(t, srv.URL+"/agents/trend/chart?asset=btc"); code != http.StatusOK {
 		t.Fatalf("chart status %d: %s", code, body)
@@ -326,7 +327,6 @@ func TestNonTrendAgentsUnchangedByTrendWindow(t *testing.T) {
 		} {
 			out[name] = envJSON(c)
 		}
-		out["lastBTCClose"] = fmt.Sprint(ag.lastBTCClose(ctx))
 
 		// The digest sweep: its non-trend cards (trend, and so digest/top,
 		// legitimately change with the new window).

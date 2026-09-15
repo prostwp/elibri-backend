@@ -158,7 +158,9 @@ type FundingResp struct {
 
 func (c *BackendClient) FundingLiquidations(ctx context.Context) (*FundingResp, error) {
 	var out FundingResp
-	if err := c.getJSON(ctx, "/api/v1/funding/liquidations", &out); err != nil {
+	// The backend's maximum page (default 40): the card counts the 1h window
+	// from this feed and says when the page is full (fundingFeedLimit).
+	if err := c.getJSON(ctx, fmt.Sprintf("/api/v1/funding/liquidations?limit=%d", fundingFeedLimit), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

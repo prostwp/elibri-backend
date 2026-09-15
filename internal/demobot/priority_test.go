@@ -21,14 +21,18 @@ var (
 	rankFresh = rankAt.Add(-time.Hour)
 )
 
+// fundingCard is a REAL funding card in the 2026-09-15 format
+// (fundingCardFrom): BTCUSDT at rate, the other majors at 0, an empty
+// liquidation window, stamped rankAt. BTC is the shown coin whatever the
+// rate (the others score 0, ties go to BTC), so Deviation is
+// fundingDeviation(rate).
 func fundingCard(rate float64) Card {
-	c := Card{Agent: "Funding Agent", ShortName: "Funding", Command: keyFunding,
-		Verdict: "Funding balanced — no crowd to punish", Short: "balanced", Emoji: emojiNeutral,
-		DataTime: rankAt, Deviation: fundingDeviation(rate)}
-	if rate >= fundingLongsCrowded || rate <= fundingShortsCrowded {
-		c.confirmed, c.Verdict, c.Short = true, "crowded", "crowded"
+	q := map[string]fundingQuote{}
+	for _, s := range fundingSymbols {
+		q[s] = fundingQuote{}
 	}
-	return c
+	q["BTCUSDT"] = fundingQuote{rate: rate}
+	return fundingCardFrom(q, nil, &FundingResp{}, nil, rankAt)
 }
 
 // momentumCard is a composite momentum card in the 2026-09-15 format: the

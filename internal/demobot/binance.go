@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"sync"
@@ -253,22 +254,26 @@ var fundingHTTP = &http.Client{Timeout: 8 * time.Second}
 // var so tests can point it at a stub server.
 var premiumIndexURL = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol="
 
-// fetchFundingRates pulls lastFundingRate for each symbol concurrently.
-// Partial success is fine; it errors only when every symbol failed.
-func fetchFundingRates(ctx context.Context, symbols []string) (map[string]float64, error) {
+// fetchFundingRates pulls lastFundingRate (and markPrice, when served) for
+// each symbol concurrently. Partial success is fine; it errors only when every
+// symbol failed — the card reports which symbols are missing.
+//
+// The answer carries no funding interval, so the card never labels the rate
+// "/8h": it is the symbol's last funding rate.
+func fetchFundingRates(ctx context.Context, symbols []string) (map[string]fundingQuote, error) {
 	type res struct {
-		sym  string
-		rate float64
-		err  error
+		sym string
+		q   fundingQuote
+		err error
 	}
 	ch := make(chan res, len(symbols))
 	for _, s := range symbols {
 		go func(sym string) {
-			rate, err := fetchOneFundingRate(ctx, sym)
-			ch <- res{sym: sym, rate: rate, err: err}
+			q, err := fetchOneFundingRate(ctx, sym)
+			ch <- res{sym: sym, q: q, err: err}
 		}(s)
 	}
-	out := make(map[string]float64, len(symbols))
+	out := make(map[string]fundingQuote, len(symbols))
 	var lastErr error
 	for range symbols {
 		r := <-ch
@@ -276,7 +281,7 @@ func fetchFundingRates(ctx context.Context, symbols []string) (map[string]float6
 			lastErr = r.err
 			continue
 		}
-		out[r.sym] = r.rate
+		out[r.sym] = r.q
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("funding rates unavailable: %w", lastErr)
@@ -284,32 +289,40 @@ func fetchFundingRates(ctx context.Context, symbols []string) (map[string]float6
 	return out, nil
 }
 
-func fetchOneFundingRate(ctx context.Context, symbol string) (float64, error) {
+// fetchOneFundingRate: a rate that is not a finite number below 100% in
+// magnitude is bad data and counts as a missing symbol. A missing or bad
+// markPrice only leaves the mark unknown (0).
+func fetchOneFundingRate(ctx context.Context, symbol string) (fundingQuote, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, premiumIndexURL+symbol, nil)
 	if err != nil {
-		return 0, err
+		return fundingQuote{}, err
 	}
 	resp, err := fundingHTTP.Do(req)
 	if err != nil {
-		return 0, err
+		return fundingQuote{}, err
 	}
 	defer resp.Body.Close()
 	limited := io.LimitReader(resp.Body, 8<<20)
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, limited)
-		return 0, fmt.Errorf("premiumIndex %s: HTTP %d", symbol, resp.StatusCode)
+		return fundingQuote{}, fmt.Errorf("premiumIndex %s: HTTP %d", symbol, resp.StatusCode)
 	}
 	var body struct {
 		LastFundingRate string `json:"lastFundingRate"`
+		MarkPrice       string `json:"markPrice"`
 	}
 	if err := json.NewDecoder(limited).Decode(&body); err != nil {
 		_, _ = io.Copy(io.Discard, limited)
-		return 0, err
+		return fundingQuote{}, err
 	}
 	_, _ = io.Copy(io.Discard, limited)
 	rate, err := strconv.ParseFloat(body.LastFundingRate, 64)
-	if err != nil {
-		return 0, fmt.Errorf("premiumIndex %s: bad rate %q", symbol, body.LastFundingRate)
+	if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) || math.Abs(rate) >= 1 {
+		return fundingQuote{}, fmt.Errorf("premiumIndex %s: bad rate %q", symbol, body.LastFundingRate)
 	}
-	return rate, nil
+	q := fundingQuote{rate: rate}
+	if m, err := strconv.ParseFloat(body.MarkPrice, 64); err == nil && m > 0 && !math.IsInf(m, 0) {
+		q.mark = m
+	}
+	return q, nil
 }

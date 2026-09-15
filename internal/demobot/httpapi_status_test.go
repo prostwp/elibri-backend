@@ -451,7 +451,7 @@ func TestHTTPStatusFundingRatesOffline(t *testing.T) {
 	if env.Reason == nil || *env.Reason != "source_offline" {
 		t.Errorf("reason: %v, want source_offline", env.Reason)
 	}
-	if !strings.Contains(strings.Join(env.Facts, "|"), "Liquidations 1h:") {
+	if !strings.Contains(strings.Join(env.Facts, "|"), "Liquidations, last 1h:") {
 		t.Errorf("liquidation facts must survive the partial degrade: %v", env.Facts)
 	}
 }
