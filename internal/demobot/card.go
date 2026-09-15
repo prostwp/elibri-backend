@@ -221,10 +221,15 @@ type Card struct {
 	// weight, contribution, source, as_of; freshness; score bands) — served
 	// as the envelope's "macro", ignored by Telegram. nil elsewhere.
 	Macro *MacroReadout
-	// lastModified is the HTTP Last-Modified when it must differ from
-	// DataTime (macro: DataTime is the OLDEST lamp, which can stay put while
-	// the card changes — see macroModTime). Zero → DataTime. Not rendered.
-	lastModified time.Time
+	// noValidator marks a card whose body is NOT a function of one stamped
+	// snapshot — composites of several sources or series, or text built from
+	// the request clock (gold, fx, funding, the composite momentum card, a
+	// multi-asset scan). No component time can serve as its Last-Modified: a
+	// component may change while the chosen stamp stays put, and a
+	// conditional GET would then answer 304 for a changed body. writeCard
+	// serves such a card with no Last-Modified and ignores If-Modified-Since.
+	// DataTime (data_as_of, the footer) is unaffected. Not rendered.
+	noValidator bool
 	// trendConclusion is the landing-page conclusion for an UNCONFIRMED trend
 	// card ("" when confirmed and for every other agent). Not served; the
 	// showcase uses it instead of calling a card with an EMA lean "neutral".
@@ -244,15 +249,6 @@ type Card struct {
 	// after the facts and confidence bar. Builders MUST esc() every dynamic
 	// value when composing it — RenderHTML writes it verbatim.
 	AIHTML string
-}
-
-// modTime is the card's HTTP Last-Modified: lastModified when the builder
-// set one, else the data time.
-func (c Card) modTime() time.Time {
-	if !c.lastModified.IsZero() {
-		return c.lastModified
-	}
-	return c.DataTime
 }
 
 // assetKey is the machine asset value: AssetKey when the card set one, else

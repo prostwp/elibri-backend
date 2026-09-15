@@ -267,6 +267,10 @@ func (a *Agents) GoldCard(ctx context.Context) Card {
 		DataTime:   closeTimeOf(daily, goldDailySpec.Interval),
 		State:      trend.State,
 		SourceNote: goldSourceNote,
+		// The body reads the daily bars, the hourly price and its age, the
+		// macro payload and the weekend clock; the daily close (DataTime)
+		// versions none of the rest — no validator.
+		noValidator: true,
 	}
 
 	// The current price is fetched BEFORE the verdict, because the verdict

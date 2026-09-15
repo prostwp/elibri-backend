@@ -514,7 +514,7 @@ func TestKlineCacheSingleflight(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = cache.cached("k", load)
+			_, _, errs[i] = cache.cached("k", load)
 		}(i)
 	}
 	time.Sleep(50 * time.Millisecond) // let every goroutine reach the flight
@@ -536,10 +536,10 @@ func TestKlineCacheSingleflight(t *testing.T) {
 		atomic.AddInt32(&failHits, 1)
 		return nil, fmt.Errorf("boom")
 	}
-	if _, err := cache.cached("fail", failLoad); err == nil {
+	if _, _, err := cache.cached("fail", failLoad); err == nil {
 		t.Fatal("want the load error")
 	}
-	if _, err := cache.cached("fail", failLoad); err == nil {
+	if _, _, err := cache.cached("fail", failLoad); err == nil {
 		t.Fatal("want the retried load error")
 	}
 	if got := atomic.LoadInt32(&failHits); got != 2 {

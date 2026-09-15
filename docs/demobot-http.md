@@ -430,7 +430,7 @@ disagree for the same bars.
 | `pivots` | The agent's swing points (wing 3) that fall inside the returned window, chronological. `kind` = `high`\|`low`. A same-bar high+low appears as two entries |
 | `pivots[].label` | Set **only** on pivots the structure read compared, and only when `structure` is readable: within the last six alternating pivots, the 2nd and 3rd high are labelled vs the previous high (`HH`/`LH`), the 2nd and 3rd low vs the previous low (`HL`/`LL`). So at most **4** pivots carry a label. The first high and first low of that tail are the comparison baselines and carry `""`; a tie (equal price, which is what makes a read `mixed`) also carries `""`. Every other pivot, and all pivots when `structure` is `""`, carry `""` |
 | `structure` | `hh_hl \| lh_ll \| mixed \| ""`. `""` = the agent could not read a structure (too few pivots or non-alternating tail), which counts neither for nor against the trend |
-| `data_as_of` | RFC3339 UTC **close** time of the last closed bar. Also sent as `Last-Modified`; `If-Modified-Since` → `304` |
+| `data_as_of` | RFC3339 UTC **close** time of the last closed bar. For Binance assets also sent as `Last-Modified` (`If-Modified-Since` → `304`); Yahoo assets send no validator — see [caching](#caching-last-modified-and-304) |
 | `source` | `binance` \| `yahoo` |
 | `live` | For Binance assets, the public kline WebSocket to continue the chart in the browser (`wss://stream.binance.com:9443/ws/<symbol lowercased>@kline_<interval>`). `null` for Yahoo assets: that data is delayed, poll this endpoint instead (a new bar appears at most once per `timeframe`) |
 
@@ -488,9 +488,63 @@ Every agent endpoint answers with one shape:
 | `sections` | string[] | **digest only**: plain-text one-liners of every other agent (the winner heads the envelope) |
 | `digest` | object | **digest only** (additive, 2026-09-15): unified status, how the highlighted card was selected, and every block `card_html` renders below it (FX and narrative included), each with its own data time — see [digest readout](#digest-readout) |
 | `data_as_of` | string | RFC3339 UTC; for candle-based agents this is the **close time of the last closed bar used** — the same stamp as the card footer. **Macro** (since 2026-09-15): the **oldest** `as_of` among the live lamps (the source's session stamp), never the response build time — `UNKNOWN` macro cards keep the response time |
-| `Last-Modified` (header) | HTTP date | The validator for `If-Modified-Since` → `304`. **Single cards**: the card's data time (macro: the newest of `captured_at` and every stamp it renders — see [macro card](#macro-card-and-content-blocks)). **`/showcase`** (since 2026-09-15): the sweep time (`generated_at`) — its body is fixed for the life of the memoized sweep, so it returns `304` only while that sweep is served (up to 60 s). **`/agents/digest`, `/agents/top` and `/showcase/example` send no `Last-Modified` and ignore `If-Modified-Since`** (always `200`): the digest re-sweeps on every request (and the header's one-second resolution could not tell two builds apart); `/top` and the example add per-request AI text (brief, why-line, explanation) that reads the whole sweep, so the winner card's stamp does not cover them. No component stamp is sound for a composite — a component can change while being neither the newest nor the oldest reading. `data_as_of` is unaffected (still the oldest reading) |
+| `Last-Modified` (header) | HTTP date | The validator for `If-Modified-Since` → `304`. Sent **only** where the whole body is a function of the stamped data; which addresses carry it and what it means is in [caching](#caching-last-modified-and-304). `data_as_of` is never affected by it |
 | `disclaimer` | string | Always `"Analytics, not financial advice"` |
 | `card_html` | string | The exact Telegram HTML message the bot would send (for `digest`/`top`: the full composed message) |
+
+## Caching: Last-Modified and 304
+
+A response carries `Last-Modified` only when its **whole body** is a function
+of the data that stamp names. Then a request with `If-Modified-Since` at or
+after the stamp gets `304` with no body. Where a component can change while
+any single stamp stays put, the response carries **no** `Last-Modified`,
+`If-Modified-Since` is ignored, and the answer is always `200` with the body.
+`data_as_of` and the card footer are the same either way.
+
+Changed 2026-09-15: `Last-Modified` is left only on single-asset Binance
+reads (cards and the trend chart) and `/showcase`. Every Yahoo read (FX pairs
+and gold, cards and the trend chart), gold, fx, funding, multi-asset
+momentum, news, whale and macro no longer send one. A Binance bar now counts
+as closed only if it had closed when the cached candles were fetched, and a
+Binance read keeps its stamp only on a complete, contiguous window. The
+whale top-3 window now hangs off the snapshot's `captured_at`.
+
+| Address | `Last-Modified` | What it means / why there is none |
+|---|---|---|
+| `/agents/trend`, `/agents/sr`, `/agents/vol` and `/agents/momentum?asset=` for `btc`, `eth` (Binance; `?tf=` applies to momentum only, the other three answer it with `400`) | yes, **when the Binance window is complete** (below) | Close of the last closed bar used, equal to `data_as_of`. A bar counts as closed only if it had closed when the candles were fetched (they are cached up to 60 s) **and** Binance already returned the bar after it: a klines answer always ends with the bar still forming, so its last row is never read. A bar with intermediate prices therefore waits for a later fetch rather than appear with numbers that change under the same stamp |
+| `/agents/momentum?assets=` with **one** Binance asset | yes, when the window is complete | Same as the single card |
+| `/agents/trend/chart` for `btc`, `eth` | yes, when the window is complete | `data_as_of`: the chart reads the closed bars only |
+| `/agents/trend`, `/agents/sr`, `/agents/vol`, `/agents/momentum?asset=` for `eurusd`, `gbpusd`, `usdjpy`, `xauusd` (Yahoo, aliases included), `?assets=` with one Yahoo asset, and `/agents/trend/chart` for those assets | **no** | No stamp versions a Yahoo body. Yahoo can publish a bar late and can revise the OHLC of a bar it already served under the same timestamp, so the bar close stays put while the numbers change. On the cards, the market-state wording (the `⏸ Forex market closed` banner, `(market closed)` on a momentum line) follows the clock of the fixed-UTC week (closes Friday 21:00, opens Sunday 21:00 UTC), not the bars |
+| `/agents/news` | **no** | The AI idea is generated and cached by the backend per narrative and hour, and a failed generation is not cached, so an idea can appear or change under the same `captured_at` |
+| `/agents/whale` | **no** | The transfer list comes from the backend's live table (the newest rows), not from the snapshot `captured_at` names: a new transfer pushes an old one out under the same `captured_at`. The top-3 shows transfers of the 24h up to `captured_at`, none stamped after it (with no parseable `captured_at`: the 24h up to the request time) |
+| `/agents/macro`, `?asset=btc`, `?asset=gold` | **no** | The backend's `captured_at` is its request time at one-second resolution, so two different payloads can share it; no lamp stamp versions the body either (a lamp value moves during its session under the same `as_of`) |
+| `/showcase` | yes | The sweep time (`generated_at`): the body is fixed for the life of the memoized sweep (up to 60 s) |
+| `/agents/gold` | **no** | Daily bars, the hourly price and its age, the macro payload and the weekend clock. The daily close versions none of the rest |
+| `/agents/fx` | **no** | Four series plus the banner: an older pair can update, drop out or recover while the newest close stays put |
+| `/agents/funding` | **no** | Point-in-time reads (rates, the liquidation feed, a 1h window from the request time, the BTC price). The request time is not a version of that body |
+| `/agents/momentum` without params, `?tf=` alone, `?assets=` with two or more assets | **no** | Composite: the oldest bar (`data_as_of`) can stay put while another asset, the ETH-vs-BTC read, the market state or a source failure/recovery changes the body |
+| `/agents/digest`, `/agents/top`, `/showcase/example` | **no** | The digest re-sweeps per request; `/top` and the example add per-request AI text that reads the whole sweep |
+| `/agents/risk` | **no** | A pure function of the query; its data time is the answering time |
+| `/`, `/agents` | **no** | Static text |
+| Any `4xx` / `5xx` (including `503` degraded cards) | **no** | A cached failure would keep an agent dark after its source recovers |
+
+**Binance window condition.** Binance always ends a klines answer with the
+bar still forming, so a Binance read never uses the **last row** it received:
+a bar counts as closed only when the bar after it is already in the answer
+(and it had closed by the fetch time). This also covers a REST answer that
+lags the close and a fast local clock. The read then uses a fixed window set
+by its last closed bar: the newest **999** closed bars for trend and the trend
+chart, the newest **249** for momentum, S/R and volatility (the agent's raw
+window minus that last row). It keeps `Last-Modified` only when **exactly**
+that many closed bars are there and they are **contiguous**, each opening
+exactly one interval after the previous. The parser skips malformed or
+non-finite rows, and Binance can return a shorter window, and either way
+indicators, levels and the chart can change under the same last bar. A read
+that fails the check serves the **same body with no `Last-Modified`**.
+
+**Assumption, not checked in code:** a closed Binance candle is treated as
+final — the source is assumed never to revise the OHLC of a bar after its
+close. The stamp relies on it; nothing in the demobot verifies it.
 
 ## Machine-readable status: ok / reason
 
@@ -771,12 +825,11 @@ RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)
   (e.g. `83 ≈ 50 + 7.5 + 12.5 + 12.5`, `100 ≈ 50 + 16.7 + 16.7 + 16.7`; the
   gap is always under 1). The numbers print only when they reproduce the
   backend's composite; on a version skew the card shows the plain score.
-- **Last-Modified ≠ data_as_of.** `data_as_of` and the footer are the oldest
-  live lamp; the HTTP `Last-Modified` is the newest of the backend's
-  `captured_at`, every live lamp's `as_of`, `tradfin_as_of` and the F&G
-  `as_of` / `fetched_at`. A lamp value moves during its session under the same
-  `as_of`, so only `captured_at` advances on every change — conditional GETs on
-  macro therefore rarely return `304`, but never hide a changed card.
+- **No Last-Modified.** `data_as_of` and the footer are the oldest live lamp.
+  Macro sends no validator and always answers `200`: a lamp value moves
+  during its session under the same `as_of`, and the backend's `captured_at`
+  (its request time, one-second resolution) can be shared by two different
+  payloads — see [caching](#caching-last-modified-and-304).
 - **Printed numbers never cross their threshold**: `+0.499` prints `+0.50%`
   (neutral), `+0.5001` prints `+0.51%`, `17.999` prints `17.99`.
 - **VIX** never shows its session change — the rule reads its level.
@@ -912,7 +965,16 @@ curl -s localhost:8090/showcase/example | jq -r '.detected, .explained, (.data[]
   says so instead of rendering a confident flat. Weekend FX data carries the
   `⏸ Forex market closed` banner fact and is computed on Friday's close.
 - **Closed bars only**: indicator math never uses the still-forming candle,
-  so `data_as_of` can legitimately lag wall clock by up to one interval.
+  so `data_as_of` can legitimately lag wall clock by up to one interval, plus
+  up to 60 s after a close. On every candle-based card (Binance and Yahoo:
+  trend, S/R, vol, momentum single and composite, fx, gold, the trend chart)
+  a bar counts as closed only if it had closed when the cached candles were
+  fetched; Binance reads also never use the last row of the answer (the bar
+  still forming), so a new Binance bar appears once a fetch returns the bar
+  after it.
+- **Conditional requests**: send back exactly the `Last-Modified` you
+  received. A cache that builds `If-Modified-Since` from `Date` instead can
+  get a false `304`.
 - **AI is decoration, not a dependency**: `ai_text` is `null` whenever
   `ANTHROPIC_API_KEY` is absent or the LLM call fails — the data fields are
   never blocked by it. The AI brief is memoized for **5 minutes per unique

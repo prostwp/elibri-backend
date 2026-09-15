@@ -39,30 +39,38 @@ func newKlineCache() *klineCache {
 // cached returns fresh cached candles for key, joins an in-flight load for
 // the same key, or starts one. Errors are shared with concurrent joiners of
 // the same flight but never CACHED — the next request retries the source.
-func (c *klineCache) cached(key string, load func() ([]types.OHLCVCandle, error)) ([]types.OHLCVCandle, error) {
+//
+// It also returns the FETCH time (when the load started): the closed-bar
+// cut must run against it, not against the request clock. A bar still
+// forming at fetch time carries intermediate OHLC in the cache; cut by "now"
+// it would pass as closed once its close time went by, with numbers that the
+// next fetch replaces under the same close — a changed body under an
+// unchanged Last-Modified.
+func (c *klineCache) cached(key string, load func() ([]types.OHLCVCandle, error)) ([]types.OHLCVCandle, time.Time, error) {
 	c.mu.Lock()
 	if e, ok := c.items[key]; ok {
 		select {
 		case <-e.done: // finished — serve if fresh and healthy, else reload below
 			if e.err == nil && time.Since(e.at) < klineTTL {
 				c.mu.Unlock()
-				return e.candles, nil
+				return e.candles, e.at, nil
 			}
 		default: // in flight — join it outside the lock
 			c.mu.Unlock()
 			<-e.done
-			return e.candles, e.err
+			return e.candles, e.at, e.err
 		}
 	}
 	e := &klineEntry{done: make(chan struct{})}
 	c.items[key] = e
 	c.mu.Unlock()
 
+	start := time.Now()
 	candles, err := load()
 	if err == nil && len(candles) == 0 {
 		err = fmt.Errorf("%s: empty candle set", key)
 	}
-	e.candles, e.err, e.at = candles, err, time.Now()
+	e.candles, e.err, e.at = candles, err, start
 	close(e.done)
 	if err != nil {
 		// Failed flights are evicted so the NEXT request retries; the joiners
@@ -72,9 +80,9 @@ func (c *klineCache) cached(key string, load func() ([]types.OHLCVCandle, error)
 			delete(c.items, key)
 		}
 		c.mu.Unlock()
-		return nil, err
+		return nil, time.Time{}, err
 	}
-	return candles, nil
+	return candles, start, nil
 }
 
 // binanceFetchLimit is the one window every Binance kline request asks for
@@ -88,19 +96,34 @@ const binanceFetchLimit = 1000
 // the cached superset, pulling it from Binance on a miss. The tail keeps
 // capacity == length, so a caller appending to it can never write into the
 // cached backing array another caller is reading.
-func (c *klineCache) fetch(ctx context.Context, symbol, interval string, limit int) ([]types.OHLCVCandle, error) {
+func (c *klineCache) fetch(ctx context.Context, symbol, interval string, limit int) ([]types.OHLCVCandle, time.Time, error) {
 	key := fmt.Sprintf("binance|%s|%s", symbol, interval)
-	all, err := c.cached(key, func() ([]types.OHLCVCandle, error) {
+	all, at, err := c.cached(key, func() ([]types.OHLCVCandle, error) {
 		return fetchBinanceKlines(ctx, symbol, interval, binanceFetchLimit)
 	})
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	n := len(all)
 	if limit <= 0 || limit > n {
 		limit = n
 	}
-	return all[n-limit : n : n], nil
+	return all[n-limit : n : n], at, nil
+}
+
+// klinesContiguous reports whether every bar opens exactly one interval after
+// the previous one — no row skipped by the parser, no hole in the source.
+func klinesContiguous(candles []types.OHLCVCandle, interval string) bool {
+	sec := intervalSeconds[interval]
+	if sec == 0 {
+		return false
+	}
+	for i := 1; i < len(candles); i++ {
+		if candles[i].Time-candles[i-1].Time != sec {
+			return false
+		}
+	}
+	return true
 }
 
 // ── Binance spot klines ──────────────────────────────────────────────────────

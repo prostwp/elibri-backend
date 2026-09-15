@@ -179,17 +179,27 @@ func (a *Agents) MacroAssetCard(ctx context.Context, asset string) Card {
 	return macroAssetCardFrom(m, asset)
 }
 
+// macroBaseCard is the one constructor of every macro card that reaches the
+// HTTP writer — global, ?asset=btc and ?asset=gold, the UNKNOWN admission and
+// the empty-lamps payload included. noValidator is set here and nowhere else,
+// so no path can serve a macro card with a Last-Modified (see
+// macroNoValidator). asset "" is the global card.
+func macroBaseCard(m *MacroResp, asset string) Card {
+	return Card{
+		Agent:       "Macro Agent",
+		ShortName:   "Macro",
+		Asset:       strings.ToUpper(asset),
+		Command:     keyMacro,
+		HowItWorks:  howTexts[keyMacro],
+		DataTime:    parseWhen(m.CapturedAt),
+		noValidator: true,
+	}
+}
+
 // macroAssetCardFrom is MacroAssetCard's pure half (no network, no clock).
 func macroAssetCardFrom(m *MacroResp, asset string) Card {
 	assetLabel := strings.ToUpper(asset)
-	c := Card{
-		Agent:      "Macro Agent",
-		ShortName:  "Macro",
-		Asset:      assetLabel,
-		Command:    keyMacro,
-		HowItWorks: howTexts[keyMacro],
-		DataTime:   parseWhen(m.CapturedAt),
-	}
+	c := macroBaseCard(m, asset)
 	regime, _ := effectiveMacroRegime(m)
 	scoreName := riskModel.scoreName
 	if asset == macroAssetGold {

@@ -137,8 +137,10 @@ func TestTrendChartYahooSessionGaps(t *testing.T) {
 	if ch.DataAsOf != wantAsOf {
 		t.Errorf("data_as_of = %s, want %s", ch.DataAsOf, wantAsOf)
 	}
-	if pt, _ := http.ParseTime(hdr.Get("Last-Modified")); pt.UTC().Format(time.RFC3339) != wantAsOf {
-		t.Errorf("Last-Modified %q != %s", hdr.Get("Last-Modified"), wantAsOf)
+	// A Yahoo chart carries no validator: Yahoo can revise a served bar under
+	// the same timestamp, so data_as_of is not a version of the body.
+	if lm := hdr.Get("Last-Modified"); lm != "" {
+		t.Errorf("Yahoo chart sent Last-Modified %q, want none", lm)
 	}
 	if ch.Price != c[real-1] {
 		t.Errorf("price %v, want last real close %v", ch.Price, c[real-1])

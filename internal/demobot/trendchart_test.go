@@ -84,10 +84,11 @@ func TestTrendChartShapeConfirmedUp(t *testing.T) {
 	if want := time.Unix(last.Time+14400, 0).UTC().Format(time.RFC3339); c.DataAsOf != want {
 		t.Errorf("data_as_of = %s, want last open + 4h = %s", c.DataAsOf, want)
 	}
-	if lm := hdr.Get("Last-Modified"); lm == "" {
-		t.Error("Last-Modified missing")
-	} else if pt, _ := http.ParseTime(lm); pt.UTC().Format(time.RFC3339) != c.DataAsOf {
-		t.Errorf("Last-Modified %s != data_as_of %s", lm, c.DataAsOf)
+	// 250 rows is a SHORT Binance window (full = binanceFetchLimit): the same
+	// body, no validator. The full-window stamp and 304 are pinned in
+	// validator_test.go.
+	if lm := hdr.Get("Last-Modified"); lm != "" {
+		t.Errorf("short window sent Last-Modified %q, want none", lm)
 	}
 
 	// EMA alignment: 250-bar window, returned from index 50. EMA20/EMA50 are
@@ -157,16 +158,16 @@ func TestTrendChartShapeConfirmedUp(t *testing.T) {
 		t.Errorf("labelled pivots = %d, want 4 (2 highs + 2 lows compared by hhhlStructure)", labelled)
 	}
 
-	// If-Modified-Since at data_as_of → 304.
+	// Short window: even an If-Modified-Since any stamp would satisfy → 200.
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/agents/trend/chart", nil)
-	req.Header.Set("If-Modified-Since", hdr.Get("Last-Modified"))
+	req.Header.Set("If-Modified-Since", time.Now().Add(24*time.Hour).UTC().Format(http.TimeFormat))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotModified {
-		t.Errorf("If-Modified-Since = data time → %d, want 304", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("short window + If-Modified-Since → %d, want 200", resp.StatusCode)
 	}
 }
 
@@ -174,7 +175,7 @@ func TestTrendChartShapeConfirmedUp(t *testing.T) {
 // shared cache) so parity checks run over exactly what the endpoint read.
 func zigzagCandlesFromChartWindow(t *testing.T, ag *Agents) []types.OHLCVCandle {
 	t.Helper()
-	candles, err := ag.candlesFor(context.Background(), btcSpec)
+	candles, err := ag.trendCandlesFor(context.Background(), btcSpec) // the chart's (trend) window
 	if err != nil {
 		t.Fatal(err)
 	}

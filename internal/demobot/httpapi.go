@@ -719,7 +719,13 @@ func (s *HTTPServer) writeCard(w http.ResponseWriter, r *http.Request, card Card
 		})
 		return
 	}
-	writeJSONAt(w, r, http.StatusOK, card.modTime(), cardEnvelope(card))
+	if card.noValidator {
+		// Composite body: no stamp covers it (see Card.noValidator), so no
+		// Last-Modified and If-Modified-Since is ignored — always 200.
+		writeJSON(w, http.StatusOK, cardEnvelope(card))
+		return
+	}
+	writeJSONAt(w, r, http.StatusOK, card.DataTime, cardEnvelope(card))
 }
 
 func (s *HTTPServer) handleRisk(w http.ResponseWriter, r *http.Request, q url.Values) {

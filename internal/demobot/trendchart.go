@@ -263,7 +263,7 @@ func (s *HTTPServer) handleTrendChart(w http.ResponseWriter, r *http.Request) {
 	}
 	spec := assetTable[key]
 
-	candles, err := s.ag.trendCandlesFor(r.Context(), spec) // the card's own window
+	candles, complete, err := s.ag.candlesWindow(r.Context(), spec, trendKlineLimit) // the card's own window
 	if err != nil {
 		s.writeCard(w, r, assetOffline(spec, "Trend Agent", "Trend", keyTrend, howTexts[keyTrend]))
 		return
@@ -275,5 +275,14 @@ func (s *HTTPServer) handleTrendChart(w http.ResponseWriter, r *http.Request) {
 		s.writeCard(w, r, c)
 		return
 	}
-	writeJSONAt(w, r, http.StatusOK, chart.dataTime, chart)
+	// Validator only for a full, contiguous Binance window (complete — see
+	// candlesWindow): then its closed bars version the chart. A Yahoo
+	// chart gets none — Yahoo can publish a bar late or revise a served bar
+	// under the same timestamp, so its data time is not a version of the body
+	// (see decorateFXAt). data_as_of in the body is the same either way.
+	stamp := chart.dataTime
+	if spec.Source == srcYahoo || !complete {
+		stamp = time.Time{}
+	}
+	writeJSONAt(w, r, http.StatusOK, stamp, chart)
 }

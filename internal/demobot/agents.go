@@ -22,8 +22,10 @@ type Agents struct {
 	klines *klineCache
 	ai     *aiClient // nil until EnableAI — every AI block silently omitted
 	// now is the clock for the showcase sweep time (b.at — generated_at and
-	// the /showcase Last-Modified). nil = wall clock; tests set it to step
-	// sweeps deterministically.
+	// the /showcase Last-Modified), for the FX market-state wording and its
+	// stamp (decorateFXAt, the momentum "(market closed)" suffix) and for the
+	// whale 24h window when the snapshot has no captured_at. nil = wall
+	// clock; tests set it to step sweeps and weekends deterministically.
 	now func() time.Time
 }
 
@@ -60,12 +62,14 @@ var errInsufficientHistory = errors.New("insufficient history")
 var fundingSymbols = []string{"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"}
 
 // candlesFor dispatches to the right candle source for an asset and returns
-// CLOSED bars only — the still-forming last bar is dropped after the cache
-// (item 7: signals must not flicker mid-bar). Yahoo symbols go through the
+// CLOSED bars only — every bar not yet closed when the candles were FETCHED
+// is dropped (item 7: signals must not flicker mid-bar; see candlesWindow for
+// why the fetch time, not the request clock). Yahoo symbols go through the
 // same 60s cache as Binance ones; the gold fallback (GC=F) kicks in when the
 // primary Yahoo symbol fails or comes back empty.
 func (a *Agents) candlesFor(ctx context.Context, spec assetSpec) ([]types.OHLCVCandle, error) {
-	return a.candlesWindow(ctx, spec, klineLimit)
+	candles, _, err := a.candlesWindow(ctx, spec, klineLimit)
+	return candles, err
 }
 
 // trendCandlesFor is candlesFor with the Trend Agent's Binance window
@@ -73,20 +77,39 @@ func (a *Agents) candlesFor(ctx context.Context, spec assetSpec) ([]types.OHLCVC
 // card and the chart read the same bars. Yahoo series are unchanged: the
 // window only affects Binance-fed trend reads.
 func (a *Agents) trendCandlesFor(ctx context.Context, spec assetSpec) ([]types.OHLCVCandle, error) {
-	return a.candlesWindow(ctx, spec, trendKlineLimit)
+	candles, _, err := a.candlesWindow(ctx, spec, trendKlineLimit)
+	return candles, err
 }
 
 // candlesWindow is the shared body: limit is the number of RAW Binance bars
 // (before the forming one is dropped); Yahoo ignores it. Both windows come
 // out of the same cached upstream response (klineCache.fetch).
-func (a *Agents) candlesWindow(ctx context.Context, spec assetSpec, limit int) ([]types.OHLCVCandle, error) {
+//
+// Binance serves a FIXED window: the newest limit−1 closed bars — the raw
+// window minus its LAST ROW (250 raw → 249, 1000 raw → 999). A klines answer
+// always ends with the bar still forming, so a bar counts as closed only once
+// Binance has returned the bar after it. The fetch-time cut alone could not
+// see a REST answer that lags the close (fetched after T, bar T still
+// forming) or a fast local clock, and a fetch right at a close (no forming
+// row) would otherwise read one bar more than the next fetch under the same
+// last close. The limit−1 trim is a guard on top.
+//
+// complete is true only when exactly limit−1 closed bars remain and they are
+// contiguous (each opening one interval after the previous): no row skipped
+// by the parser, no hole in the source, no short answer. Only then is the
+// last close a sound Last-Modified; otherwise the card serves the same body
+// without a validator (Card.noValidator). Always false for Yahoo, which keeps
+// its untrimmed series and never carries a validator. Builders that serve a
+// stamped card read it; the rest use candlesFor.
+func (a *Agents) candlesWindow(ctx context.Context, spec assetSpec, limit int) ([]types.OHLCVCandle, bool, error) {
 	var candles []types.OHLCVCandle
+	var fetchedAt time.Time
 	var err error
 	if spec.Source == srcYahoo {
 		// The cache key carries the interval (B1): a 4h-rebased EURUSD must
 		// never collide with the native 1h series.
 		key := "yahoo|" + spec.Symbol + "|" + spec.Interval
-		candles, err = a.klines.cached(key, func() ([]types.OHLCVCandle, error) {
+		candles, fetchedAt, err = a.klines.cached(key, func() ([]types.OHLCVCandle, error) {
 			c, ferr := fetchYahooCandlesTF(ctx, spec.Symbol, spec.Interval)
 			if (ferr != nil || len(c) == 0) && spec.Fallback != "" {
 				return fetchYahooCandlesTF(ctx, spec.Fallback, spec.Interval)
@@ -94,12 +117,29 @@ func (a *Agents) candlesWindow(ctx context.Context, spec assetSpec, limit int) (
 			return c, ferr
 		})
 	} else {
-		candles, err = a.klines.fetch(ctx, spec.Symbol, spec.Interval, limit)
+		candles, fetchedAt, err = a.klines.fetch(ctx, spec.Symbol, spec.Interval, limit)
+		// The last row is never read: it is the bar still forming, and a bar
+		// is closed only once Binance has returned the NEXT one.
+		if n := len(candles); n > 0 {
+			candles = candles[: n-1 : n-1]
+		}
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return dropUnclosedBars(candles, spec.Interval, time.Now()), nil
+	// Closed = closed when the candles were FETCHED, not by the request
+	// clock (see klineCache.cached): a bar that closed after the fetch holds
+	// intermediate OHLC in the cache, so it waits for the next fetch (≤ 60s).
+	closed := dropUnclosedBars(candles, spec.Interval, fetchedAt)
+	if spec.Source == srcYahoo {
+		return closed, false, nil
+	}
+	want := limit - 1
+	if n := len(closed); n > want {
+		closed = closed[n-want : n : n]
+	}
+	complete := len(closed) == want && klinesContiguous(closed, spec.Interval)
+	return closed, complete, nil
 }
 
 // sourceCard tailors the degraded/asset presentation per source: FX cards
@@ -118,18 +158,23 @@ func assetOffline(spec assetSpec, agent, shortName, command, how string) Card {
 	return c
 }
 
-// decorateFX applies the shared FX card furniture: source note and the
-// weekend banner as the first fact. DataTime is the caller's job — it must
-// be the close time of the last closed bar actually used (item 7).
-func decorateFX(c *Card) { decorateFXAt(c, time.Now()) }
-
-// decorateFXAt is decorateFX at a given clock — the seam that lets tests
-// render the weekend banner without waiting for a weekend.
+// decorateFXAt applies the shared FX card furniture at the card's clock
+// (Agents.clock — the seam that lets tests render the weekend banner without
+// waiting for a weekend): source note and the weekend banner as the first
+// fact. DataTime is the caller's job — it must be the close time of the last
+// closed bar actually used (item 7).
+//
+// Every Yahoo card carries no validator (noValidator). No stamp versions its
+// body: the market-state wording follows the clock, not the bars; Yahoo can
+// publish a bar late or revise the OHLC of a bar already served under the
+// same timestamp; and the closed-bar cut runs on its own clock. Any of these
+// changes the body under an unchanged stamp — a false 304.
 func decorateFXAt(c *Card, now time.Time) {
 	c.SourceNote = "data: Yahoo Finance"
 	if !isForexOpen(now) {
 		c.Facts = append([]string{fxClosedBanner}, c.Facts...)
 	}
+	c.noValidator = true
 }
 
 // insufficientCard is the honest short-history state: neutral semaphore,
@@ -205,13 +250,7 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 // the effective regime. No network and no clock (every time on the card comes
 // from the payload), so tests can sweep any payload.
 func macroCardFrom(m *MacroResp) (Card, string) {
-	c := Card{
-		Agent:      "Macro Agent",
-		ShortName:  "Macro",
-		Command:    keyMacro,
-		HowItWorks: howTexts[keyMacro],
-		DataTime:   parseWhen(m.CapturedAt),
-	}
+	c := macroBaseCard(m, "")
 
 	// A lamp is REAL when the payload carries a value for it; zero real lamps
 	// reclassify any regime to unknown. Shared with the asset views — see
@@ -255,6 +294,19 @@ func (a *Agents) WhaleCard(ctx context.Context) Card {
 		Command:    keyWhale,
 		HowItWorks: howTexts[keyWhale],
 		DataTime:   parseWhen(w.CapturedAt),
+	}
+	// No validator, ever: the transfers come from the backend's live table
+	// (the newest `limit` rows), not from the snapshot captured_at names — a
+	// new transfer pushes an old one out of the list under the same
+	// captured_at. The top-3 window is the snapshot's 24h, like the backend's
+	// own counters, and a transfer stamped after captured_at is not shown:
+	// the body must not carry data newer than its data_as_of. Without a
+	// parseable captured_at the window is the 24h up to the card's clock,
+	// with the same upper bound: nothing stamped after it is shown.
+	c.noValidator = true
+	windowEnd, capErr := time.Parse(time.RFC3339, w.CapturedAt)
+	if capErr != nil {
+		windowEnd = a.clock()
 	}
 
 	var btc *WhaleFlow
@@ -313,11 +365,11 @@ func (a *Agents) WhaleCard(ctx context.Context) Card {
 		}
 	}
 
-	// Top-3 BTC transfers of the last 24h by USD size.
-	cutoff := time.Now().Add(-24 * time.Hour)
+	// Top-3 BTC transfers of the snapshot's last 24h by USD size.
+	cutoff := windowEnd.Add(-24 * time.Hour)
 	var recent []WhaleTransfer
 	for _, t := range w.Transfers {
-		if t.Chain == "BTC" && t.Timestamp.After(cutoff) {
+		if t.Chain == "BTC" && t.Timestamp.After(cutoff) && !t.Timestamp.After(windowEnd) {
 			recent = append(recent, t)
 		}
 	}
@@ -369,6 +421,10 @@ func (a *Agents) NewsCard(ctx context.Context) Card {
 		HowItWorks: howTexts[keyNews],
 		DataTime:   parseWhen(n.CapturedAt),
 		SourceNote: "48h mention window",
+		// The AI idea is generated and cached by the backend per narrative
+		// and hour, failures uncached — it can appear or change under the
+		// same captured_at. No validator.
+		noValidator: true,
 	}
 	if len(n.Narratives) == 0 {
 		c.Emoji = emojiNeutral
@@ -485,6 +541,10 @@ func (a *Agents) FundingCard(ctx context.Context) Card {
 		// footer labels it so (item 7 exempts funding but requires the label).
 		DataTime:   time.Now().UTC(),
 		SourceNote: "as of request time",
+		// Rates, the liquidation feed, the 1h window from now and the BTC
+		// magnet price are separate reads; the request-time DataTime (one
+		// second of header resolution) is not a version of that body.
+		noValidator: true,
 	}
 
 	if ratesErr == nil {
@@ -658,6 +718,9 @@ type momentumRead struct {
 	source   string
 	interval string    // bar size the read was taken on ("4h", "1h")
 	closeAt  time.Time // close time of the last closed bar used
+	// complete: the read came from a full, contiguous Binance window (see
+	// candlesWindow) — set by momentumReadFor, validator use only.
+	complete bool
 }
 
 // momentumReadFromCandles computes one asset's snapshot from an already
@@ -682,11 +745,13 @@ func momentumReadFromCandles(spec assetSpec, candles []types.OHLCVCandle) (momen
 }
 
 func (a *Agents) momentumReadFor(ctx context.Context, spec assetSpec) (momentumRead, error) {
-	candles, err := a.candlesFor(ctx, spec)
+	candles, complete, err := a.candlesWindow(ctx, spec, klineLimit)
 	if err != nil {
 		return momentumRead{}, err
 	}
-	return momentumReadFromCandles(spec, candles)
+	r, err := momentumReadFromCandles(spec, candles)
+	r.complete = complete
+	return r, err
 }
 
 // momentumRankScore is one read's digest ranking score: |RSI−50|×2 for a
@@ -732,6 +797,9 @@ func (a *Agents) MomentumCard(ctx context.Context) Card {
 		Command:    keyMomentum,
 		HowItWorks: howTexts[keyMomentum],
 		DataTime:   time.Now().UTC(), // narrowed below to the OLDEST closed bar used
+		// Three series, the backend RS read and the market-state suffix: the
+		// oldest bar (DataTime) can stay put while the body changes.
+		noValidator: true,
 	}
 	var reads []momentumRead
 	var insufficientLines []string
@@ -793,7 +861,7 @@ func (a *Agents) MomentumCard(ctx context.Context) Card {
 	if xauErr == nil {
 		all = append(all, xau)
 	}
-	fxOpen := isForexOpen(time.Now())
+	fxOpen := isForexOpen(a.clock())
 	for _, r := range all {
 		verdictParts = append(verdictParts, fmt.Sprintf("%s: %s", r.name, strings.ToUpper(r.verdict)))
 		// %g: gold's tiny histogram must not render as a misleading "+0.0".
@@ -900,7 +968,7 @@ func volRatio20(candles []types.OHLCVCandle) (float64, bool) {
 
 // MomentumAssetCard is the single-asset form: /momentum eurusd.
 func (a *Agents) MomentumAssetCard(ctx context.Context, spec assetSpec) Card {
-	candles, err := a.candlesFor(ctx, spec)
+	candles, complete, err := a.candlesWindow(ctx, spec, klineLimit)
 	if err != nil {
 		return assetOffline(spec, "Momentum Agent", "Momentum", keyMomentum, howTexts[keyMomentum])
 	}
@@ -943,7 +1011,10 @@ func (a *Agents) MomentumAssetCard(ctx context.Context, spec assetSpec) Card {
 		}
 	}
 	if spec.Source == srcYahoo {
-		decorateFX(&c)
+		decorateFXAt(&c, a.clock())
+	}
+	if !complete { // partial Binance window: see candlesWindow
+		c.noValidator = true
 	}
 	return c
 }
@@ -1007,7 +1078,8 @@ func (a *Agents) MomentumScanCard(ctx context.Context, keys []string, tf string)
 	anyInsufficient := false
 	anyYahoo := false
 	agg4h := false
-	fxOpen := isForexOpen(time.Now())
+	now := a.clock() // one clock for the "(market closed)" suffix and its stamp
+	fxOpen := isForexOpen(now)
 	var verdictParts []string
 	var assetResults []AssetResult
 	maxDev := 0
@@ -1100,6 +1172,15 @@ func (a *Agents) MomentumScanCard(ctx context.Context, keys []string, tf string)
 	c.Emoji = momentumEmoji(lead)
 	c.Short = strings.ToLower(lead)
 	c.Deviation = maxDev
+	// Validator: only a single Binance asset read from a complete window keeps
+	// one — its closed bars version the whole body. Several assets are a
+	// composite (the oldest bar can stay put while another asset, or a
+	// failure/recovery, changes the body), a Yahoo asset has no sound stamp at
+	// all (see decorateFXAt), and a partial Binance window neither (see
+	// candlesWindow). With one asset, anyOK means results[0] is that read.
+	if len(specs) > 1 || anyYahoo || !results[0].read.complete {
+		c.noValidator = true
+	}
 	return c
 }
 
@@ -1194,7 +1275,11 @@ func fxCardFromReads(reads []fxRead) Card {
 	if latest.IsZero() {
 		latest = time.Now().UTC()
 	}
-	return fxOverviewCard(reads, isForexOpen(time.Now()), latest)
+	c := fxOverviewCard(reads, isForexOpen(time.Now()), latest)
+	// Four series plus the banner: an older pair can update, drop out or
+	// recover while the newest close stays put — no validator.
+	c.noValidator = true
+	return c
 }
 
 // ── Trend ────────────────────────────────────────────────────────────────────
@@ -1473,7 +1558,7 @@ func structureDemotion(direction, structure string) string {
 func (r trendRead) Confirmed() bool { return r.State == trendUp || r.State == trendDown }
 
 func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
-	candles, err := a.trendCandlesFor(ctx, spec)
+	candles, complete, err := a.candlesWindow(ctx, spec, trendKlineLimit)
 	if err != nil {
 		return assetOffline(spec, "Trend Agent", "Trend", keyTrend, howTexts[keyTrend])
 	}
@@ -1485,7 +1570,10 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 	}
 	c := trendCardFrom(r, spec, closeTimeOf(candles, spec.Interval))
 	if spec.Source == srcYahoo {
-		decorateFX(&c)
+		decorateFXAt(&c, a.clock())
+	}
+	if !complete { // partial Binance window: see candlesWindow
+		c.noValidator = true
 	}
 	return c
 }
@@ -1576,15 +1664,19 @@ const (
 const srStrongTouches = 7
 
 func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
-	candles, err := a.candlesFor(ctx, spec)
+	candles, complete, err := a.candlesWindow(ctx, spec, klineLimit)
 	if err != nil {
 		return assetOffline(spec, "S/R Agent", "S/R", keySR, howTexts[keySR])
 	}
-	return srCardOf(spec, candles, time.Now())
+	c := srCardOf(spec, candles, a.clock())
+	if !complete { // partial Binance window: see candlesWindow
+		c.noValidator = true
+	}
+	return c
 }
 
 // srCardOf is SRCard after the fetch: every card path for a set of closed
-// candles. now only drives the FX weekend banner (decorateFXAt).
+// candles. now only drives the FX weekend banner and its stamp (decorateFXAt).
 func srCardOf(spec assetSpec, candles []types.OHLCVCandle, now time.Time) Card {
 	if len(candles) < 20 { // too few closed bars for meaningful swings
 		c := insufficientCard(spec, "S/R Agent", "S/R", keySR, howTexts[keySR], "swing detection")
@@ -1647,7 +1739,7 @@ func volState(ratio float64) string {
 }
 
 func (a *Agents) VolCard(ctx context.Context, spec assetSpec) Card {
-	candles, err := a.candlesFor(ctx, spec)
+	candles, complete, err := a.candlesWindow(ctx, spec, klineLimit)
 	if err != nil {
 		return assetOffline(spec, "Volatility Agent", "Volatility", keyVol, howTexts[keyVol])
 	}
@@ -1707,7 +1799,10 @@ func (a *Agents) VolCard(ctx context.Context, spec assetSpec) Card {
 		fmt.Sprintf("Ratio: %.2f× (expansion at 1.25×, compression at 0.80×)", ratio),
 	)
 	if spec.Source == srcYahoo {
-		decorateFX(&c)
+		decorateFXAt(&c, a.clock())
+	}
+	if !complete { // partial Binance window: see candlesWindow
+		c.noValidator = true
 	}
 	return c
 }

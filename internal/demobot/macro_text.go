@@ -782,42 +782,16 @@ func macroDataTime(m *MacroResp) time.Time {
 	return parseWhen(m.CapturedAt)
 }
 
-// macroModTime is the card's HTTP Last-Modified — deliberately NOT its data
-// stamp. data_as_of / the footer are the OLDEST live lamp (honest about the
-// stalest input), but with mixed freshness that stamp can stay put while a
-// newer lamp, the score or the regime changes, and a client sending
-// If-Modified-Since would get a false 304. No data stamp advances on every
-// change either: a lamp's as_of is its session stamp (Yahoo stamps the session
-// START), so its value moves during the session under the same as_of. The one
-// stamp that advances whenever the body can change is the backend's
-// captured_at (the payload's build time). Last-Modified is therefore the
-// newest of captured_at, every live lamp's as_of, tradfin_as_of and the F&G
-// as_of / fetched_at — captured_at dominates in practice; the max keeps the
-// validator from ever lagging a data stamp the card prints. Cost: conditional
-// GETs on macro rarely 304, which is the price of never hiding a change.
-func macroModTime(m *MacroResp) time.Time {
-	var newest time.Time
-	bump := func(s string) {
-		if t, ok := lampStamp(s); ok && t.After(newest) {
-			newest = t
-		}
-	}
-	bump(m.CapturedAt)
-	bump(m.TradfinAsOf)
-	for _, l := range m.Lamps {
-		if lampLive(l) {
-			bump(l.AsOf)
-		}
-	}
-	if f := m.FNG; f != nil && f.OK {
-		bump(f.AsOf)
-		bump(f.FetchedAt)
-	}
-	if newest.IsZero() {
-		return parseWhen(m.CapturedAt)
-	}
-	return newest
-}
+// macroNoValidator — why every macro card (global, ?asset=btc, ?asset=gold)
+// carries no HTTP validator. data_as_of / the footer are the OLDEST live lamp
+// (honest about the stalest input), but that stamp can stay put while a newer
+// lamp, the score or the regime changes. No lamp stamp versions the body
+// either: a lamp's as_of is its session stamp (Yahoo stamps the session
+// START), so its value moves during the session under the same as_of. And the
+// backend's captured_at is its request time at one-second resolution, so two
+// different payloads can share it. Any Last-Modified we could send would
+// answer a changed card with a false 304 — so none is sent (Card.noValidator,
+// set once in macroBaseCard for every macro path, UNKNOWN included).
 
 // ── Fear & Greed ─────────────────────────────────────────────────────────────
 
@@ -1104,7 +1078,6 @@ func (v macroView) fillGlobal(c *Card) {
 		c.Deviation = clampInt(abs(*v.m.Composite-50)*2, 0, 100)
 	}
 	c.DataTime = macroDataTime(v.m)
-	c.lastModified = macroModTime(v.m)
 	c.SourceNote = macroSourceNote(v.m.Lamps)
 	c.Blocks = v.blocks()
 	c.Macro = v.risk.readout(v.m, v.regime, v.m.Composite, v.now)
@@ -1144,7 +1117,6 @@ func (v macroView) fillBTC(c *Card) {
 		c.Deviation = clampInt(abs(*v.m.Composite-50)*2, 0, 100)
 	}
 	c.DataTime = macroDataTime(v.m)
-	c.lastModified = macroModTime(v.m)
 	c.SourceNote = macroSourceNote(v.m.Lamps)
 	c.Macro = v.risk.readout(v.m, v.regime, v.m.Composite, v.now)
 }
@@ -1214,7 +1186,6 @@ func (v macroView) fillGold(c *Card) {
 	}
 	c.Facts = append(c.Facts, f...)
 	c.DataTime = macroDataTime(v.m)
-	c.lastModified = macroModTime(v.m)
 	c.SourceNote = macroSourceNote(v.m.Lamps)
 	gr := reading
 	if gr == "" {

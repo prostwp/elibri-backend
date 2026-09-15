@@ -32,12 +32,14 @@ func newStubBackend(t *testing.T, routes map[string]string) *Agents {
 	return NewAgents(NewBackendClient(srv.URL))
 }
 
-// stubBinanceKlines serves `bars` synthetic closed 4h candles for any symbol.
-// Prices trend gently up; volumes come from the volume func.
+// stubBinanceKlines serves `bars` synthetic closed 4h candles for any symbol,
+// plus one trailing row — the bar still forming, as every real klines answer
+// ends; the demobot never reads it. Prices trend gently up; volumes come from
+// the volume func (the trailing row is index `bars`).
 func stubBinanceKlines(t *testing.T, bars int, volume func(i int) float64) {
 	t.Helper()
 	start := time.Now().Unix() - int64(bars+2)*14400 // every bar closed
-	rows := make([][]any, bars)
+	rows := make([][]any, bars+1)
 	price := 60000.0
 	for i := range rows {
 		price += 50
@@ -386,7 +388,10 @@ func whaleFixture(withBaseline bool) string {
 	if withBaseline {
 		baseline = `"net_flow_prev_24h":-6200000,"flow_pct":196.8,`
 	}
-	return `{"captured_at":"2026-08-18T06:00:00Z",
+	// The snapshot is dated now and every transfer sits inside its 24h: the
+	// top-3 window is (captured_at−24h, captured_at], so a transfer stamped
+	// after captured_at would not show.
+	return `{"captured_at":"` + ts(0) + `",
 	  "flows":[{"asset":"BTC","net_flow_usd_24h":-18400000,` + baseline + `"direction":"outflow","tx_count_24h":37,"confidence":64,"partial":true}],
 	  "transfers":[
 	    {"chain":"BTC","timestamp":"` + ts(30) + `","asset":"BTC","amount_native":150.5,"amount_usd":17000000,"direction":"outflow","exchange":"Binance"},

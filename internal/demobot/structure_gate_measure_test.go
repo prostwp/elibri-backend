@@ -302,12 +302,12 @@ func TestMeasureStructureGate(t *testing.T) {
 		{"ETHUSDT", "4h", "ETH 4h"},
 		{"BTCUSDT", "1d", "BTC 1d"},
 	} {
-		b, err := kc.fetch(ctx, tc.sym, tc.iv, 1000)
+		b, fetchedAt, err := kc.fetch(ctx, tc.sym, tc.iv, 1000)
 		if err != nil {
 			t.Logf("%s: fetch failed: %v", tc.label, err)
 			continue
 		}
-		all = append(all, series{tc.label, dropUnclosedBars(b, tc.iv, time.Now())})
+		all = append(all, series{tc.label, dropUnclosedBars(b, tc.iv, fetchedAt)})
 		time.Sleep(400 * time.Millisecond)
 	}
 	for _, tc := range []struct{ iv, rng, label string }{

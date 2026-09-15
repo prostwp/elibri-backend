@@ -29,6 +29,23 @@ func stubBinanceCandles(t *testing.T, candles []types.OHLCVCandle) {
 			fmt.Sprintf("%f", c.Volume),
 		}
 	}
+	// Like every real klines answer, end with the bar still forming — the
+	// demobot never reads the last row — so the caller's candles are exactly
+	// the closed bars the agent sees. Finite price even after a poisoned
+	// last candle, so the parser keeps this row and not a real one.
+	if n := len(candles); n > 0 {
+		last := candles[n-1]
+		step := int64(14400)
+		if n > 1 && last.Time-candles[n-2].Time > 0 {
+			step = last.Time - candles[n-2].Time
+		}
+		p := last.Close
+		if !isFinite(p) {
+			p = 1
+		}
+		px := fmt.Sprintf("%f", p)
+		rows = append(rows, []any{float64(last.Time+step) * 1000, px, px, px, px, "0"})
+	}
 	body, err := json.Marshal(rows)
 	if err != nil {
 		t.Fatal(err)

@@ -4,8 +4,10 @@ package demobot
 //   1. printed arithmetic: "=" only when 50 + the PRINTED contributions adds up
 //      exactly to the PRINTED score (the unrounded check printed
 //      "100 = 50 + 16.7 + 16.7 + 16.7");
-//   2. Last-Modified must advance on any card change, while data_as_of stays
-//      the oldest live lamp — otherwise If-Modified-Since gets a false 304.
+//   2. no false 304 on a changed card, data_as_of stays the oldest live lamp.
+//      Since 2026-09-15 macro carries no validator at all: the backend's
+//      captured_at is its request time at one-second resolution, so two
+//      different bodies can share any stamp we could send.
 
 import (
 	"encoding/json"
@@ -183,9 +185,11 @@ func TestMacroPrintedArithmeticAddsUp(t *testing.T) {
 	}
 }
 
-// ── Last-Modified ────────────────────────────────────────────────────────────
+// ── No validator ─────────────────────────────────────────────────────────────
 
-func TestHTTPMacroLastModifiedFollowsAnyChange(t *testing.T) {
+// All three macro variants: no Last-Modified, and If-Modified-Since — even a
+// future one — never turns a changed card (same captured_at) into a 304.
+func TestHTTPMacroSendsNoValidator(t *testing.T) {
 	var mu sync.Mutex
 	payload := macroLiveFixture
 	set := func(s string) { mu.Lock(); payload = s; mu.Unlock() }
@@ -203,47 +207,30 @@ func TestHTTPMacroLastModifiedFollowsAnyChange(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	_, api := newTestAPI(t, NewAgents(NewBackendClient(upstream.URL)), true)
 
-	get := func(path, ims string) (status int, lastMod time.Time, dataAsOf string) {
+	get := func(path, ims string) (status int, lastMod, dataAsOf, body string) {
 		t.Helper()
-		req, _ := http.NewRequest(http.MethodGet, api.URL+path, nil)
-		if ims != "" {
-			req.Header.Set("If-Modified-Since", ims)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		lm, err := http.ParseTime(resp.Header.Get("Last-Modified"))
-		if err != nil {
-			t.Fatalf("%s: Last-Modified %q: %v", path, resp.Header.Get("Last-Modified"), err)
-		}
-		if resp.StatusCode == http.StatusOK {
+		st, lm, raw := cget(t, api.URL+path, ims)
+		if st == http.StatusOK {
 			var env struct {
 				DataAsOf string `json:"data_as_of"`
 			}
-			if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+			if err := json.Unmarshal(raw, &env); err != nil {
 				t.Fatal(err)
 			}
 			dataAsOf = env.DataAsOf
 		}
-		return resp.StatusCode, lm, dataAsOf
+		return st, lm, dataAsOf, string(raw)
 	}
-	stamp := func(tm time.Time) string { return tm.UTC().Format(http.TimeFormat) }
+	future := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC).Format(http.TimeFormat)
 
 	for _, path := range []string{"/agents/macro", "/agents/macro?asset=btc", "/agents/macro?asset=gold"} {
 		set(macroLiveFixture)
-		st1, lm1, asOf1 := get(path, "")
-		if st1 != 200 || asOf1 != "2026-09-14T07:00:00Z" {
-			t.Fatalf("%s: first GET %d, data_as_of %q", path, st1, asOf1)
+		st1, lm1, asOf1, body1 := get(path, "")
+		if st1 != 200 || lm1 != "" || asOf1 != "2026-09-14T07:00:00Z" {
+			t.Fatalf("%s: first GET %d, Last-Modified %q, data_as_of %q; want 200, none, the oldest lamp", path, st1, lm1, asOf1)
 		}
-		// Newest of everything the card renders: captured_at 04:44:32 here.
-		if want := time.Date(2026, 9, 15, 4, 44, 32, 0, time.UTC); !lm1.Equal(want) {
-			t.Errorf("%s: Last-Modified %s, want %s (captured_at, newer than every lamp)", path, lm1, want)
-		}
-		// Unchanged payload → the validator still works.
-		if st, _, _ := get(path, stamp(lm1)); st != http.StatusNotModified {
-			t.Errorf("%s: unchanged payload with its own stamp: %d, want 304", path, st)
+		if st, lm, _, b := get(path, future); st != 200 || lm != "" || b != body1 {
+			t.Errorf("%s: unchanged payload + future If-Modified-Since → %d, Last-Modified %q; want 200, none, the same body", path, st, lm)
 		}
 
 		// A newer lamp changes (DXY: new value, new session stamp, now positive
@@ -257,23 +244,13 @@ func TestHTTPMacroLastModifiedFollowsAnyChange(t *testing.T) {
 			t.Fatal("fixture replace did not apply")
 		}
 		set(changed)
-		st2, lm2, asOf2 := get(path, stamp(lm1))
-		if st2 != http.StatusOK {
-			t.Errorf("%s: changed card with the old stamp: %d, want 200 (false 304)", path, st2)
+		st2, lm2, asOf2, body2 := get(path, future)
+		if st2 != http.StatusOK || lm2 != "" || body2 == body1 {
+			t.Errorf("%s: changed card, same captured_at, future If-Modified-Since → %d, Last-Modified %q, changed=%v; want 200, none, the new body",
+				path, st2, lm2, body2 != body1)
 		}
-		if !lm2.After(lm1) || asOf2 != asOf1 {
-			t.Errorf("%s: Last-Modified %s → %s must advance; data_as_of %q → %q must stay the oldest lamp",
-				path, lm1, lm2, asOf1, asOf2)
-		}
-
-		// A value moving under the SAME session stamps (Yahoo stamps the
-		// session start): only captured_at advances — and that is enough.
-		moved := strings.Replace(changed, `"value":99.2,`, `"value":99.1,`, 1)
-		moved = strings.Replace(moved, `"captured_at":"2026-09-15T04:44:32Z"`, `"captured_at":"2026-09-15T05:20:00Z"`, 1)
-		set(moved)
-		st3, lm3, _ := get(path, stamp(lm2))
-		if st3 != http.StatusOK || !lm3.After(lm2) {
-			t.Errorf("%s: value change under the same as_of: %d, Last-Modified %s → %s", path, st3, lm2, lm3)
+		if asOf2 != asOf1 {
+			t.Errorf("%s: data_as_of %q → %q must stay the oldest lamp", path, asOf1, asOf2)
 		}
 	}
 }

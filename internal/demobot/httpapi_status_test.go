@@ -185,30 +185,36 @@ func TestHTTPLevelsPresenceEndToEnd(t *testing.T) {
 	}
 }
 
-// stubBinanceKlinesWave serves `bars` closed 4h candles for any symbol on a
+// stubBinanceKlinesWave serves `bars` closed candles for any symbol on a
 // 10-bar triangle wave, so swing highs/lows recur at the same two prices and
 // the S/R clusterer finds real levels (the shared stubBinanceKlines trends
 // monotonically — no swings by construction). The fractional base pins raw
-// precision end to end.
+// precision end to end. Bars are spaced by the requested interval (4h when
+// absent), so a 1000-bar answer is a full, contiguous window at any tf.
 func stubBinanceKlinesWave(t *testing.T, bars int) {
 	t.Helper()
 	wave := []float64{0, 200, 400, 600, 800, 1000, 800, 600, 400, 200}
-	start := time.Now().Unix() - int64(bars+2)*14400
-	rows := make([][]any, bars)
-	for i := range rows {
-		price := 60000.4 + wave[i%len(wave)]
-		rows[i] = []any{
-			float64(start+int64(i)*14400) * 1000,
-			fmt.Sprintf("%f", price), fmt.Sprintf("%f", price+50),
-			fmt.Sprintf("%f", price-50), fmt.Sprintf("%f", price),
-			"100.0",
-		}
-	}
-	body, err := json.Marshal(rows)
-	if err != nil {
-		t.Fatal(err)
-	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sec := intervalSeconds[r.URL.Query().Get("interval")]
+		if sec == 0 {
+			sec = 14400
+		}
+		start := time.Now().Unix() - int64(bars+2)*sec
+		rows := make([][]any, bars)
+		for i := range rows {
+			price := 60000.4 + wave[i%len(wave)]
+			rows[i] = []any{
+				float64(start+int64(i)*sec) * 1000,
+				fmt.Sprintf("%f", price), fmt.Sprintf("%f", price+50),
+				fmt.Sprintf("%f", price-50), fmt.Sprintf("%f", price),
+				"100.0",
+			}
+		}
+		body, err := json.Marshal(rows)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)
 	}))
@@ -545,7 +551,7 @@ func getWithHeader(t *testing.T, url, key, val string) (int, http.Header, []byte
 // Last-Modified must carry the DATA time, not the answering time: a validator
 // built from now() never matches and makes every response look new.
 func TestLastModifiedMatchesDataAsOf(t *testing.T) {
-	stubBinanceKlines(t, 250, flatVol)
+	stubBinanceKlines(t, binanceFetchLimit, flatVol) // a full window: the stamped case
 	_, srv := newTestAPI(t, NewAgents(NewBackendClient("http://127.0.0.1:1")), true)
 
 	code, hdr, body := httpGet(t, srv.URL+"/agents/trend")
@@ -579,7 +585,7 @@ func TestLastModifiedMatchesDataAsOf(t *testing.T) {
 // A client that already holds this version gets 304 and no body; one holding
 // an older version gets the data.
 func TestConditionalGetReturns304OnlyWhenUnchanged(t *testing.T) {
-	stubBinanceKlines(t, 250, flatVol)
+	stubBinanceKlines(t, binanceFetchLimit, flatVol) // a full window: the stamped case
 	_, srv := newTestAPI(t, NewAgents(NewBackendClient("http://127.0.0.1:1")), true)
 
 	_, hdr, _ := httpGet(t, srv.URL+"/agents/trend")
@@ -669,7 +675,7 @@ func TestShowcaseValidatorIsSweepTime(t *testing.T) {
 		cards: map[string]Card{
 			keyTrend:   {Agent: "Trend", DataTime: now.Add(-6 * time.Hour)},
 			keyFunding: {Agent: "Funding", DataTime: now.Add(-5 * time.Minute)},
-			keyMacro:   {Agent: "Macro", DataTime: now.Add(-20 * time.Hour), lastModified: now.Add(-time.Minute)},
+			keyMacro:   {Agent: "Macro", DataTime: now.Add(-20 * time.Hour)},
 		},
 	}
 	if got := b.lastModified(); !got.Equal(now) {
