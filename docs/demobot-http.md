@@ -1292,8 +1292,49 @@ risk, the stand). Code: `internal/demobot/hook.go`.
 | Variable | Meaning |
 |---|---|
 | `DEMOBOT_HOOK_URL` | POST target, e.g. `http://127.0.0.1:8082/internal/agents/events`. **Empty = hook off**: no goroutine, no requests. Must parse as an `http` / `https` URL with a host; anything else is logged and the hook is not started |
+| `DEMOBOT_HOOK_HEADER` | Optional auth header added to every POST — see [auth header](#auth-header). **Empty = no header** |
 | `DEMOBOT_HOOK_INTERVAL` | Sweep period, Go duration (`90s`) or seconds (`90`). Default `60s`, minimum `30s` (lower values are raised to it, unreadable ones fall back to the default; both are logged) |
 | `DEMOBOT_HOOK_DIGEST_INTERVAL` | Period of the `digest`, `top` and `news` addresses (same formats). Default `5m`, never below the sweep period (raised to it, logged). Each of their runs reaches LLM-backed sources — see [load](#load-per-sweep) |
+
+### Auth header
+
+`DEMOBOT_HOOK_HEADER` carries one HTTP header, whole, as `Name: value`. It is
+the only auth knob, so a change of the site's scheme is an env change, not a
+code change:
+
+```sh
+DEMOBOT_HOOK_HEADER='Authorization: Bearer <token>'
+# or
+DEMOBOT_HOOK_HEADER='X-Api-Key: <key>'
+```
+
+- Split at the **first** `:`; spaces around the name and the value are
+  trimmed (the value may itself contain `:`).
+- The name must be a valid HTTP token (no spaces or separators) and not one
+  the hook or the HTTP client sets itself: `Content-Type`, `Content-Length`,
+  `Host`, `Content-Encoding`, `Transfer-Encoding`, `Connection`, `Expect`,
+  `TE`, `Trailer`, `Upgrade`, `User-Agent`, `Accept-Encoding`. Any other name, custom ones
+  included, is accepted. The value must be non-empty,
+  without CR, LF or other control characters (tab allowed).
+- Anything else — no `:`, empty name, bad name, bad or empty value — is
+  logged and **the hook is not started**, exactly like an invalid
+  `DEMOBOT_HOOK_URL`.
+- The header goes on every POST next to `Content-Type: application/json`;
+  nothing else in the request changes.
+- **The value is a secret and is never logged** — not at start, not on
+  errors. The start line prints the header name only when it is a known
+  auth header (`Authorization`, `X-Api-Key`, `Api-Key`, `X-Auth-Token`,
+  `X-Access-Token`, `X-Webhook-Secret`, `Proxy-Authorization`, any case):
+  `… → http://127.0.0.1:8082/internal/agents/events · auth header: Authorization (value hidden)`.
+  Any other name is shown as `custom header (N chars)` — a bare token
+  pasted with a `:` inside (`user:pass`) parses as a header named by the
+  first half of the secret, so an unknown name is never printed. Without
+  the variable: `auth header: none`. A malformed-variable line names the
+  problem and at most that same label, or the reserved name it tried to
+  override (a fixed list, never a free-form name).
+- The site's answer, logged on a refusal (first 300 bytes), has every
+  occurrence of the value replaced by `*` of the same length — a site may
+  echo the header it refused.
 
 ### What is swept
 
@@ -1390,7 +1431,7 @@ The sweep's starting address moves one step every sweep, so no address is
 always the last one tried.
 
 Logs: one line per POST with the address, `event_id`, answer code and
-duration in ms — never the `data`.
+duration in ms — never the `data`, never the auth header value.
 
 ### Load per sweep
 

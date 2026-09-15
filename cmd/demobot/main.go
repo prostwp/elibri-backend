@@ -25,6 +25,11 @@
 //	                        sweep period, default 60s, minimum 30s.
 //	                        DEMOBOT_HOOK_DIGEST_INTERVAL: digest/top period,
 //	                        default 5m, never below the sweep period.
+//	DEMOBOT_HOOK_HEADER     optional auth header added to every hook POST,
+//	                        one header as "Name: value" (e.g.
+//	                        "Authorization: Bearer <token>"); empty = no
+//	                        header. Malformed → logged, hook not started.
+//	                        The value is a secret and is never logged.
 package main
 
 import (

@@ -34,7 +34,14 @@ type hookSink struct {
 	events []hookEvent
 	raws   []string
 	ctypes []string
+	heads  []http.Header
 	srv    *httptest.Server
+}
+
+func (s *hookSink) headers() []http.Header {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]http.Header(nil), s.heads...)
 }
 
 func newHookSink(t *testing.T, code int) *hookSink {
@@ -48,6 +55,7 @@ func newHookSink(t *testing.T, code int) *hookSink {
 		s.events = append(s.events, ev)
 		s.raws = append(s.raws, string(body))
 		s.ctypes = append(s.ctypes, r.Header.Get("Content-Type"))
+		s.heads = append(s.heads, r.Header.Clone())
 		code, hang := s.code, s.hang[ev.Agent]
 		s.mu.Unlock()
 		if hang {
@@ -356,6 +364,300 @@ func TestHookIntervalConfig(t *testing.T) {
 		if !ok || cfg.interval != c.wantI || cfg.digestInterval != c.wantD {
 			t.Errorf("interval %q digest %q → %s / %s ok=%v, want %s / %s",
 				c.interval, c.digest, cfg.interval, cfg.digestInterval, ok, c.wantI, c.wantD)
+		}
+	}
+}
+
+// ── auth header ──────────────────────────────────────────────────────────────
+
+// hookSecret is the header value in the auth tests: it must reach the wire
+// and never a log line.
+const hookSecret = "s3cr3t-Token_42" // no ":" — the no-colon cases rely on it
+
+// logSink collects logf lines (the hook may log from its own goroutine).
+type logSink struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *logSink) logf(f string, a ...any) {
+	l.mu.Lock()
+	l.lines = append(l.lines, fmt.Sprintf(f, a...))
+	l.mu.Unlock()
+}
+
+func (l *logSink) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.lines...)
+}
+
+func (l *logSink) assertNoSecret(t *testing.T) {
+	t.Helper()
+	for _, line := range l.all() {
+		if strings.Contains(line, "s3cr3t") {
+			t.Errorf("log line leaks the header value: %q", line)
+		}
+	}
+}
+
+// DEMOBOT_HOOK_HEADER from env to wire: the stub receiver gets the header with
+// the right name and value on every POST, Content-Type unchanged; the start
+// line names the header only; no log line (start, POST, not-delivered) holds
+// the value.
+func TestHookAuthHeaderDelivered(t *testing.T) {
+	cases := []struct{ env, name, label string }{
+		{"Authorization: Bearer " + hookSecret, "Authorization", "Authorization"},
+		{"  X-Api-Key :  " + hookSecret + ":tail  ", "X-Api-Key", "X-Api-Key"},  // trimmed; ":" inside the value kept
+		{"x-api-key:" + hookSecret, "x-api-key", "X-Api-Key"},                   // known name printed canonical
+		{"X-Site-Sig: " + hookSecret, "X-Site-Sig", "custom header (10 chars)"}, // unknown name works, not printed
+	}
+	for _, c := range cases {
+		for _, code := range []int{http.StatusCreated, http.StatusUnauthorized} {
+			sink := newHookSink(t, code)
+			t.Setenv("DEMOBOT_HOOK_URL", sink.srv.URL)
+			t.Setenv("DEMOBOT_HOOK_HEADER", c.env)
+			var logs logSink
+			h, ok := pushHookFromEnv(NewHTTPServer("127.0.0.1:0", deadAgents(t)), logs.logf)
+			if !ok {
+				t.Fatalf("%q: hook not started: %v", c.env, logs.all())
+			}
+			h.targets = []hookTarget{mustHookTarget(t, "/agents/fx"), mustHookTarget(t, "/agents/whale")}
+			h.sweep(context.Background())
+
+			heads := sink.headers()
+			if len(heads) != 2 {
+				t.Fatalf("%q/%d: %d POSTs, want 2", c.env, code, len(heads))
+			}
+			wantValue := strings.TrimSpace(strings.SplitN(c.env, ":", 2)[1])
+			for _, hd := range heads {
+				if got := hd.Values(c.name); len(got) != 1 || got[0] != wantValue {
+					t.Errorf("%q/%d: header %s = %q, want [%q]", c.env, code, c.name, got, wantValue)
+				}
+				if ct := hd.Get("Content-Type"); ct != "application/json" {
+					t.Errorf("%q/%d: Content-Type %q", c.env, code, ct)
+				}
+			}
+			lines := logs.all()
+			if len(lines) == 0 || !strings.Contains(lines[0], "auth header: "+c.label+" (value hidden)") {
+				t.Errorf("%q: start line %v", c.env, lines)
+			}
+			if code == http.StatusUnauthorized && !strings.Contains(strings.Join(lines, "\n"), "not delivered") {
+				t.Errorf("%q: 401 not logged: %v", c.env, lines)
+			}
+			logs.assertNoSecret(t)
+		}
+	}
+}
+
+// Empty (or blank) DEMOBOT_HOOK_HEADER: no auth header on the wire, the hook
+// runs as before, the start line says "none".
+func TestHookNoAuthHeaderWhenEmpty(t *testing.T) {
+	for _, env := range []string{"", "   "} {
+		sink := newHookSink(t, http.StatusCreated)
+		t.Setenv("DEMOBOT_HOOK_URL", sink.srv.URL)
+		t.Setenv("DEMOBOT_HOOK_HEADER", env)
+		var logs logSink
+		h, ok := pushHookFromEnv(NewHTTPServer("127.0.0.1:0", deadAgents(t)), logs.logf)
+		if !ok {
+			t.Fatalf("%q: hook not started: %v", env, logs.all())
+		}
+		h.targets = []hookTarget{mustHookTarget(t, "/agents/fx")}
+		h.sweep(context.Background())
+		heads := sink.headers()
+		if len(heads) != 1 {
+			t.Fatalf("%q: %d POSTs, want 1", env, len(heads))
+		}
+		for name := range heads[0] {
+			switch name {
+			case "Content-Type", "Content-Length", "Accept-Encoding", "User-Agent":
+			default:
+				t.Errorf("%q: unexpected header %s: %q", env, name, heads[0].Values(name))
+			}
+		}
+		if lines := logs.all(); len(lines) == 0 || !strings.HasSuffix(lines[0], "auth header: none") {
+			t.Errorf("%q: start line %v", env, lines)
+		}
+	}
+}
+
+// A malformed DEMOBOT_HOOK_HEADER keeps the hook off (like a bad URL), with
+// one log line that never carries the value — even when the variable is the
+// bare secret.
+func TestHookRejectsInvalidHeader(t *testing.T) {
+	t.Setenv("DEMOBOT_HOOK_URL", "http://127.0.0.1:8082/internal/agents/events")
+	cases := []struct{ env, why string }{
+		{"Bearer " + hookSecret, `no ":"`},
+		{hookSecret, `no ":"`}, // the bare token pasted without a name
+		{": Bearer " + hookSecret, "empty header name"},
+		{"   :" + hookSecret, "empty header name"},
+		{"X Api Key: " + hookSecret, "not a valid HTTP token"},
+		{"Author(ization): " + hookSecret, "not a valid HTTP token"},
+		{"Authorization: Bearer " + hookSecret + "\r\nX-Evil: 1", "control character"},
+		{"Authorization: Bearer " + hookSecret + "\nX-Evil: 1", "control character"},
+		{"Authorization: Bearer " + hookSecret + "\rX", "control character"},
+		{"X-Api-Key: " + hookSecret + "\x01x", "control character"}, // env cannot hold NUL
+		{"X-Api-Key: " + hookSecret + "\x7fx", "control character"},
+		{"Authorization:", "empty value"},
+		{"Authorization:   ", "empty value"},
+		{"content-type: " + hookSecret, "cannot be overridden"},
+		{"Host: " + hookSecret, "cannot be overridden"},
+	}
+	for _, c := range cases {
+		t.Setenv("DEMOBOT_HOOK_HEADER", c.env)
+		var logs logSink
+		if _, ok := hookConfigFromEnv(logs.logf); ok {
+			t.Errorf("%q must not start the hook", c.env)
+		}
+		lines := logs.all()
+		if len(lines) != 1 || !strings.Contains(lines[0], "DEMOBOT_HOOK_HEADER") ||
+			!strings.Contains(lines[0], "hook not started") || !strings.Contains(lines[0], c.why) {
+			t.Errorf("%q: logs %v, want one line with %q", c.env, lines, c.why)
+		}
+		logs.assertNoSecret(t)
+
+		var startLogs logSink
+		if _, ok := pushHookFromEnv(NewHTTPServer("127.0.0.1:0", deadAgents(t)), startLogs.logf); ok {
+			t.Errorf("%q: pushHookFromEnv started", c.env)
+		}
+		startLogs.assertNoSecret(t)
+		if StartPushHookFromEnv(context.Background(), NewHTTPServer("127.0.0.1:0", deadAgents(t))) {
+			t.Errorf("%q: StartPushHookFromEnv started", c.env)
+		}
+	}
+}
+
+// A bare token with a ":" inside parses as "Name: value" — accepted (it is a
+// valid header) or refused (empty value), but no log line may print the name,
+// which is the first half of the secret.
+func TestHookUnknownHeaderNameNotLogged(t *testing.T) {
+	cases := []struct {
+		env, name, rest string
+		ok              bool
+		label           string
+	}{
+		{"abc:def", "abc", "def", true, "custom header (3 chars)"},
+		{"user:pass", "user", "pass", true, "custom header (4 chars)"},
+		{"AKIA123:secretpart", "AKIA123", "secretpart", true, "custom header (7 chars)"},
+		{"AKIA123:", "AKIA123", "", false, "custom header (7 chars)"},
+		{"AKIA123:x\r\ny", "AKIA123", "", false, "custom header (7 chars)"},
+	}
+	for _, c := range cases {
+		sink := newHookSink(t, http.StatusCreated)
+		t.Setenv("DEMOBOT_HOOK_URL", sink.srv.URL)
+		t.Setenv("DEMOBOT_HOOK_HEADER", c.env)
+		var logs logSink
+		h, ok := pushHookFromEnv(NewHTTPServer("127.0.0.1:0", deadAgents(t)), logs.logf)
+		if ok != c.ok {
+			t.Fatalf("%q: started=%v, want %v (%v)", c.env, ok, c.ok, logs.all())
+		}
+		if ok {
+			h.targets = []hookTarget{mustHookTarget(t, "/agents/fx")}
+			h.sweep(context.Background())
+			if hd := sink.headers(); len(hd) != 1 || hd[0].Get(c.name) != c.rest {
+				t.Errorf("%q: custom header not delivered: %v", c.env, hd)
+			}
+		}
+		lines := logs.all()
+		if len(lines) == 0 || !strings.Contains(lines[0], c.label) {
+			t.Errorf("%q: first line %v, want %q", c.env, lines, c.label)
+		}
+		eventRe := regexp.MustCompile(`event=\S+`) // the hex hash may contain "abc"/"def" by chance
+		for _, line := range lines {
+			line = eventRe.ReplaceAllString(line, "event=…")
+			if strings.Contains(line, c.name) || (c.rest != "" && strings.Contains(line, c.rest)) {
+				t.Errorf("%q: log line leaks the secret: %q", c.env, line)
+			}
+		}
+	}
+}
+
+// Every header the hook or net/http sets itself is refused, in any case.
+func TestHookReservedHeadersRefused(t *testing.T) {
+	t.Setenv("DEMOBOT_HOOK_URL", "http://127.0.0.1:8082/internal/agents/events")
+	for _, name := range []string{"Content-Type", "Content-Length", "Host", "Content-Encoding",
+		"Transfer-Encoding", "Connection", "Expect", "TE", "Trailer", "Upgrade", "User-Agent", "Accept-Encoding"} {
+		for _, n := range []string{name, strings.ToLower(name)} {
+			t.Setenv("DEMOBOT_HOOK_HEADER", n+": "+hookSecret)
+			var logs logSink
+			if _, ok := hookConfigFromEnv(logs.logf); ok {
+				t.Errorf("%s must be refused", n)
+			}
+			if lines := logs.all(); len(lines) != 1 || !strings.Contains(lines[0], "cannot be overridden") {
+				t.Errorf("%s: logs %v", n, lines)
+			}
+			logs.assertNoSecret(t)
+		}
+	}
+	for _, name := range []string{"X-Webhook-Secret", "Api-Key", "X-Custom-Auth"} {
+		t.Setenv("DEMOBOT_HOOK_HEADER", name+": "+hookSecret)
+		if _, ok := hookConfigFromEnv(func(string, ...any) {}); !ok {
+			t.Errorf("%s must be accepted", name)
+		}
+	}
+}
+
+// A site that echoes the refused header in its answer must not put the value
+// into the log: the logged answer is masked — also when the value straddles
+// the end of the 300-byte snippet (its first bytes inside, the rest cut), and
+// when it is echoed twice with the second echo at or past the cut.
+func TestHookAnswerEchoMasked(t *testing.T) {
+	const prefix = "bad auth: "
+	mask := strings.Repeat("*", len(hookSecret))
+	pads := []int{0, hookSnippetLen - len(prefix) - 3}
+	// Second echo starts at 300 - k after " again " (7 bytes): straddling the
+	// cut or just past it.
+	for k := -3; k <= len(hookSecret)+2; k++ {
+		pads = append(pads, hookSnippetLen-k-len(prefix)-len(hookSecret)-7)
+	}
+	for i, pad := range pads {
+		for _, code := range []int{http.StatusUnauthorized, http.StatusBadRequest} {
+			twice := i >= 2
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(code)
+				v := r.Header.Get("X-Api-Key")
+				_, _ = fmt.Fprintf(w, "%s%s%s", strings.Repeat("x", pad), prefix, v)
+				if twice {
+					_, _ = fmt.Fprintf(w, " again %s tail", v)
+				}
+			}))
+			t.Setenv("DEMOBOT_HOOK_URL", srv.URL)
+			t.Setenv("DEMOBOT_HOOK_HEADER", "X-Api-Key: "+hookSecret)
+			var logs logSink
+			h, ok := pushHookFromEnv(NewHTTPServer("127.0.0.1:0", deadAgents(t)), logs.logf)
+			if !ok {
+				t.Fatalf("hook not started: %v", logs.all())
+			}
+			h.targets = []hookTarget{mustHookTarget(t, "/agents/fx")}
+			h.sweep(context.Background())
+			srv.Close()
+			all := strings.Join(logs.all(), "\n")
+			if !strings.Contains(all, prefix) {
+				t.Errorf("pad %d, %d: answer not logged: %v", pad, code, logs.all())
+			}
+			if pad == 0 && !strings.Contains(all, prefix+mask) {
+				t.Errorf("pad %d, %d: echoed value not masked: %v", pad, code, logs.all())
+			}
+			if strings.Contains(all, hookSecret[:3]) { // "s3c": not hex, cannot come from an event id
+				t.Errorf("pad %d, %d: log holds part of the value: %v", pad, code, logs.all())
+			}
+			logs.assertNoSecret(t)
+		}
+	}
+}
+
+func TestParseHookHeader(t *testing.T) {
+	cases := []struct{ raw, name, value string }{
+		{"Authorization: Bearer xyz", "Authorization", "Bearer xyz"},
+		{"X-Api-Key:xyz", "X-Api-Key", "xyz"},
+		{" X-Api-Key \t:\t a:b:c ", "X-Api-Key", "a:b:c"},
+		{"X-Sig: a\tb", "X-Sig", "a\tb"}, // tab is a legal value byte
+		{"x~!#$%&'*+-.^_`|: v", "x~!#$%&'*+-.^_`|", "v"},
+	}
+	for _, c := range cases {
+		n, v, err := parseHookHeader(c.raw)
+		if err != nil || n != c.name || v != c.value {
+			t.Errorf("%q → %q %q %v, want %q %q", c.raw, n, v, err, c.name, c.value)
 		}
 	}
 }

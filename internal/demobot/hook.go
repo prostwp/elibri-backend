@@ -6,7 +6,8 @@ package demobot
 //
 // Contract (docs/demobot-http.md "Push hook" is the reference):
 //   - Off unless DEMOBOT_HOOK_URL is a valid http(s) URL: no goroutine, no
-//     requests.
+//     requests. DEMOBOT_HOOK_HEADER ("Name: value", optional) is added to
+//     every POST; its value is never logged.
 //   - data is the GET body itself: the hook calls the API route table
 //     in-process (past the rate limiter), so an event can never disagree with
 //     what GET /agents/{agent} answers.
@@ -335,11 +336,15 @@ type hookConfig struct {
 	target         string
 	interval       time.Duration
 	digestInterval time.Duration
+	// authName/authValue: the optional DEMOBOT_HOOK_HEADER, added to every
+	// POST. authValue is a secret — never logged.
+	authName, authValue string
 }
 
-// hookConfigFromEnv reads DEMOBOT_HOOK_URL / DEMOBOT_HOOK_INTERVAL /
-// DEMOBOT_HOOK_DIGEST_INTERVAL. ok=false when the URL is empty or not an
-// http(s) URL (hook off; the invalid case is logged).
+// hookConfigFromEnv reads DEMOBOT_HOOK_URL / DEMOBOT_HOOK_HEADER /
+// DEMOBOT_HOOK_INTERVAL / DEMOBOT_HOOK_DIGEST_INTERVAL. ok=false when the URL
+// is empty, not an http(s) URL, or the header is malformed (hook off; the
+// invalid cases are logged — the header value never is).
 func hookConfigFromEnv(logf func(string, ...any)) (hookConfig, bool) {
 	raw := strings.TrimSpace(os.Getenv("DEMOBOT_HOOK_URL"))
 	if raw == "" {
@@ -351,6 +356,15 @@ func hookConfigFromEnv(logf func(string, ...any)) (hookConfig, bool) {
 		return hookConfig{}, false
 	}
 	cfg := hookConfig{target: raw}
+	if hdr := os.Getenv("DEMOBOT_HOOK_HEADER"); strings.TrimSpace(hdr) != "" {
+		name, value, err := parseHookHeader(hdr)
+		if err != nil {
+			// err never carries the value (it may be the bare secret).
+			logf("[demobot] push hook: DEMOBOT_HOOK_HEADER %v — hook not started", err)
+			return hookConfig{}, false
+		}
+		cfg.authName, cfg.authValue = name, value
+	}
 	cfg.interval = hookEnvDuration(logf, "DEMOBOT_HOOK_INTERVAL", hookDefaultInterval)
 	if cfg.interval < hookMinInterval {
 		logf("[demobot] push hook: DEMOBOT_HOOK_INTERVAL=%s below the %s minimum — using %s", cfg.interval, hookMinInterval, hookMinInterval)
@@ -362,6 +376,88 @@ func hookConfigFromEnv(logf func(string, ...any)) (hookConfig, bool) {
 		cfg.digestInterval = cfg.interval
 	}
 	return cfg, true
+}
+
+// hookReservedHeaders are set by the hook or by net/http itself; the auth
+// header may not replace them.
+var hookReservedHeaders = map[string]bool{
+	"Content-Type": true, "Content-Length": true, "Host": true,
+	"Content-Encoding": true, "Transfer-Encoding": true, "Connection": true,
+	"Expect": true, "Te": true, "Trailer": true, "Upgrade": true, "User-Agent": true,
+	"Accept-Encoding": true,
+}
+
+// hookKnownAuthHeaders are the header names a log line may print in full.
+var hookKnownAuthHeaders = map[string]bool{
+	"Authorization": true, "X-Api-Key": true, "Api-Key": true, "X-Auth-Token": true,
+	"X-Access-Token": true, "X-Webhook-Secret": true, "Proxy-Authorization": true,
+}
+
+// hookHeaderLabel is how logs refer to the auth header: the canonical name
+// when it is a known auth header, else "custom header (N chars)" — a bare
+// token with a ":" inside ("AKIA123:secret", "user:pass") parses as a header
+// named by the first half of the secret, so an unknown name is not printed.
+func hookHeaderLabel(name string) string {
+	if c := http.CanonicalHeaderKey(name); hookKnownAuthHeaders[c] {
+		return c
+	}
+	return fmt.Sprintf("custom header (%d chars)", len(name))
+}
+
+// parseHookHeader splits DEMOBOT_HOOK_HEADER ("Name: value") at the first
+// ":" and trims both sides. The name must be an RFC 9110 token and not a
+// header the hook or net/http sets itself; any other name is accepted. The
+// value must be non-empty, without CR, LF or other control characters (tab
+// allowed). The error names the problem and at most hookHeaderLabel(name) —
+// never the value, the raw variable or an unknown name, any of which may be
+// (part of) the secret.
+func parseHookHeader(raw string) (name, value string, err error) {
+	i := strings.IndexByte(raw, ':')
+	if i < 0 {
+		return "", "", errors.New(`has no ":" — expected "Name: value"`)
+	}
+	name, value = strings.TrimSpace(raw[:i]), strings.TrimSpace(raw[i+1:])
+	switch {
+	case name == "":
+		return "", "", errors.New(`has an empty header name — expected "Name: value"`)
+	case !validHeaderName(name):
+		return "", "", errors.New("header name is not a valid HTTP token (spaces or separators in it?)")
+	case hookReservedHeaders[http.CanonicalHeaderKey(name)]:
+		return "", "", fmt.Errorf("header %s is set by the hook itself and cannot be overridden", http.CanonicalHeaderKey(name))
+	case value == "":
+		return "", "", fmt.Errorf("header %s has an empty value", hookHeaderLabel(name))
+	case !validHeaderValue(value):
+		return "", "", fmt.Errorf("header %s value contains CR, LF or another control character", hookHeaderLabel(name))
+	}
+	return name, value, nil
+}
+
+// validHeaderName: a non-empty RFC 9110 token (tchar only).
+func validHeaderName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validHeaderValue: no control characters except horizontal tab (so no
+// CR/LF header injection, no NUL, no DEL).
+func validHeaderValue(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < ' ' && c != '\t') || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // hookEnvDuration reads a Go duration ("90s") or plain seconds ("90"); empty
@@ -399,6 +495,8 @@ type hookTargetState struct {
 // One goroutine runs it; nothing here is shared, so no locking.
 type PushHook struct {
 	url            string
+	authName       string // optional extra header on every POST ("" = none)
+	authValue      string // its value: a secret, never logged
 	interval       time.Duration
 	digestInterval time.Duration // digest/top cadence, ≥ interval
 	client         *http.Client
@@ -434,19 +532,35 @@ func NewPushHook(s *HTTPServer, target string, interval time.Duration) *PushHook
 // StartPushHookFromEnv starts the hook goroutine when DEMOBOT_HOOK_URL is a
 // valid http(s) URL and reports whether it did. It stops with ctx.
 func StartPushHookFromEnv(ctx context.Context, s *HTTPServer) bool {
-	cfg, ok := hookConfigFromEnv(log.Printf)
+	h, ok := pushHookFromEnv(s, log.Printf)
+	if !ok {
+		return false
+	}
+	go h.Run(ctx)
+	return true
+}
+
+// pushHookFromEnv builds the hook from the environment and logs the start
+// line (the auth header by name only); ok=false = hook off.
+func pushHookFromEnv(s *HTTPServer, logf func(string, ...any)) (*PushHook, bool) {
+	cfg, ok := hookConfigFromEnv(logf)
 	if !ok {
 		if os.Getenv("DEMOBOT_HOOK_URL") == "" {
-			log.Printf("[demobot] push hook: off (DEMOBOT_HOOK_URL empty)")
+			logf("[demobot] push hook: off (DEMOBOT_HOOK_URL empty)")
 		}
-		return false
+		return nil, false
 	}
 	h := NewPushHook(s, cfg.target, cfg.interval)
 	h.digestInterval = cfg.digestInterval
-	log.Printf("[demobot] push hook: on · %d addresses every %s, digest/top every %s → %s",
-		len(h.targets), cfg.interval, cfg.digestInterval, cfg.target)
-	go h.Run(ctx)
-	return true
+	h.authName, h.authValue = cfg.authName, cfg.authValue
+	h.logf = logf
+	auth := "none"
+	if cfg.authName != "" {
+		auth = hookHeaderLabel(cfg.authName) + " (value hidden)"
+	}
+	logf("[demobot] push hook: on · %d addresses every %s, digest/top every %s → %s · auth header: %s",
+		len(h.targets), cfg.interval, cfg.digestInterval, cfg.target, auth)
+	return h, true
 }
 
 // Run sweeps immediately, then every interval, until ctx is done.
@@ -634,19 +748,35 @@ func (h *PushHook) pauseAddress(st *hookTargetState) {
 }
 
 // post sends one event: one attempt, hookSendTimeout, no retries. It returns
-// the status and the first hookSnippetLen bytes of the answer.
+// the status and the first hookSnippetLen bytes of the answer, the auth
+// value masked.
 func (h *PushHook) post(ctx context.Context, payload []byte) (int, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.url, bytes.NewReader(payload))
 	if err != nil {
 		return 0, "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if h.authName != "" {
+		req.Header.Set(h.authName, h.authValue)
+	}
 	resp, err := h.client.Do(req)
 	if err != nil {
 		return 0, "", err
 	}
 	defer resp.Body.Close()
-	head, _ := io.ReadAll(io.LimitReader(resp.Body, hookSnippetLen))
+	// Read the value's length past the snippet so a value that starts inside
+	// it is masked whole, then cut: the answer is logged, and a site may echo
+	// the header it refused ("bad auth: <token>"). The mask has the value's
+	// length, so no byte moves and the cut falls where it would unmasked (a
+	// shorter mask would pull a later, unmasked partial echo into the snippet).
+	head, _ := io.ReadAll(io.LimitReader(resp.Body, int64(hookSnippetLen+len(h.authValue))))
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20)) // drain for reuse
-	return resp.StatusCode, string(head), nil
+	snippet := string(head)
+	if h.authValue != "" {
+		snippet = strings.ReplaceAll(snippet, h.authValue, strings.Repeat("*", len(h.authValue)))
+	}
+	if len(snippet) > hookSnippetLen {
+		snippet = snippet[:hookSnippetLen]
+	}
+	return resp.StatusCode, snippet, nil
 }
