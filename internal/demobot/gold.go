@@ -399,9 +399,9 @@ func (a *Agents) GoldCard(ctx context.Context) Card {
 	// Invalidation belongs to a stated direction. Under a header that claims
 	// none, a bare "Invalidation: below X" is a directional level with nothing
 	// to invalidate — so confirmed states only.
-	if lv, ok := trend.Levels.(TrendLevels); ok && lv.Invalidation > 0 && confirmed {
+	if lv, ok := trend.Levels.(TrendLevels); ok && lv.Invalidation != nil && *lv.Invalidation > 0 && confirmed {
 		c.Facts = append(c.Facts, fmt.Sprintf("Invalidation: %s %s — below this the regime above is broken",
-			lv.InvalidationSide, trimFloat(lv.Invalidation)))
+			lv.InvalidationSide, trimFloat(*lv.Invalidation)))
 		c.Levels = lv
 	}
 

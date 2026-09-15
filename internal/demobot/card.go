@@ -75,15 +75,37 @@ type PullbackZone struct {
 	To   float64 `json:"to"`   // EMA50
 }
 
-// TrendLevels — the price at which the trend structure this card reads is
-// broken (see invalidationFor), plus the pullback band in confirmed states.
-// InvalidationSide ("below" | "above") makes the break direction machine-
-// readable: downtrends invalidate ABOVE the EMA cluster, everything else
-// below it (review fix 8) — additive field, old consumers ignore it.
+// TrendLevels — served ONLY for a confirmed trend (up/down); an unconfirmed
+// card carries no levels object at all (product decision 2026-09-15: an
+// unconfirmed reading has nothing to invalidate, and a number in the JSON
+// reads as a level whatever the docs say).
+//
+//   - PullbackZone: the EMA20-EMA50 band, always present when confirmed.
+//   - Invalidation / InvalidationSide: the level that invalidates the trend
+//     idea (see invalidationFor) and its direction — downtrends invalidate
+//     ABOVE the EMA cluster, uptrends below it. Present together or not at
+//     all: absent only on a degenerate series with no ATR. A pointer, so the
+//     JSON can never carry a zero level or a side without a level.
 type TrendLevels struct {
-	Invalidation     float64       `json:"invalidation"`
-	InvalidationSide string        `json:"invalidation_side"`
+	Invalidation     *float64      `json:"invalidation,omitempty"`
+	InvalidationSide string        `json:"invalidation_side,omitempty"`
 	PullbackZone     *PullbackZone `json:"pullback_zone,omitempty"`
+}
+
+// ContentBlocks are ready-made sentences for content writers, one per job,
+// so nobody has to reassemble them from the facts list. Additive: served as
+// the envelope's "blocks" on trend cards only; old consumers ignore it.
+//   - what_happened: the verdict and where price is
+//   - why_level: what the level the card leans on is made of
+//   - scenarios: exactly two "if → then" transitions of the state machine
+//   - invalidates: what invalidates a CONFIRMED reading; null otherwise
+//   - regime: the local regime in one line (state · timeframe · ADX)
+type ContentBlocks struct {
+	WhatHappened string   `json:"what_happened"`
+	WhyLevel     string   `json:"why_level"`
+	Scenarios    []string `json:"scenarios"`
+	Invalidates  *string  `json:"invalidates"`
+	Regime       string   `json:"regime"`
 }
 
 // SRPoint is one clustered level at raw precision (SRLevel.Raw — the cluster
@@ -174,6 +196,13 @@ type Card struct {
 	// (nil elsewhere) — served as the envelope's "results", ignored by
 	// Telegram (the facts carry the human form).
 	Results []AssetResult
+	// Blocks is the content-ready form of the card (trend only today) —
+	// served as the envelope's "blocks", ignored by Telegram. nil elsewhere.
+	Blocks *ContentBlocks
+	// trendConclusion is the landing-page conclusion for an UNCONFIRMED trend
+	// card ("" when confirmed and for every other agent). Not served; the
+	// showcase uses it instead of calling a card with an EMA lean "neutral".
+	trendConclusion string
 	// AIHTML is a pre-rendered AI block ("<b>AI idea:</b> <i>…</i>") appended
 	// after the facts and confidence bar. Builders MUST esc() every dynamic
 	// value when composing it — RenderHTML writes it verbatim.

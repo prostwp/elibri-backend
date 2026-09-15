@@ -77,12 +77,30 @@ func (c *klineCache) cached(key string, load func() ([]types.OHLCVCandle, error)
 	return candles, nil
 }
 
-// fetch returns cached candles or pulls them from Binance.
+// binanceFetchLimit is the one window every Binance kline request asks for
+// (Binance's maximum). Callers wanting fewer bars get the newest `limit` of
+// them — exactly the rows a limit=`limit` request returns — so the Trend
+// Agent's 1000-bar window and the other agents' 250 share ONE upstream
+// request per symbol|interval within the cache TTL.
+const binanceFetchLimit = 1000
+
+// fetch returns the newest `limit` raw bars (at most binanceFetchLimit) from
+// the cached superset, pulling it from Binance on a miss. The tail keeps
+// capacity == length, so a caller appending to it can never write into the
+// cached backing array another caller is reading.
 func (c *klineCache) fetch(ctx context.Context, symbol, interval string, limit int) ([]types.OHLCVCandle, error) {
-	key := fmt.Sprintf("binance|%s|%s|%d", symbol, interval, limit)
-	return c.cached(key, func() ([]types.OHLCVCandle, error) {
-		return fetchBinanceKlines(ctx, symbol, interval, limit)
+	key := fmt.Sprintf("binance|%s|%s", symbol, interval)
+	all, err := c.cached(key, func() ([]types.OHLCVCandle, error) {
+		return fetchBinanceKlines(ctx, symbol, interval, binanceFetchLimit)
 	})
+	if err != nil {
+		return nil, err
+	}
+	n := len(all)
+	if limit <= 0 || limit > n {
+		limit = n
+	}
+	return all[n-limit : n : n], nil
 }
 
 // ── Binance spot klines ──────────────────────────────────────────────────────

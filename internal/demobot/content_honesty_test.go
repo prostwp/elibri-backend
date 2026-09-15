@@ -52,23 +52,21 @@ func TestWhaleCardUnlabeledFeedNoTransfers(t *testing.T) {
 	}
 }
 
-// Trend: only a confirmed trend has a thesis that can break.
+// Trend: only a confirmed trend has a reading that can be invalidated, and
+// the level counts on a CLOSED candle of the agent's timeframe. Unconfirmed
+// states print no level line at all (the number stays in levels.invalidation).
 func TestTrendInvalidationFactPerState(t *testing.T) {
-	up := trendInvalidationFact(trendUp, 74497, "below")
-	if up != "Invalidation: below 74497 the structure is broken (1 ATR under the EMA cluster)" {
+	up := trendInvalidationFact(trendUp, 74497, "below", "4h", 76000)
+	if up != "Invalidated by a closed 4h candle below 74497 (-2.0%, 1 ATR under the EMA cluster)" {
 		t.Errorf("confirmed up: %q", up)
 	}
-	down := trendInvalidationFact(trendDown, 1.162, "above")
-	if !strings.HasPrefix(down, "Invalidation: above 1.162") || !strings.Contains(down, "1 ATR over") {
+	down := trendInvalidationFact(trendDown, 1.162, "above", "1h", 1.1551)
+	if down != "Invalidated by a closed 1h candle above 1.1620 (+0.6%, 1 ATR over the EMA cluster)" {
 		t.Errorf("confirmed down: %q", down)
 	}
 	for _, st := range []string{trendFlat, trendGrey, trendConflict} {
-		got := trendInvalidationFact(st, 74497, "below")
-		if strings.Contains(got, "structure is broken") || strings.HasPrefix(got, "Invalidation:") {
-			t.Errorf("%s card must not claim a breakable structure: %q", st, got)
-		}
-		if !strings.Contains(got, "74497") {
-			t.Errorf("%s: the reference level stays visible: %q", st, got)
+		if got := trendInvalidationFact(st, 74497, "below", "4h", 76000); got != "" {
+			t.Errorf("%s card has nothing to invalidate, got %q", st, got)
 		}
 	}
 }

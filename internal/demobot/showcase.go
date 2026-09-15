@@ -499,18 +499,25 @@ func conclusionFor(c Card) string {
 		s = fmt.Sprintf("For a trader this is a bullish reading on %s: the numbers above lean up, and the read holds only for as long as they do.", subject)
 	case "bearish":
 		s = fmt.Sprintf("For a trader this is a bearish reading on %s: the numbers above lean down, and the read holds only for as long as they do.", subject)
+	case "neutral":
+		// An unconfirmed trend card usually DOES show a lean (its EMAs point
+		// somewhere); "nothing leans" would contradict its own facts. It says
+		// why confirmation is withheld instead, in the card's own terms.
+		if c.trendConclusion != "" {
+			s = c.trendConclusion
+			break
+		}
+		fallthrough
 	default:
 		s = fmt.Sprintf("For a trader this is a neutral reading on %s: nothing in the numbers above leans either way, so the level structure matters more than direction right now.", subject)
 	}
-	// A trend card already carries the price at which its own structure
-	// breaks — the honest edge of the statement, so it belongs in it.
-	switch tl := c.Levels.(type) {
-	case TrendLevels:
-		s += fmt.Sprintf(" The structure this read describes breaks on a close %s %s.", tl.InvalidationSide, trimFloat(tl.Invalidation))
-	case *TrendLevels:
-		if tl != nil {
-			s += fmt.Sprintf(" The structure this read describes breaks on a close %s %s.", tl.InvalidationSide, trimFloat(tl.Invalidation))
-		}
+	// A CONFIRMED trend card carries what invalidates its reading — the
+	// honest edge of the statement, so it belongs in it. Taken from the
+	// card's own sentence, never re-worded here: this line used to append
+	// "the structure breaks on a close below X" for every trend card,
+	// including flat/grey ones with nothing to invalidate.
+	if c.Blocks != nil && c.Blocks.Invalidates != nil {
+		s += " " + endSentence(*c.Blocks.Invalidates)
 	}
 	return s
 }

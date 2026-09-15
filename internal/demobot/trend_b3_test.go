@@ -186,22 +186,20 @@ func TestTrendCardPullbackZoneAndStructure(t *testing.T) {
 	}
 	joined := strings.Join(c.Facts, "|")
 
-	// The zone fact: "Pullback zone: 63200-63900 (EMA20-EMA50 band)" wording,
+	// The zone sits in the price line: "Price X — … the pullback zone LO–HI",
 	// rendered low-high.
 	var zoneLine string
 	for _, f := range c.Facts {
-		if strings.HasPrefix(f, "Pullback zone: ") {
+		if strings.HasPrefix(f, "Price ") && strings.Contains(f, "the pullback zone ") {
 			zoneLine = f
 		}
 	}
 	if zoneLine == "" {
-		t.Fatalf("pullback zone fact missing in a confirmed trend: %v", c.Facts)
+		t.Fatalf("pullback zone missing in a confirmed trend: %v", c.Facts)
 	}
-	if !strings.HasSuffix(zoneLine, "(EMA20-EMA50 band)") {
-		t.Errorf("zone wording: %q", zoneLine)
-	}
+	_, band, _ := strings.Cut(zoneLine, "the pullback zone ")
 	var lo, hi float64
-	if _, err := fmt.Sscanf(zoneLine, "Pullback zone: %f-%f (EMA20-EMA50 band)", &lo, &hi); err != nil {
+	if _, err := fmt.Sscanf(strings.Replace(band, "–", " ", 1), "%f %f", &lo, &hi); err != nil {
 		t.Fatalf("cannot parse zone from %q: %v", zoneLine, err)
 	}
 	if !(lo < hi) {
@@ -221,12 +219,12 @@ func TestTrendCardPullbackZoneAndStructure(t *testing.T) {
 		t.Errorf("uptrend zone from(EMA20)=%v to(EMA50)=%v, want EMA20 above EMA50",
 			lv.PullbackZone.From, lv.PullbackZone.To)
 	}
-	if lv.Invalidation == 0 {
-		t.Error("invalidation must still ride along")
+	if lv.Invalidation == nil || lv.InvalidationSide != "below" {
+		t.Errorf("confirmed uptrend must carry its invalidation below: %+v", lv)
 	}
 
 	// HH/HL structure fact from the same swing points S/R uses.
-	if !strings.Contains(joined, "Structure: HH/HL confirmed") {
+	if !strings.Contains(joined, "structure not against ✓") {
 		t.Errorf("structure fact missing or wrong: %v", c.Facts)
 	}
 
@@ -252,7 +250,7 @@ func TestTrendCardNoZoneOutsideConfirmed(t *testing.T) {
 		t.Fatalf("constant stub must read flat, got %q", c.Verdict)
 	}
 	joined := strings.Join(c.Facts, "|")
-	if strings.Contains(joined, "Pullback zone") {
+	if strings.Contains(joined, "pullback zone") {
 		t.Errorf("flat state must not offer a pullback zone: %v", c.Facts)
 	}
 	if lv, ok := c.Levels.(TrendLevels); ok && lv.PullbackZone != nil {
@@ -284,19 +282,19 @@ func TestTrendCardDowntrendInvalidationAbove(t *testing.T) {
 		t.Fatalf("mirrored zigzag must confirm a downtrend, got %q", c.Verdict)
 	}
 	joined := strings.Join(c.Facts, "|")
-	if !strings.Contains(joined, "Structure: LH/LL") {
+	if !strings.Contains(joined, "structure not against ✓") {
 		t.Errorf("downtrend agreement fact missing: %v", c.Facts)
 	}
 	var invLine string
 	for _, f := range c.Facts {
-		if strings.HasPrefix(f, "Invalidation: above ") {
+		if strings.HasPrefix(f, "Invalidated by a closed 4h candle above ") {
 			invLine = f
 		}
 	}
 	if invLine == "" {
 		t.Fatalf("downtrend invalidation must be worded 'above': %v", c.Facts)
 	}
-	if !strings.HasSuffix(invLine, "(1 ATR over the EMA cluster)") {
+	if !strings.HasSuffix(invLine, ", 1 ATR over the EMA cluster)") {
 		t.Errorf("invalidation wording: %q", invLine)
 	}
 	lv, ok := c.Levels.(TrendLevels)
@@ -307,8 +305,8 @@ func TestTrendCardDowntrendInvalidationAbove(t *testing.T) {
 		t.Errorf("invalidation_side = %q, want above", lv.InvalidationSide)
 	}
 	last := zigzagDown(249)
-	if lv.Invalidation <= last {
-		t.Errorf("downtrend invalidation %v must sit above the last close %v", lv.Invalidation, last)
+	if lv.Invalidation == nil || *lv.Invalidation <= last {
+		t.Errorf("downtrend invalidation %+v must sit above the last close %v", lv, last)
 	}
 	// The pullback zone still rides along (confirmed state, agreement).
 	if lv.PullbackZone == nil || !(lv.PullbackZone.From < lv.PullbackZone.To) {
@@ -364,14 +362,16 @@ func TestTrendCardStructureDisagreementDemotes(t *testing.T) {
 	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
 	c := ag.TrendCard(context.Background(), btcSpec)
 
-	if !strings.Contains(c.Verdict, "Grey zone") {
-		t.Errorf("verdict = %q, want grey (EMA-up + LH/LL must not confirm)", c.Verdict)
+	// The demotion reason stays visible: in the verdict, and as the ✗ on the
+	// structure condition.
+	if c.Verdict != "Grey zone · 4h — not confirmed: swing structure against the trend" {
+		t.Errorf("verdict = %q, want grey with the structure reason (EMA-up + LH/LL must not confirm)", c.Verdict)
 	}
 	joined := strings.Join(c.Facts, "|")
-	if !strings.Contains(joined, "Structure disagrees (LH/LL) — trend not confirmed") {
-		t.Errorf("disagreement fact missing: %v", c.Facts)
+	if !strings.Contains(joined, "structure not against ✗") {
+		t.Errorf("disagreement mark missing: %v", c.Facts)
 	}
-	if strings.Contains(joined, "Pullback zone") {
+	if strings.Contains(joined, "pullback zone") {
 		t.Errorf("demoted state must not offer a pullback zone: %v", c.Facts)
 	}
 	if lv, ok := c.Levels.(TrendLevels); ok && lv.PullbackZone != nil {
@@ -386,10 +386,12 @@ func TestTrendCardMonotoneHasNoStructureClaim(t *testing.T) {
 	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
 	c := ag.TrendCard(context.Background(), btcSpec)
 	joined := strings.Join(c.Facts, "|")
-	if !strings.Contains(joined, "Structure: no reading (too few swing points)") {
+	if !strings.Contains(joined, "structure not against ✓ (not determined)") {
 		t.Errorf("monotone series must state that no structure could be read: %v", c.Facts)
 	}
-	for _, banned := range []string{"HH/HL confirmed", "Structure: LH/LL", "Structure: mixed"} {
+	// No structure claim anywhere in the facts: the checklist's structure
+	// item reads only "not against ✓/✗" (plus "(not determined)").
+	for _, banned := range []string{"HH/HL", "LH/LL", "mixed"} {
 		if strings.Contains(joined, banned) {
 			t.Errorf("monotone series has no swings — %q is an invented claim: %v", banned, c.Facts)
 		}
@@ -486,17 +488,14 @@ func TestTrendCardUnreadableStructureDoesNotDemote(t *testing.T) {
 		t.Errorf("verdict = %q, want Confirmed UPTREND — an unreadable structure is not a veto", c.Verdict)
 	}
 	joined := strings.Join(c.Facts, "|")
-	// The card must SAY the structure could not be read, name why, and say it
-	// carries no weight — silence here is indistinguishable from a broken
-	// feature, and this is the common case on real series.
-	if !strings.Contains(joined, "Structure: no reading (two highs or two lows in a row)") {
-		t.Errorf("unreadable structure must be stated with its reason: %v", c.Facts)
-	}
-	if !strings.Contains(joined, "counts neither for nor against the trend") {
-		t.Errorf("no-reading line must say it carries no weight: %v", c.Facts)
+	// The card must SAY the structure could not be read and that it carries
+	// no weight — silence here is indistinguishable from a broken feature,
+	// and this is the common case on real series. Short, no pivot jargon.
+	if !strings.Contains(joined, "structure not against ✓ (not determined)") {
+		t.Errorf("unreadable structure must be stated as carrying no weight: %v", c.Facts)
 	}
 	// It must never read as a structural CLAIM.
-	for _, banned := range []string{"HH/HL confirmed", "Structure: LH/LL", "Structure: mixed", "not confirmed"} {
+	for _, banned := range []string{"HH/HL", "LH/LL", "mixed", "not confirmed"} {
 		if strings.Contains(joined, banned) {
 			t.Errorf("unreadable structure must not produce %q: %v", banned, c.Facts)
 		}

@@ -451,7 +451,7 @@ func TestGoldComparedPricesArePrintedPreciselyEnough(t *testing.T) {
 // (ADX 20 < 20)". The same rule applies wherever text asserts a comparison.
 func TestFlatVerdictNeverPrintsAContradictoryInequality(t *testing.T) {
 	for _, adx := range []float64{19.5, 19.6, 19.94, 19.99, 19.999, 18.0, 0.04} {
-		v := trendVerdict(trendFlat, adx)
+		v := trendVerdict(trendRead{State: trendFlat, Raw: trendFlat, ADX: adx}, "")
 		if strings.Contains(v, "20 < 20") || strings.Contains(v, "20.0 < 20") {
 			t.Errorf("adx %.2f → %q: the printed numbers contradict the claim", adx, v)
 		}
@@ -506,7 +506,7 @@ func TestGoldDegradedCardsKeepInstrumentDisclosure(t *testing.T) {
 func TestNoAdviceLanguageInVerdicts(t *testing.T) {
 	banned := []string{"advised", "stand aside", "no trade", "should", "avoid", "recommend"}
 	for _, st := range []string{trendFlat, trendGrey, trendUp, trendDown, trendConflict} {
-		v := trendVerdict(st, 18)
+		v := trendVerdict(trendRead{State: st, Raw: st, ADX: 18, EMA50: 1.1, EMA200: 1.2, Last: 1.15}, "1h")
 		for _, b := range banned {
 			if strings.Contains(strings.ToLower(v), b) {
 				t.Errorf("trendVerdict(%q) = %q contains advice word %q", st, v, b)

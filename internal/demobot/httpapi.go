@@ -82,13 +82,16 @@ type httpEnvelope struct {
 	Levels any `json:"levels,omitempty"`
 	// Results is the per-asset outcome array of multi-asset momentum cards
 	// ({"asset","ok","reason"}) — absent for every other agent.
-	Results    []AssetResult `json:"results,omitempty"`
-	Confidence *int          `json:"confidence"`         // 0-100, null when the source gave none
-	AIText     *string       `json:"ai_text"`            // plain-text AI block, null when absent
-	Sections   []string      `json:"sections,omitempty"` // digest only: the one-liners
-	DataAsOf   string        `json:"data_as_of"`         // RFC3339, same stamp as the card footer
-	Disclaimer string        `json:"disclaimer"`
-	CardHTML   string        `json:"card_html"` // the exact Telegram HTML card
+	Results []AssetResult `json:"results,omitempty"`
+	// Blocks is the content-ready sentence set (trend only) — absent for
+	// every other agent and on degraded trend cards.
+	Blocks     *ContentBlocks `json:"blocks,omitempty"`
+	Confidence *int           `json:"confidence"`         // 0-100, null when the source gave none
+	AIText     *string        `json:"ai_text"`            // plain-text AI block, null when absent
+	Sections   []string       `json:"sections,omitempty"` // digest only: the one-liners
+	DataAsOf   string         `json:"data_as_of"`         // RFC3339, same stamp as the card footer
+	Disclaimer string         `json:"disclaimer"`
+	CardHTML   string         `json:"card_html"` // the exact Telegram HTML card
 }
 
 // semaphoreOf maps the card emoji contract to the JSON semaphore words.
@@ -136,6 +139,7 @@ func cardEnvelope(c Card) httpEnvelope {
 		Facts:      append([]string{}, c.Facts...), // [] not null when empty
 		Levels:     c.Levels,
 		Results:    c.Results,
+		Blocks:     c.Blocks,
 		DataAsOf:   c.DataTime.UTC().Format(time.RFC3339),
 		Disclaimer: disclaimerText,
 		CardHTML:   c.RenderHTML(),
@@ -215,6 +219,9 @@ func NewHTTPServer(addr string, ag *Agents) *HTTPServer {
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/agents", s.handleList)
 	mux.HandleFunc("/agents/", s.handleAgent)
+	// Exact path, so it outranks the "/agents/" subtree without touching
+	// handleAgent (which still 404s any other nested path) — trendchart.go.
+	mux.HandleFunc("/agents/trend/chart", s.handleTrendChart)
 	// Landing showcase (showcase.go): the catalog the marketing page renders
 	// and the one ready-to-render "what you get" story.
 	mux.HandleFunc("/showcase", s.handleShowcase)
@@ -405,6 +412,10 @@ func (s *HTTPServer) handleList(w http.ResponseWriter, _ *http.Request) {
 		if assetAgents[name] {
 			info.Assets = assetKeys()
 			info.Examples = append(info.Examples, "/agents/"+name+"?asset=eurusd")
+		}
+		if name == keyTrend {
+			// The chart companion (trendchart.go): same read, drawing data.
+			info.Examples = append(info.Examples, "/agents/trend/chart?asset=eurusd")
 		}
 		if name == keyMomentum {
 			// B1: user-configured scan + timeframe.

@@ -30,6 +30,7 @@ Telegram.
 | `GET /agents/funding` | — | Perp funding pressure & liquidations |
 | `GET /agents/momentum` | `?asset=` \| `?assets=` \| `?tf=` all optional | RSI/MACD; without params the multi-asset BTC/ETH/XAUUSD card (see [momentum scan](#momentum-scan-assets--tf)) |
 | `GET /agents/trend` | `?asset=` optional (default `btc`) | Trend state machine (ADX + EMA50/EMA200), pullback zone in confirmed trends |
+| `GET /agents/trend/chart` | `?asset=` optional (default `btc`) | Chart data for the Trend Agent: the candles it reads, EMA20/50/200, pivots, zone and invalidation (see [trend chart](#trend-chart)) |
 | `GET /agents/sr` | `?asset=` optional (default `btc`) | Support/resistance swing clusters with volume-weighted strength and held-of-tests frequency |
 | `GET /agents/vol` | `?asset=` optional (default `btc`) | ATR(14) expansion/compression check |
 | `GET /agents/fx` | — | Forex overview: EURUSD, GBPUSD, USDJPY, XAUUSD |
@@ -312,14 +313,15 @@ reads it: **detected → explained → data → conclusion**.
   "agent": "Trend Agent",
   "slug": "trend",
   "asset": "BTC",
-  "detected": "Trend Agent on BTC — Confirmed UPTREND.",
-  "explained": "ADX(14) at 31.2 sits above the 25 confirmation threshold with EMA50 over EMA200.",
+  "detected": "Trend Agent on BTC — Confirmed UPTREND · 4h.",
+  "explained": "ADX(14) at 31.2 is at or above the 25 confirmation threshold with EMA50 over EMA200.",
   "data": [
-    "ADX(14): 31.2 (trend confirms above 25) · RSI(14): 62.0",
-    "EMA50 118420 above EMA200 112870",
-    "Invalidation: close below 110350"
+    "Price 119800 — inside the pullback zone 118420–119950",
+    "Confirmation holds while all four conditions stay ✓; any ✗ withdraws it",
+    "Invalidated by a closed 4h candle below 110350 (-7.9%, 1 ATR under the EMA cluster)",
+    "Why: ADX 31.2 ≥ 25 ✓ · EMA50 > EMA200 ✓ · close > EMA50 ✓ · structure not against ✓ (not determined)"
   ],
-  "conclusion": "For a trader this is a bullish reading on BTC: the numbers above lean up, and the read holds only for as long as they do. The structure this read describes breaks on a close below 110350.",
+  "conclusion": "For a trader this is a bullish reading on BTC: the numbers above lean up, and the read holds only for as long as they do. A closed 4h candle below 110350 invalidates the uptrend idea.",
   "levels": { "invalidation": 110350.2, "invalidation_side": "below" },
   "example_url": "/agents/trend",
   "disclaimer": "Analytics, not financial advice",
@@ -347,6 +349,14 @@ reads it: **detected → explained → data → conclusion**.
 - **`levels`** rides along when the winning card has one (trend invalidation,
   S/R clusters, vol expansion ratio) — the raw-precision object documented
   under [machine-readable levels](#machine-readable-levels).
+- The **invalidation sentence** in `conclusion` appears only for a
+  **confirmed** trend and is the card's own `blocks.invalidates` string;
+  flat / grey / conflict trend stories carry none (there is nothing to
+  invalidate). A flat card reads `"For a trader there is no trend to read on
+  BTC: ADX 17.3 is under 20."`; grey / conflict name the checklist items that
+  are not met (`"For a trader this is an unconfirmed trend on GOLD · COMEX
+  GC=F; failing: ADX."`) — never "nothing leans", since an unconfirmed trend
+  card usually shows a clear EMA lean.
 - **`503`** when *every* agent is degraded: the standard
   `{"error": …, "ok": false, "reason": …}` body. A story is the one thing
   this API will not fake.
@@ -368,6 +378,65 @@ enforce this on the shared AI path, so `/agents/digest`, `/agents/top` and
    an agent whose state withheld it. If that empties the text, the AI block is
    omitted — an absent decoration beats a contradiction.
 
+## Trend chart
+
+`GET /agents/trend/chart?asset=<btc|eth|eurusd|gbpusd|usdjpy|xauusd>` (default
+`btc`, same aliases as `/agents/trend`) returns the data for a live chart that
+draws **exactly what the Trend Agent reads**. It is not an envelope: it has no
+`facts`/`card_html`. State, verdict, price, pullback zone and invalidation come
+from the same single read `/agents/trend` uses, so the two endpoints cannot
+disagree for the same bars.
+
+```json
+{
+  "agent": "Trend Agent", "asset": "BTC", "asset_key": "btc", "timeframe": "4h",
+  "ok": true, "reason": null,
+  "state": "up", "verdict": "Confirmed UPTREND", "price": 78189.0,
+  "candles": [{"time": 1757894400, "open": 0, "high": 0, "low": 0, "close": 0}],
+  "ema20": [{"time": 1757894400, "value": 0}], "ema50": [], "ema200": [],
+  "pullback_zone": {"low": 0, "high": 0},
+  "invalidation": {"level": 0, "side": "below"},
+  "pivots": [{"time": 1757894400, "price": 0, "kind": "high", "label": "HH"}],
+  "structure": "hh_hl",
+  "data_as_of": "2026-09-15T08:00:00Z",
+  "source": "binance",
+  "live": {"provider": "binance", "symbol": "BTCUSDT", "interval": "4h"},
+  "disclaimer": "Analytics, not financial advice"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `asset` | Human label, same as the card header. For gold it is `"GOLD · COMEX GC=F"`: the chart draws **futures** prices, not spot XAUUSD |
+| `asset_key` | Lowercase registry key (`btc`, …, `xauusd`), aliases resolved |
+| `timeframe` | The agent's own interval: `4h` for BTC/ETH (Binance), `1h` for FX and gold (Yahoo). Not configurable |
+| `state` / `verdict` | `flat \| grey \| up \| down \| conflict` and the verdict string, identical to `/agents/trend` (`verdict` there, `state` from the same state machine, after the structure gate) |
+| `price` | Close of the last closed bar = `candles[-1].close` |
+| `candles` | **Closed bars only**, oldest first, the newest 200 of the agent's window. `time` = unix seconds UTC of the bar **open** (lightweight-charts convention) |
+| `ema20` / `ema50` / `ema200` | Computed over the **full** agent window (so the last point is the exact value the agent read), then cut to the returned candles. A point exists only where the EMA is defined: at window bar *i* only once *i*+1 ≥ period. The trend window is 999 closed bars on Binance and ~500 on Yahoo, so all three cover every returned candle. Every point's `time` matches a candle |
+| `pullback_zone` | EMA20-EMA50 band as `{low, high}` (low ≤ high). **Only in `up`/`down`**, `null` otherwise |
+| `invalidation` | `{level, side}` from the same rule as the card (uptrend: min(EMA50,EMA200) − 1 ATR, `below`; downtrend: max + 1 ATR, `above`). **Only in `up`/`down`**, `null` otherwise — the same presence rule and value as `levels.invalidation` on `/agents/trend`: an unconfirmed state has no level anywhere |
+| `pivots` | The agent's swing points (wing 3) that fall inside the returned window, chronological. `kind` = `high`\|`low`. A same-bar high+low appears as two entries |
+| `pivots[].label` | Set **only** on pivots the structure read compared, and only when `structure` is readable: within the last six alternating pivots, the 2nd and 3rd high are labelled vs the previous high (`HH`/`LH`), the 2nd and 3rd low vs the previous low (`HL`/`LL`). So at most **4** pivots carry a label. The first high and first low of that tail are the comparison baselines and carry `""`; a tie (equal price, which is what makes a read `mixed`) also carries `""`. Every other pivot, and all pivots when `structure` is `""`, carry `""` |
+| `structure` | `hh_hl \| lh_ll \| mixed \| ""`. `""` = the agent could not read a structure (too few pivots or non-alternating tail), which counts neither for nor against the trend |
+| `data_as_of` | RFC3339 UTC **close** time of the last closed bar. Also sent as `Last-Modified`; `If-Modified-Since` → `304` |
+| `source` | `binance` \| `yahoo` |
+| `live` | For Binance assets, the public kline WebSocket to continue the chart in the browser (`wss://stream.binance.com:9443/ws/<symbol lowercased>@kline_<interval>`). `null` for Yahoo assets: that data is delayed, poll this endpoint instead (a new bar appears at most once per `timeframe`) |
+
+Errors follow the rest of the API: unknown asset → `400` naming the allowed
+values; a repeated `?asset=` or any `?tf=`/`?assets=` → `400`; source offline →
+`503 {"error": …, "ok": false, "reason": "source_offline"}`; too few closed bars
+→ `503 … "reason": "insufficient_history"`. A `503` carries no
+`Last-Modified`. A `200` always has `ok: true, reason: null`.
+
+A live candle from the WebSocket is **forming**: the agent's reading (state,
+zone, invalidation, pivots) only moves when a bar closes and this endpoint is
+re-fetched. The browser should not recompute the verdict from forming bars.
+
+```bash
+curl -s 'localhost:8090/agents/trend/chart?asset=eurusd' | jq '{state, verdict, price, n: (.candles|length), zone: .pullback_zone, live}'
+```
+
 ## Response envelope
 
 Every agent endpoint answers with one shape:
@@ -378,10 +447,10 @@ Every agent endpoint answers with one shape:
   "asset": "EURUSD",
   "ok": true,
   "reason": null,
-  "verdict": "Grey zone — trend forming, not confirmed",
+  "verdict": "Grey zone · 1h — trend forming, not confirmed",
   "semaphore": "neutral",
-  "facts": ["EMA50 1.1583 vs EMA200 1.1560 — bullish structure", "..."],
-  "levels": {"invalidation": 1.148236},
+  "facts": ["Price 1.1590 — 0.1% above EMA50 1.1583 and 0.3% above EMA200 1.1560", "..."],
+  "blocks": {"what_happened": "...", "why_level": "...", "scenarios": ["...", "..."], "invalidates": null, "regime": "..."},
   "confidence": null,
   "ai_text": null,
   "data_as_of": "2026-08-18T09:00:00Z",
@@ -399,8 +468,9 @@ Every agent endpoint answers with one shape:
 | `verdict` | string | The card's headline verdict |
 | `semaphore` | string | `bullish` \| `bearish` \| `neutral` — the card's traffic light |
 | `facts` | string[] | The card's bullet facts, `[]` when none |
-| `levels` | object | **trend / sr / vol only**: raw-precision numeric levels — see [levels](#machine-readable-levels). Absent for other agents and on `ok: false` cards |
+| `levels` | object | **trend / sr / vol only**: raw-precision numeric levels — see [levels](#machine-readable-levels). Absent for other agents, on `ok: false` cards, and **on trend cards that are not a confirmed trend** (flat / grey / conflict — since 2026-09-15 there is nothing to invalidate there) |
 | `results` | array | **momentum multi-asset cards only**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Absent elsewhere |
+| `blocks` | object | **trend only** (additive): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks). Absent for every other agent and on `ok: false` trend cards |
 | `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a risk-appetite score, not a confidence, and ships as a fact line `Risk appetite score: N/100 (risk-on above 65, risk-off below 35)` (global card and `?asset=btc`). The `?asset=gold` view has its own line, `Gold composite: N/100 (support above 65, pressure below 35)`, and also serves `confidence: null` |
 | `ai_text` | string \| null | Plain-text AI block (mood read / idea / brief / why-line); `null` when AI is disabled or the call failed |
 | `sections` | string[] | **digest only**: plain-text one-liners of every other agent (the winner heads the envelope) |
@@ -417,7 +487,7 @@ Every envelope carries the pair; when `ok` is `false`, `reason` is one of:
 |---|---|---|
 | `market_closed` | macro | Regime `UNKNOWN` because the tradfin market is closed — no lamps to read |
 | `source_offline` | any agent | The source behind the headline reading is unreachable. Usually a `503`; also a `200` on the funding card when rates are dead but the liquidation feed is alive (liq facts still render) |
-| `insufficient_history` | momentum, trend, sr, vol | Source alive, but too few **closed** bars for the indicator set (always a `503`) |
+| `insufficient_history` | momentum, trend, sr, vol | Source alive, but too few **closed** bars for the indicator set (always a `503`). For `trend` also when an indicator or the derived level comes out non-finite (NaN/Inf, e.g. overflowing prices) — such input degrades instead of producing a reading |
 | `below_threshold` | news | Narrative radar warming up: the top theme is under 5 mentions/24h (`200`, themes listed without scores), or there are no snapshots yet (`503`) |
 | `no_data` | macro, whale | Upstream alive but nothing to read: macro unknown **inside** the open tradfin window; whale feed with no BTC snapshot yet |
 
@@ -434,13 +504,25 @@ degraded states are branchable too:
 
 ## Machine-readable levels
 
+> **What changed 2026-09-15 (trend).**
+> 1. `levels.invalidation` and `levels.invalidation_side` are now
+>    **conditional**: present only in a confirmed trend (`up`/`down`).
+>    Flat, grey (structure-demoted included) and conflict cards carry **no
+>    `levels` object at all** — previously they shipped an invalidation
+>    number for every state. There is never a zero level and never a side
+>    without a level. Field names are unchanged.
+> 2. On Binance assets (BTC, ETH) the Trend Agent and `/agents/trend/chart`
+>    read **999 closed 4h bars** (1000 raw) instead of 249, so EMA200 matches
+>    its converged value. Momentum, S/R and volatility still read 249. FX and
+>    gold (Yahoo) windows are unchanged.
+
 Three agents' readings *are* price levels; their envelopes add a `levels`
 object with the raw computed numbers — full float precision, never the
 display-rounded strings shown in `facts`:
 
 | Agent | `levels` shape |
 |---|---|
-| `trend` | `{"invalidation": 63297.4, "invalidation_side": "below", "pullback_zone": {"from": 64850.1, "to": 64210.7}}` — invalidation is **direction-aware**: uptrend and non-directional states break BELOW the EMA cluster (min(EMA50,EMA200) − 1 ATR, `invalidation_side: "below"`); a confirmed DOWNTREND breaks ABOVE it (max + 1 ATR, `"above"`). Omitted only on a degenerate flat series where no ATR exists. `pullback_zone` is the EMA20-EMA50 band and appears **only in confirmed-trend states** (`from` = EMA20, `to` = EMA50 — so `from` > `to` in an uptrend); flat/grey/conflict omit it |
+| `trend` | **Confirmed trend (`up`/`down`) only** — flat, grey (incl. structure-demoted) and conflict envelopes have **no `levels` key**. Shape: `{"invalidation": 63297.4, "invalidation_side": "below", "pullback_zone": {"from": 64850.1, "to": 64210.7}}`. `invalidation` is **direction-aware**: an uptrend's sits BELOW the EMA cluster (min(EMA50,EMA200) − 1 ATR, `"below"`), a downtrend's ABOVE it (max + 1 ATR, `"above"`), checked on a **closed** candle of the agent's timeframe. `invalidation` and `invalidation_side` are present together or not at all: both are absent only on a degenerate series with no ATR, leaving `{"pullback_zone": …}`. `pullback_zone` is the EMA20-EMA50 band, always present when confirmed (`from` = EMA20, `to` = EMA50 — so `from` > `to` in an uptrend) |
 | `sr` | `{"supports": [{"level": 63775.42, "touches": 9, "strength": 11.5, "weakening": false, "breaks": 2, "holds": 6, "last_touch": "2026-08-12T08:00:00Z"}, …], "resistances": […]}` — strength-sorted raw cluster means (the three strongest per side); an empty side is `[]`, never `null`. **The card lines render the same three levels nearest-first** (S1/R1 = the level price meets first) — `levels` keeps strength order, so `supports[0]` is the strongest, not necessarily the nearest. On the card `touches` is worded "swing pivots". `strength` = touches + 0.5 per touch on above-median volume (median over NON-ZERO volumes; on a level whose touches are mostly volume-less the volume features disable and `strength` equals `touches`). `weakening` = ≥7 touches with the last 3 touches' mean volume below the first 3's (same volume gate). `breaks`/`holds` are **frequency counts** of level tests over the 249-bar window: a test = a close entering the ±0.25×ATR band (ATR frozen at the entry bar); within 3 bars a close beyond the level on the far side = **break**, a close back beyond the band on the approach side = **hold** (a hold IS the rejection); price stalling inside the band for 3 bars is **unresolved and dropped** — never counted as a hold. Frequencies, never probabilities. `last_touch` = RFC3339 UTC of the newest touch — the later of the last swing in the cluster and the last close-test of the level |
 | `vol` | `{"expansion_ratio": 1.01}` — ATR(14) over its 30-bar average, unrounded |
 
@@ -450,12 +532,78 @@ window with ZERO swing points (monotone/flat tape) degrades to a `503`
 serves an explicit ok `"No significant levels detected in the window"` with
 empty arrays.
 
-`trend` confirmation now **requires swing-structure agreement**: an EMA/ADX
-uptrend with LH/LL (or mixed) pivots demotes to the grey zone with the fact
-`Structure disagrees (LH/LL) — trend not confirmed` — the pullback zone
-disappears with the demotion. HH/HL itself is read from the last six
-ALTERNATING pivots in time order; a non-alternating pivot tail reads as
-`mixed`.
+`trend` confirmation **must not contradict the swing structure**: an EMA/ADX
+uptrend with LH/LL (or mixed) pivots demotes to the grey zone, verdict
+`Grey zone · 4h — not confirmed: swing structure against the trend` (mixed
+pivots: `… swing structure not aligned`) — the pullback zone disappears with
+the demotion. HH/HL is read from the last six ALTERNATING pivots in time
+order; a window that cannot be read (too few pivots, or a non-alternating
+tail) never demotes and is shown as `structure not against ✓ (not
+determined)`. The card names no pivot patterns.
+
+## Trend card and content blocks
+
+The trend card reads top to bottom: **verdict with timeframe → where price
+is → what keeps or changes the reading → the checklist**. Wording only; the
+rules (ADX 20/25, EMA alignment, structure gate, EMA20–EMA50 zone, 1 ATR)
+are unchanged.
+
+```
+🔴 Trend Agent · EURUSD
+Confirmed DOWNTREND · 1h
+• Price 1.1551 — 0.1% below the pullback zone 1.1559–1.1580
+• Confirmation holds while all four conditions stay ✓; any ✗ withdraws it
+• Invalidated by a closed 1h candle above 1.1619 (+0.6%, 1 ATR over the EMA cluster)
+• Why: ADX 46.5 ≥ 25 ✓ · EMA50 < EMA200 ✓ · close < EMA50 ✓ · structure not against ✓ (not determined)
+```
+
+```
+⚪ Trend Agent · GOLD · COMEX GC=F
+Grey zone · 1h — trend forming, not confirmed
+• Price 4329 — 0.9% below EMA50 4367 and 2.4% below EMA200 4433
+• Confirms as a DOWNTREND only when all four conditions are ✓ (now ✗: ADX)
+• Why: ADX 22.2 < 25 ✗ · EMA50 < EMA200 ✓ · close < EMA50 ✓ · structure not against ✓ (not determined)
+```
+
+- **One checklist is the rule.** The `Why:` line lists the four confirm
+  conditions — ADX ≥ 25 · EMA50 vs EMA200 · close vs EMA50 · swing structure
+  not against the direction — toward the EMA lean, each marked by the rule's
+  own evaluation; all four ✓ is exactly a confirmation. It is the **only**
+  place conditions are listed: every other line refers to "all four
+  conditions" and at most names the ✗ items. It always has the same four
+  items. An unreadable structure never demotes, so it is ✓ `(not
+  determined)`; a failing one says why without naming pivot patterns —
+  `✗ (runs against the trend)` or `✗ (swings not aligned)`. With EMA50 =
+  EMA200 there is no direction: `EMA50 = EMA200 ✗ (no direction) · close vs
+  EMA50 ✗ · structure not against ✗`, and the confirm line reads `No
+  direction to confirm while EMA50 equals EMA200`.
+- **Verdicts**: `Flat · 4h — no trend to read (ADX under 20)` ·
+  `Grey zone · 1h — trend forming, not confirmed` ·
+  `Grey zone · 4h — not confirmed: swing structure against the trend` ·
+  `Confirmed UPTREND · 4h` / `Confirmed DOWNTREND · 1h` ·
+  `Indicator conflict · 1h — ADX ≥ 25 but the EMA conditions disagree`.
+- **ADX is printed once per card**, in the checklist, floored to one decimal
+  (a value below a threshold can never print at or above it). Thresholds
+  read `≥ 25` — the rule confirms AT 25. Every line of trend text — facts,
+  each `blocks` field and the landing conclusion — fits ≤ 110 characters.
+- **Two different levels, two different words.** Losing any checklist
+  condition **withdraws** the confirmation (state goes to conflict or grey).
+  The ATR level further out **invalidates** the directional idea (EMA
+  cluster ± 1 ATR).
+- **Invalidation line only on confirmed trends**, checked on a closed candle
+  of the agent's timeframe. Unconfirmed states show what would confirm
+  instead. RSI is not on the trend card (it is not part of the rule).
+- Distances are % of the current price; `<0.1%` when smaller.
+
+`blocks` (trend envelopes only, additive — nothing else changed):
+
+| Field | Meaning |
+|---|---|
+| `what_happened` | State, timeframe and where price is: `"Confirmed downtrend on 1h: price 1.1551 — 0.1% below the pullback zone 1.1559–1.1580."` |
+| `why_level` | What the level is made of — confirmed: `"1.1619 = max(EMA50, EMA200) + 1 ATR(14) on a closed 1h candle; a checklist ✗ withdraws confirmation sooner"`; otherwise `"No invalidation level: the trend is not confirmed. Confirmation needs all four checklist conditions"` (and no `levels` object) |
+| `scenarios` | Exactly two `"If … , the reading …"` sentences. A confirmed state is named only with the whole checklist (`"If all four conditions turn ✓ for a downtrend, the reading confirms as a downtrend"`); the other is a transition the rule fully determines (`"If ADX falls below 20, the reading returns to flat"`, or for confirmed trends `"If a 1h candle closes above 1.1619, the reading is invalidated as a downtrend (1 ATR over the EMA cluster)"`). No targets, no probabilities, no forecast |
+| `invalidates` | Confirmed trends: `"A closed 1h candle above 1.1619 invalidates the downtrend idea"`; `null` for flat / grey / conflict |
+| `regime` | One line: `"confirmed downtrend · 1h · ADX 46.5"` |
 
 `levels` is absent for every other agent and on degraded (`ok: false`)
 envelopes.

@@ -34,11 +34,15 @@ func TestClassifyTrend(t *testing.T) {
 	}
 }
 
-// The flat state must carry the exact advisory wording from the spec.
+// The flat state must carry the exact wording from the spec, with the
+// timeframe beside the state when one is given.
 func TestTrendVerdictWording(t *testing.T) {
-	v := trendVerdict(trendFlat, 0)
-	if !strings.Contains(v, "Flat — no trend to read") {
-		t.Fatalf("flat verdict must contain the advisory, got %q", v)
+	flat := trendRead{State: trendFlat, Raw: trendFlat}
+	if v := trendVerdict(flat, ""); !strings.Contains(v, "Flat — no trend to read") {
+		t.Fatalf("flat verdict must contain the spec wording, got %q", v)
+	}
+	if v := trendVerdict(flat, "4h"); !strings.HasPrefix(v, "Flat · 4h — no trend to read") {
+		t.Fatalf("flat verdict must carry the timeframe, got %q", v)
 	}
 }
 

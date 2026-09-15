@@ -65,7 +65,7 @@ func TestHTTPEnvelopeTrendLevelsGolden(t *testing.T) {
 		Verdict:  "Confirmed UPTREND",
 		Facts:    []string{"ADX(14): 31.0 (trend confirms above 25) · RSI(14): 62.0"},
 		DataTime: goldenTime,
-		Levels:   TrendLevels{Invalidation: 63297.5, InvalidationSide: "below"},
+		Levels:   TrendLevels{Invalidation: trendLevelPtr(63297.5), InvalidationSide: "below"},
 	}
 	got, err := encodeJSON(cardEnvelope(c))
 	if err != nil {

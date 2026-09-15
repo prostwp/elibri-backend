@@ -538,27 +538,31 @@ func TestTrendCardInvalidationAndADXThreshold(t *testing.T) {
 	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
 	c := ag.TrendCard(context.Background(), btcSpec)
 
-	joined := strings.Join(c.Facts, "|")
-	// ADX drives the verdict → its confirm threshold rides beside the number.
-	if !strings.Contains(joined, "(trend confirms above 25)") {
-		t.Errorf("ADX threshold missing from facts: %v", c.Facts)
+	if c.Verdict != "Confirmed UPTREND · 4h" {
+		t.Fatalf("rising stub must confirm an uptrend on 4h, got %q", c.Verdict)
 	}
-	// The invalidation line: exact wording, a plausible integer level for a
-	// BTC-scale price (trimFloat renders %.0f above 1000).
+	joined := strings.Join(c.Facts, "|")
+	// ADX drives the verdict → its confirm threshold rides beside the number,
+	// written the way the rule works: it confirms AT 25 (≥), not above it.
+	if !strings.Contains(joined, "≥ 25 ✓") || strings.Contains(joined, "above 25") {
+		t.Errorf("ADX threshold must read ≥ 25: %v", c.Facts)
+	}
+	// The invalidation line: exact wording (closed candle of the agent's
+	// timeframe), a plausible integer level for a BTC-scale price.
 	var invLine string
 	for _, f := range c.Facts {
-		if strings.HasPrefix(f, "Invalidation: below ") {
+		if strings.HasPrefix(f, "Invalidated by a closed 4h candle below ") {
 			invLine = f
 		}
 	}
 	if invLine == "" {
 		t.Fatalf("invalidation line missing: %v", c.Facts)
 	}
-	if !strings.HasSuffix(invLine, "the structure is broken (1 ATR under the EMA cluster)") {
+	if !strings.HasSuffix(invLine, ", 1 ATR under the EMA cluster)") {
 		t.Errorf("invalidation wording: %q", invLine)
 	}
 	var level float64
-	if _, err := fmt.Sscanf(invLine, "Invalidation: below %f the structure is broken", &level); err != nil {
+	if _, err := fmt.Sscanf(invLine, "Invalidated by a closed 4h candle below %f", &level); err != nil {
 		t.Fatalf("cannot parse level from %q: %v", invLine, err)
 	}
 	// The stub trends 60050→72500 with ±100 wicks; the level must sit below
