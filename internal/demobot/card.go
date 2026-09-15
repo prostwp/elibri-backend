@@ -102,12 +102,17 @@ type TrendLevels struct {
 //   - scenarios: exactly two "if → then" transitions of the state machine
 //   - invalidates: what invalidates a CONFIRMED reading; null otherwise
 //   - regime: the local regime in one line (state · timeframe · ADX)
+//   - context: macro only (additive, 2026-09-15) — the asset backdrops and
+//     Fear & Greed beside the regime; absent on every other agent
+//
+// Macro has no price level, so its why_level is always "" (macro_text.go).
 type ContentBlocks struct {
 	WhatHappened string   `json:"what_happened"`
 	WhyLevel     string   `json:"why_level"`
 	Scenarios    []string `json:"scenarios"`
 	Invalidates  *string  `json:"invalidates"`
 	Regime       string   `json:"regime"`
+	Context      string   `json:"context,omitempty"`
 }
 
 // SRPoint is one clustered level at raw precision (SRLevel.Raw — the cluster
@@ -135,11 +140,11 @@ type SRPoint struct {
 	DisplayRank  int     `json:"display_rank"`
 	StrengthRank int     `json:"strength_rank"`
 	Touches      int     `json:"touches"`
-	Strength  float64 `json:"strength"`
-	Weakening bool    `json:"weakening"`
-	Breaks    int     `json:"breaks"`
-	Holds     int     `json:"holds"`
-	LastTouch string  `json:"last_touch"`
+	Strength     float64 `json:"strength"`
+	Weakening    bool    `json:"weakening"`
+	Breaks       int     `json:"breaks"`
+	Holds        int     `json:"holds"`
+	LastTouch    string  `json:"last_touch"`
 }
 
 // SRLevels — strength-sorted supports/resistances. Both slices are always
@@ -212,6 +217,14 @@ type Card struct {
 	// Blocks is the content-ready form of the card (trend only today) —
 	// served as the envelope's "blocks", ignored by Telegram. nil elsewhere.
 	Blocks *ContentBlocks
+	// Macro is the machine-readable readout of a macro card (per-lamp rule,
+	// weight, contribution, source, as_of; freshness; score bands) — served
+	// as the envelope's "macro", ignored by Telegram. nil elsewhere.
+	Macro *MacroReadout
+	// lastModified is the HTTP Last-Modified when it must differ from
+	// DataTime (macro: DataTime is the OLDEST lamp, which can stay put while
+	// the card changes — see macroModTime). Zero → DataTime. Not rendered.
+	lastModified time.Time
 	// trendConclusion is the landing-page conclusion for an UNCONFIRMED trend
 	// card ("" when confirmed and for every other agent). Not served; the
 	// showcase uses it instead of calling a card with an EMA lean "neutral".
@@ -220,6 +233,15 @@ type Card struct {
 	// after the facts and confidence bar. Builders MUST esc() every dynamic
 	// value when composing it — RenderHTML writes it verbatim.
 	AIHTML string
+}
+
+// modTime is the card's HTTP Last-Modified: lastModified when the builder
+// set one, else the data time.
+func (c Card) modTime() time.Time {
+	if !c.lastModified.IsZero() {
+		return c.lastModified
+	}
+	return c.DataTime
 }
 
 // assetKey is the machine asset value: AssetKey when the card set one, else

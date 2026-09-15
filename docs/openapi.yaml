@@ -2498,10 +2498,20 @@ components:
 
     FearGreedCheck:
       type: object
+      description: >
+        Crypto Fear & Greed (alternative.me), not part of the composite. The
+        backend keeps the last successful read when later fetches fail, so
+        as_of / fetched_at (added 2026-09-15) carry its age.
       properties:
         value: { type: integer, minimum: 0, maximum: 100 }
         label: { type: string }
         ok: { type: boolean }
+        as_of:
+          type: string
+          description: The index's own timestamp (start of the UTC day it describes), RFC3339; "" when the source row carried none.
+        fetched_at:
+          type: string
+          description: When the backend last fetched this value successfully, RFC3339; stops advancing while the source is unreachable.
 
     MacroCalSlimEvent:
       type: object

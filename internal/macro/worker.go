@@ -326,6 +326,10 @@ func (w *Worker) refresh(ctx context.Context) {
 	if f, err := w.fetchFnG(fngCtx); err != nil {
 		logger.Printf("macro: fetch F&G failed (continuing): %v", err)
 	} else if f.OK {
+		// Stamp the fetch time: on later failures the store keeps this read,
+		// and FetchedAt (with the source's AsOf) is what lets a reader see
+		// that it has stopped being current.
+		f.FetchedAt = w.clock().UTC().Format(time.RFC3339)
 		w.Store.SetFnG(f)
 	}
 	cancelFng()
@@ -707,12 +711,15 @@ type fngRaw struct {
 	Data []struct {
 		Value          string `json:"value"`
 		ValueClassName string `json:"value_classification"`
+		Timestamp      string `json:"timestamp"` // unix seconds (string) of the day the value describes
 	} `json:"data"`
 }
 
 // ParseFnG parses the alternative.me Fear & Greed response into an FnG. An empty
 // data array → FnG{OK:false} (nil error). A non-integer value → OK:false. A hard
-// JSON error is returned as err.
+// JSON error is returned as err. The row's unix "timestamp" becomes AsOf
+// (RFC3339 UTC); a missing or unparseable timestamp leaves AsOf "" — the value
+// is still served, its age is then unknown (never invented).
 func ParseFnG(data []byte) (FnG, error) {
 	var raw fngRaw
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -726,9 +733,13 @@ func ParseFnG(data []byte) (FnG, error) {
 	if err != nil {
 		return FnG{OK: false}, nil
 	}
-	return FnG{
+	f := FnG{
 		Value: v,
 		Label: strings.TrimSpace(d.ValueClassName),
 		OK:    true,
-	}, nil
+	}
+	if ts, err := strconv.ParseInt(strings.TrimSpace(d.Timestamp), 10, 64); err == nil && ts > 0 {
+		f.AsOf = time.Unix(ts, 0).UTC().Format(time.RFC3339)
+	}
+	return f, nil
 }

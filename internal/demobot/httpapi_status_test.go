@@ -656,34 +656,23 @@ func TestRiskCarriesNoValidator(t *testing.T) {
 	}
 }
 
-// The showcase validator is the NEWEST reading, not the oldest. Taking the
-// oldest would be a correctness bug: one agent could get new data while the
-// oldest stayed put, and a conditional request would answer 304 for content
-// that had changed.
-func TestShowcaseValidatorIsNewestReading(t *testing.T) {
+// The showcase validator is the SWEEP time, not any reading. Neither the
+// oldest nor the newest reading is sound for a composite: a component can
+// change while staying between the two (a macro card's data time is its
+// oldest lamp), and the validator would not move — a conditional request
+// would answer 304 for content that changed (Codex review, 2026-09-15; the
+// HTTP-level case is in composite_modtime_test.go).
+func TestShowcaseValidatorIsSweepTime(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	oldest := now.Add(-6 * time.Hour)
-	newest := now.Add(-5 * time.Minute)
-
 	b := &showcaseBuild{
 		at: now,
 		cards: map[string]Card{
-			keyTrend:    {Agent: "Trend", DataTime: oldest},
-			keyFunding:  {Agent: "Funding", DataTime: newest},
-			keyMomentum: {Agent: "Momentum", DataTime: now.Add(-2 * time.Hour)},
-			// Offline: DataTime is when the failure was noticed, not data age.
-			keyWhale: {Agent: "Whale", DataTime: now, Offline: true},
+			keyTrend:   {Agent: "Trend", DataTime: now.Add(-6 * time.Hour)},
+			keyFunding: {Agent: "Funding", DataTime: now.Add(-5 * time.Minute)},
+			keyMacro:   {Agent: "Macro", DataTime: now.Add(-20 * time.Hour), lastModified: now.Add(-time.Minute)},
 		},
 	}
-
-	got := b.lastModified()
-	if !got.Equal(newest) {
-		t.Errorf("lastModified = %s, want the newest reading %s", got, newest)
-	}
-	if got.Equal(oldest) {
-		t.Error("taking the oldest would answer 304 for content that changed")
-	}
-	if got.Equal(now) {
-		t.Error("an offline card's timestamp must not become the validator")
+	if got := b.lastModified(); !got.Equal(now) {
+		t.Errorf("lastModified = %s, want the sweep time %s", got, now)
 	}
 }

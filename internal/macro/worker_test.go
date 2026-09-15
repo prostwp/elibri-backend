@@ -218,6 +218,25 @@ func TestParseFnG(t *testing.T) {
 		if f.Label != "Extreme Fear" {
 			t.Errorf("Label = %q, want Extreme Fear", f.Label)
 		}
+		// The source timestamp is the value's own date (age is visible).
+		if f.AsOf != "2026-05-30T00:00:00Z" {
+			t.Errorf("AsOf = %q, want 2026-05-30T00:00:00Z (unix 1780099200)", f.AsOf)
+		}
+	})
+
+	t.Run("missing / bad timestamp → value kept, AsOf empty", func(t *testing.T) {
+		for _, body := range []string{
+			`{"data":[{"value":"54","value_classification":"Greed"}]}`,
+			`{"data":[{"value":"54","value_classification":"Greed","timestamp":"soon"}]}`,
+		} {
+			f, err := ParseFnG([]byte(body))
+			if err != nil || !f.OK || f.Value != 54 {
+				t.Fatalf("%s: f=%+v err=%v, want the value served", body, f, err)
+			}
+			if f.AsOf != "" {
+				t.Errorf("%s: AsOf = %q, want empty (never invented)", body, f.AsOf)
+			}
+		}
 	})
 
 	t.Run("empty data array → OK:false", func(t *testing.T) {
@@ -433,6 +452,14 @@ func TestWorkerRefresh_OneCycle(t *testing.T) {
 	f, has := store.FnG()
 	if !has || !f.OK || f.Value != 54 {
 		t.Errorf("FnG = %+v has=%v, want OK 54", f, has)
+	}
+	// …with its age: the fetch time off the worker clock, the source date
+	// off the row's unix timestamp ("1" → the epoch).
+	if f.FetchedAt != "2026-05-30T09:00:00Z" {
+		t.Errorf("FnG.FetchedAt = %q, want the worker clock 2026-05-30T09:00:00Z", f.FetchedAt)
+	}
+	if f.AsOf != "1970-01-01T00:00:01Z" {
+		t.Errorf("FnG.AsOf = %q, want the row timestamp", f.AsOf)
 	}
 }
 

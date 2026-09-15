@@ -229,20 +229,26 @@ attempts; it never softens a failure.
 
 `GET /agents/macro?asset=gold` (or `btc`) re-frames the same five lamps for
 one asset — strictly these two view keys, anything else is a `400` listing
-them. No parameter keeps the global regime card, which itself now carries a
-two-line signal map (`BTC view: …` / `Gold view: …`) whenever at least one
-real lamp exists.
+them. No parameter keeps the global regime card (see [Macro card and content
+blocks](#macro-card-and-content-blocks)), which carries one context line per
+asset whenever at least one real lamp exists.
 
-- **BTC view** — the crypto-centric regime labeled as an asset view:
-  risk-on → tailwind, risk-off → headwind, mixed → mixed.
-- **Gold view** — the documented mapping: dollar/yields **up = pressure** on
-  gold; **fear (VIX > 25) / equities down = support** (safe-haven bid; the
-  SPX leg is "mild" via the lowest weight). Weighted vote DXY 40 / 10Y 25 /
-  VIX 25 / SPX 10, support > 65, pressure < 35; fewer than 3 live voting
-  lamps → honest `ok:false` / `no_data`. The gold lamp itself reports its
-  session move but never votes on its own outlook.
+- **BTC macro backdrop** — the risk-appetite regime itself, labeled as BTC's
+  backdrop: `BTC MACRO BACKDROP: RISK-ON — rule score 83/100; BTC direction
+  is not inferred`. One line per lamp with its rule condition and signed
+  contribution (`US 10Y 4.9610, session -0.36% (fell) → positive, +7.5`).
+- **Gold macro backdrop (experimental)** — a separate model: DXY and US 10Y
+  count as in the risk model, VIX and S&P 500 count inverted, weights DXY 40 /
+  10Y 25 / VIX 25 / SPX 10, positive > 65, negative < 35; fewer than 3 voting
+  lamps → honest `ok:false` / `no_data` (`GOLD MACRO BACKDROP: no read — …`).
+  The lamp thresholds are the risk model's and the weights are fixed, not
+  validated on gold's history — hence "experimental". The gold lamp itself is
+  reported as a fact with its instrument (`GC=F futures` from Yahoo,
+  `XAUUSD spot` from stooq) and never votes. The machine `State` keeps its
+  values `support` / `pressure` / `neutral` (the Gold Agent branches on them);
+  the card words them positive / negative / mixed.
 - Unknown-regime honesty carries over per asset: zero real lamps →
-  `UNKNOWN` verdict with `market_closed` / `no_data` reason, never a view.
+  `UNKNOWN` verdict with `market_closed` / `no_data` reason, never a backdrop.
 
 `risk` accepts the same tolerant number formats as the Telegram command:
 `balance=10,000`, `risk=1%`, `entry=$64000` all parse.
@@ -470,11 +476,13 @@ Every agent endpoint answers with one shape:
 | `facts` | string[] | The card's bullet facts, `[]` when none |
 | `levels` | object | **trend / sr / vol only**: raw-precision numeric levels — see [levels](#machine-readable-levels). Absent for other agents, on `ok: false` cards, and **on trend cards that are not a confirmed trend** (flat / grey / conflict — since 2026-09-15 there is nothing to invalidate there) |
 | `results` | array | **momentum multi-asset cards only**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Absent elsewhere |
-| `blocks` | object | **trend and sr only** (additive): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks) and [S/R card and content blocks](#sr-card-and-content-blocks). Absent for every other agent, on `ok: false` cards and on the S/R "No significant levels detected" finding; on `/agents/top` they belong to the winning card (never on the digest, below) |
-| `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a risk-appetite score, not a confidence, and ships as a fact line `Risk appetite score: N/100 (risk-on above 65, risk-off below 35)` (global card and `?asset=btc`). The `?asset=gold` view has its own line, `Gold composite: N/100 (support above 65, pressure below 35)`, and also serves `confidence: null` |
+| `blocks` | object | **trend, sr and the global macro card** (additive): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks) and [macro card and content blocks](#macro-card-and-content-blocks). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they belong to the winning card (never on the digest, below) |
+| `macro` | object | **macro cards only** (additive, 2026-09-15): the numbers behind the card — rule score, bands, per-lamp rule / weight / contribution / source / `as_of`, freshness, Fear & Greed age. See [macro card](#macro-card-and-content-blocks). Absent for every other agent and on macro cards without a reading (`UNKNOWN`, offline) |
+| `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a **rule score**, not a confidence or a strength, and ships in the verdict (`RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)`) and in `macro.rule_score`. The `?asset=gold` view has its own `gold score` and also serves `confidence: null` |
 | `ai_text` | string \| null | Plain-text AI block (mood read / idea / brief / why-line); `null` when AI is disabled or the call failed |
 | `sections` | string[] | **digest only**: plain-text one-liners of every other agent (the winner heads the envelope) |
-| `data_as_of` | string | RFC3339 UTC; for candle-based agents this is the **close time of the last closed bar used** — the same stamp as the card footer |
+| `data_as_of` | string | RFC3339 UTC; for candle-based agents this is the **close time of the last closed bar used** — the same stamp as the card footer. **Macro** (since 2026-09-15): the **oldest** `as_of` among the live lamps (the source's session stamp), never the response build time — `UNKNOWN` macro cards keep the response time |
+| `Last-Modified` (header) | HTTP date | The validator for `If-Modified-Since` → `304`. **Single cards**: the card's data time (macro: the newest of `captured_at` and every stamp it renders — see [macro card](#macro-card-and-content-blocks)). **`/showcase`** (since 2026-09-15): the sweep time (`generated_at`) — its body is fixed for the life of the memoized sweep, so it returns `304` only while that sweep is served (up to 60 s). **`/agents/digest`, `/agents/top` and `/showcase/example` send no `Last-Modified` and ignore `If-Modified-Since`** (always `200`): the digest re-sweeps on every request (and the header's one-second resolution could not tell two builds apart); `/top` and the example add per-request AI text (brief, why-line, explanation) that reads the whole sweep, so the winner card's stamp does not cover them. No component stamp is sound for a composite — a component can change while being neither the newest nor the oldest reading. `data_as_of` is unaffected (still the oldest reading) |
 | `disclaimer` | string | Always `"Analytics, not financial advice"` |
 | `card_html` | string | The exact Telegram HTML message the bot would send (for `digest`/`top`: the full composed message) |
 
@@ -485,7 +493,7 @@ Every envelope carries the pair; when `ok` is `false`, `reason` is one of:
 
 | `reason` | Served by | Meaning |
 |---|---|---|
-| `market_closed` | macro | Regime `UNKNOWN` because the tradfin market is closed — no lamps to read |
+| `market_closed` | macro | Regime `UNKNOWN` outside the clock-based tradfin week (Sun 22:00 → Fri 21:00 UTC) — no lamps to read. The window has no holiday calendar, so the card words it `scheduled tradfin weekend`, never "market closed"; the enum value is kept for compatibility |
 | `source_offline` | any agent | The source behind the headline reading is unreachable. Usually a `503`; also a `200` on the funding card when rates are dead but the liquidation feed is alive (liq facts still render) |
 | `insufficient_history` | momentum, trend, sr, vol | Source alive, but too few **closed** bars for the indicator set (always a `503`). For `trend` also when an indicator or the derived level comes out non-finite (NaN/Inf, e.g. overflowing prices) — such input degrades instead of producing a reading |
 | `below_threshold` | news | Narrative radar warming up: the top theme is under 5 mentions/24h (`200`, themes listed without scores), or there are no snapshots yet (`503`) |
@@ -677,6 +685,93 @@ are about the nearest shown level:
 | `scenarios` | Exactly two market events, worded from the side of price the level is on now: `"If a 4h close tests 2531.0 and a close within 3 candles exits its band below, the level holds as resistance"` / `"If a 4h candle closes above 2531.0's band, the level is broken and moves below price"` (mirrored for a support below price). No counts, no targets, no probabilities, no forecast |
 | `invalidates` | What makes the level no longer this side: `"A closed 4h candle above 2531.0 puts it below price: it no longer reads as resistance"` |
 | `regime` | Local level context only (not macro, not trend): `"Levels on both sides · nearest shown: resistance, 0.6% away · 4h"`, or `"Resistance only, none below price · nearest shown 0.7% away · 1h"` |
+
+## Macro card and content blocks
+
+The global card (`/agents/macro`, 2026-09-15) says what five tradfin prices
+look like under a fixed rule, and nothing more: no forecast for BTC or gold,
+no causes ("favors crypto", "haven bid" are gone), no confidence. The rules
+themselves are unchanged — lamp thresholds (DXY / US 10Y / Gold: any
+session fall is positive, a rise counts negative only above +0.5%; S&P 500
+mirrored; VIX by **level**, < 18 positive, > 25 negative), weights
+(DXY / VIX / S&P 500 25, US 10Y 15, Gold 10), the composite, bands 35 / 65
+and the 3-voting-lamp minimum all live in `internal/macro/compute.go`, and
+the card prints them from those constants.
+
+```
+🟢 Macro Agent
+RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)
+• Positive: VIX 17.10 (<18) → +12.5 · S&P 500 +0.11% (rose) → +12.5 · 1 more
+• Negative: none in this model
+• Risk-on holds while the rule score stays above 65 with at least 3 voting lamps
+• Data: 5 of 5 lamps live · Sep 14: US 10Y, VIX, S&P 500 · Sep 15: DXY, Gold
+• Rule score 83 ≈ 50 + US 10Y +7.5 + VIX +12.5 + S&P 500 +12.5 · neutral: DXY, Gold
+• BTC macro backdrop: risk-on (the regime itself); BTC direction is not inferred
+• Gold macro backdrop: mixed, gold score 45/100 (experimental model, own weights)
+• Crypto Fear & Greed 69 (Greed), Sep 15 · separate index, not in the rule score
+```
+
+- **Order**: regime and rule score → main factors (up to two of the side
+  with the larger total, one of the other) → what holds the regime → data
+  dates → the breakdown → BTC / gold context → Fear & Greed.
+- **Contributions**: a voting lamp adds its weight (positive), half of it
+  (neutral) or nothing (negative), renormalised over the voting lamps, so
+  `score = 50 + Σ vs_neutral`. `=` only when 50 plus the contributions **as
+  printed** (one decimal) adds up exactly to the printed score; otherwise `≈`
+  (e.g. `83 ≈ 50 + 7.5 + 12.5 + 12.5`, `100 ≈ 50 + 16.7 + 16.7 + 16.7`; the
+  gap is always under 1). The numbers print only when they reproduce the
+  backend's composite; on a version skew the card shows the plain score.
+- **Last-Modified ≠ data_as_of.** `data_as_of` and the footer are the oldest
+  live lamp; the HTTP `Last-Modified` is the newest of the backend's
+  `captured_at`, every live lamp's `as_of`, `tradfin_as_of` and the F&G
+  `as_of` / `fetched_at`. A lamp value moves during its session under the same
+  `as_of`, so only `captured_at` advances on every change — conditional GETs on
+  macro therefore rarely return `304`, but never hide a changed card.
+- **Printed numbers never cross their threshold**: `+0.499` prints `+0.50%`
+  (neutral), `+0.5001` prints `+0.51%`, `17.999` prints `17.99`.
+- **VIX** never shows its session change — the rule reads its level.
+- **Freshness**: dates are the lamps' own session stamps (`as_of`), grouped
+  on one line when they differ. Outside the clock-based week the first fact
+  is `Scheduled tradfin weekend: session changes are from each lamp's last
+  session`. The change is Close − session Open, never called "24h". The
+  footer names the providers (`lamps: Yahoo`, `lamps: Stooq 2 · Yahoo 3`).
+- **Fear & Greed** is a separate index and never part of a score. The backend
+  now sends its `as_of` (the index's own UTC day) and `fetched_at`; older
+  than **36h** (one daily update missed plus 12h of publishing lag) the card
+  says `stale, last update Sep 10 (5d ago)`; without any time it says
+  `update time unknown`.
+- The backend's `generated_idea` is no longer rendered on the card (the card
+  words the same rule itself; an older backend's causal sentence must not
+  leak through).
+- Every visible line — verdict, facts, each `blocks` field, the footer — fits
+  ≤ 110 characters (swept over 3 125 worst-case payloads).
+
+`blocks` (global card only, when there is a reading). Macro has **no price
+level**, so `why_level` is always `""`:
+
+| Field | Meaning |
+|---|---|
+| `what_happened` | `"Lamps (sessions Sep 14 to Sep 15): 3 positive, 0 negative, 2 neutral in this model; rule score 83/100"` |
+| `regime` | The main block: `"Risk-on by this model's rule (score 83 above 65): a tradfin backdrop, not a BTC or gold forecast"` |
+| `scenarios` | Exactly two regime changes by the bands, conditional: `"If the rule score stays above 65 with 3+ voting lamps, the model keeps reading risk-on"` / `"If the rule score falls to 35-65, the reading turns mixed; below 35, risk-off"` |
+| `invalidates` | `"Risk-on ends at a rule score of 65 or below, or with fewer than 3 voting lamps (now 83, 5 voting)"`; mixed: ends above 65 or below 35; `null` without a rule score |
+| `context` | Macro only: `"Backdrops: BTC risk-on (direction not inferred) · gold mixed (experimental) · F&G 69, not scored"` |
+| `why_level` | Always `""` for macro |
+
+`macro` (all macro cards with a reading):
+
+| Field | Meaning |
+|---|---|
+| `model` | `risk_appetite` (global, `?asset=btc`) \| `gold_backdrop` (`?asset=gold`) |
+| `experimental` | `true` for the gold model |
+| `reading` | `risk_on` \| `mixed` \| `risk_off` (risk model — the backend regime); `positive` \| `mixed` \| `negative` \| `no_read` (gold) |
+| `rule_score`, `rule_score_unrounded` | The rounded score (backend composite for the risk model) and the unrounded sum (`null` when the numbers do not reproduce the score) |
+| `bands` | `{"low": 35, "high": 65}` — below `low` / above `high` is the reading's side, both edges belong to mixed |
+| `min_voting_lamps`, `voting_lamps`, `live_lamps` | The rule's minimum and the counts behind this card |
+| `lamps[]` | `key`, `label`, `instrument` (gold: `GC=F futures` \| `XAUUSD spot`), `value`, `delta_pct` (Close − session Open), `rule` `{input: "level" \| "session_change_pct", positive_when, negative_when}`, `contribution` (`positive` \| `neutral` \| `negative`, `""` = not voting), `voting`, `weight` (nominal), `points`, `max_points`, `vs_neutral` (renormalised; `null` without a score), `source`, `as_of` |
+| `freshness` | `oldest_as_of` (= `data_as_of`), `tradfin_as_of`, `session_dates[]`, `mixed`, `scheduled_weekend`, `captured_at` (backend response time), `sources` (provider → live lamp count) |
+| `fear_greed` | `value`, `label`, `as_of`, `fetched_at`, `age_hours` (`null` without a time), `stale`, `stale_after_hours` (36), `in_score` (always `false`); `null` without a live value |
+| `is_forecast` | Always `false` |
 
 ## Errors
 

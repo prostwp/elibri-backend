@@ -5,6 +5,7 @@ package macro
 // free so the unit tests can hit 100% of the branches offline.
 
 import (
+	"fmt"
 	"math"
 	"regexp"
 	"time"
@@ -43,6 +44,23 @@ const (
 	regimeRiskOffBelow = 35
 	regimeRiskOnAbove  = 65
 )
+
+// Read-only exports of the rule constants above, for presentation layers (the
+// demobot cards word thresholds, bands and weights from these, so a card can
+// never describe a different rule than the one that scored it). Aliases, not
+// copies: editing a rule constant above changes both.
+const (
+	RuleStrongMovePct  = strongPct          // |session change| in % that turns a directional lamp negative
+	RuleVIXCalmBelow   = vixTailwindBelow   // VIX level below which the lamp is positive
+	RuleVIXFearAbove   = vixHeadwindAbove   // VIX level above which the lamp is negative
+	RuleRiskOffBelow   = regimeRiskOffBelow // composite < this → risk_off
+	RuleRiskOnAbove    = regimeRiskOnAbove  // composite > this → risk_on
+	RuleMinActiveLamps = minActiveLamps     // fewer voting lamps → no composite
+)
+
+// LampWeight is the composite weight of a lamp key (0 for unknown keys) —
+// the exported view of lampWeight.
+func LampWeight(key string) float64 { return lampWeight(key) }
 
 // bannedDiagnosisPattern mirrors the frontend isIdeaSafe() / DESIGN_SYSTEM §8
 // banned table. BuildDiagnosis output is asserted against it in compute_test.go
@@ -104,37 +122,40 @@ func Pearson(xs, ys []float64) *float64 {
 	return &c
 }
 
-// LampStatus maps a lamp's value + 24h delta to tailwind|neutral|headwind.
-// Rules (discovery §7 — one-line editable consts above). delta24h is in % (e.g.
-// +0.5 means +0.5%). For VIX the absolute level matters more than the delta.
+// LampStatus maps a lamp's value + SESSION change to tailwind|neutral|headwind.
+// Rules (discovery §7 — one-line editable consts above). sessionDeltaPct is
+// Close − session Open in % (e.g. +0.5 means +0.5%) — never a rolling 24h
+// change (see Quote). For VIX only the absolute level is read.
 //
 //	dxy:   delta<0 → tailwind | delta>+0.5 → headwind | else neutral
-//	rates: delta<0 → tailwind | delta>+0.5 → headwind | else neutral  (yield ↓ = easier for crypto)
+//	rates: delta<0 → tailwind | delta>+0.5 → headwind | else neutral
 //	spx:   delta>0 → tailwind | delta<-0.5 → headwind | else neutral
-//	gold:  delta<0 → tailwind | delta>+0.5 → headwind | else neutral  (money leaving gold = risk-on)
-//	vix:   value<18 → tailwind | value>25 → headwind | else neutral   (level beats delta)
-func LampStatus(key string, value float64, delta24h float64) string {
+//	gold:  delta<0 → tailwind | delta>+0.5 → headwind | else neutral
+//	vix:   value<18 → tailwind | value>25 → headwind | else neutral   (level, delta ignored)
+//
+// The asymmetry is deliberate and part of the rule (any favourable move counts,
+// the unfavourable reading needs a move beyond strongPct); it is a model
+// choice, not a measured market fact.
+func LampStatus(key string, value float64, sessionDeltaPct float64) string {
 	switch key {
 	case KeyDXY, KeyRates, KeyGold:
-		// A firmer dollar / higher yields / a bid for gold all weigh on crypto.
-		if delta24h < 0 {
+		if sessionDeltaPct < 0 {
 			return StatusTailwind
 		}
-		if delta24h > strongPct {
+		if sessionDeltaPct > strongPct {
 			return StatusHeadwind
 		}
 		return StatusNeutral
 	case KeySPX:
-		// Equities up = risk appetite = tailwind for crypto.
-		if delta24h > 0 {
+		if sessionDeltaPct > 0 {
 			return StatusTailwind
 		}
-		if delta24h < -strongPct {
+		if sessionDeltaPct < -strongPct {
 			return StatusHeadwind
 		}
 		return StatusNeutral
 	case KeyVIX:
-		// Calm tape favours crypto; fear weighs on it. Level, not delta.
+		// Level, not delta.
 		if value < vixTailwindBelow {
 			return StatusTailwind
 		}
@@ -290,17 +311,24 @@ func lampStatusByKey(lamps []Lamp, key string) string {
 }
 
 // BuildDiagnosis assembles a rule-based, safe, templated sentence from the
-// regime + lamp signs. NO LLM. The 6 templates below are written with ZERO
+// regime + lamp signs. NO LLM. The 7 templates below are written with ZERO
 // banned words (no buy/sell/long/short/entry/target/support/resistance/
-// breakout/momentum/position/signal) — "favors"/"softening"/"bid"/"weighs"/
-// "tailwind"/"headwind" are fine. Returns "" if the assembled string somehow
-// trips the banned filter (graceful — the frontend shows its own empty state),
-// and "" for regime "unknown" (zero real lamps → no honest read to give).
+// breakout/momentum/position/signal). Returns "" if the assembled string
+// somehow trips the banned filter (graceful — the frontend shows its own empty
+// state), and "" for regime "unknown" (zero real lamps → no honest read to give).
+//
+// Wording rule (2026-09-15): every sentence states what the lamps DID and which
+// rule of this model they meet — never a cause or an effect the pipeline does
+// not observe. No "tends to favor crypto", "weighs on crypto", "money is
+// rotating", "flight to safety": nothing here measures flows or later crypto
+// returns. Thresholds are printed from the rule constants, never retyped.
+// diagnosis_wording_test.go enumerates every branch against a causal-phrase
+// ban list.
 //
 // Selector: regime × the dominant lamp's sign. Any uncovered mixed case falls
-// back to template #3 — but ONLY with at least one real lamp: the "signals
-// are split" sentence is a claim about observed markets and must never render
-// off an empty lamp set (the all-null honesty defect).
+// back to template #3 — but ONLY with at least one real lamp: a sentence about
+// the lamps must never render off an empty lamp set (the all-null honesty
+// defect).
 func BuildDiagnosis(regime string, lamps []Lamp) string {
 	// No data → no sentence. Both gates on purpose: the regime gate covers the
 	// classified path, the TradfinOK gate covers any caller that still hands in
@@ -319,33 +347,34 @@ func BuildDiagnosis(regime string, lamps []Lamp) string {
 	case RegimeRiskOn:
 		switch {
 		case dxy == StatusTailwind && vix == StatusTailwind:
-			// Template #1.
-			out = "The dollar is softening and volatility is low — a risk-on backdrop that tends to favor crypto."
+			// Template #1: the two lamps' own rule conditions.
+			out = fmt.Sprintf("DXY fell on the session and VIX is below %g: the tradfin lamps meet this model's risk-on rule.",
+				vixTailwindBelow)
 		case spx == StatusTailwind:
 			// Template #4.
-			// No "historically": nothing in this pipeline measures that
-			// history, so the card must not claim it (2026-09-15).
-			out = "Equities are bid and the macro tape leans risk-on, a backdrop that tends to favor crypto."
+			out = "S&P 500 rose on the session: the tradfin lamps meet this model's risk-on rule."
 		default:
-			// Generic risk-on (still safe, no banned words). "tradfin", not
-			// "big-money": the lamps are prices, not anyone's positions.
-			out = "The tradfin markets are leaning risk-on, a backdrop that tends to favor crypto."
+			// Generic risk-on. "tradfin", not "big-money": the lamps are
+			// prices, not anyone's positions.
+			out = fmt.Sprintf("The tradfin lamps meet this model's risk-on rule (score above %d).", regimeRiskOnAbove)
 		}
 	case RegimeRiskOff:
 		switch {
 		case dxy == StatusHeadwind && vix == StatusHeadwind:
 			// Template #2.
-			out = "A firmer dollar and rising fear point to a risk-off backdrop — a headwind for crypto."
+			out = fmt.Sprintf("DXY rose more than %g%% on the session and VIX is above %g: the lamps meet this model's risk-off rule.",
+				strongPct, vixHeadwindAbove)
 		case gold == StatusHeadwind:
-			// Template #5 (flight to gold + dollar).
-			out = "Money is rotating into gold and the dollar — a flight-to-safety tone that weighs on crypto."
+			// Template #5: what the gold lamp did, not where money went.
+			out = fmt.Sprintf("Gold rose more than %g%% on the session: the tradfin lamps meet this model's risk-off rule.", strongPct)
 		default:
-			// Generic risk-off (still safe).
-			out = "The tradfin markets are leaning risk-off, a backdrop that weighs on crypto."
+			// Generic risk-off.
+			out = fmt.Sprintf("The tradfin lamps meet this model's risk-off rule (score below %d).", regimeRiskOffBelow)
 		}
 	default:
-		// Template #3 — mixed / anything uncovered.
-		out = "Macro signals are split right now — no single regime is in control across the tradfin markets."
+		// Template #3 — mixed / anything uncovered. True both for a score in
+		// the middle band and for too few voting lamps to score at all.
+		out = "The tradfin lamps meet neither this model's risk-on rule nor its risk-off rule."
 	}
 
 	// Final tripwire: if a template ever drifts into banned territory, drop it

@@ -123,11 +123,24 @@ type Correlation struct {
 	Source string `json:"source"`
 }
 
-// FnG — crypto Fear & Greed cross-check (alternative.me).
+// FnG — crypto Fear & Greed cross-check (alternative.me). Not part of the
+// composite.
+//
+// The store keeps the LAST successful read when later fetches fail (worker.go),
+// so a value alone cannot say whether it is current. AsOf / FetchedAt (additive,
+// 2026-09-15) carry its age so readers can mark an old value stale instead of
+// presenting it as today's:
+//   - AsOf: the index's own timestamp from alternative.me (a daily value; the
+//     timestamp is the start of the UTC day it describes), RFC3339 UTC, ""
+//     when the source row carried none.
+//   - FetchedAt: when our worker last fetched this value successfully, RFC3339
+//     UTC. Stops advancing while the source is unreachable.
 type FnG struct {
-	Value int    `json:"value"` // 0..100
-	Label string `json:"label"` // "Greed"/"Fear"/…
-	OK    bool   `json:"ok"`    // false if alternative.me unreachable → UI hides the block
+	Value     int    `json:"value"`      // 0..100
+	Label     string `json:"label"`      // "Greed"/"Fear"/…
+	OK        bool   `json:"ok"`         // false if alternative.me unreachable → UI hides the block
+	AsOf      string `json:"as_of"`      // source timestamp of the value (UTC day start), "" if unknown
+	FetchedAt string `json:"fetched_at"` // last successful fetch by our worker, "" if never stamped
 }
 
 // CalEvent — a slim calendar event (reuse of macrocal.Event, narrowed for the

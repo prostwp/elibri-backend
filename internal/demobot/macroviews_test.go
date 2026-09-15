@@ -1,9 +1,9 @@
 package demobot
 
 // macroviews_test.go — B2 asset views of the macro lamps: the gold mapping
-// table, the weighted gold score on bull/bear/mixed fixtures, the BTC view
-// framing, unknown-regime honesty per asset, the global card's signal map and
-// the /agents/macro?asset= routing.
+// table, the weighted gold score on positive/negative/mixed fixtures, the BTC
+// backdrop framing, unknown-regime honesty per asset, the global card's
+// context lines and the /agents/macro?asset= routing.
 
 import (
 	"context"
@@ -12,8 +12,8 @@ import (
 	"testing"
 )
 
-// macroFixtureJSON builds a /api/v1/macro payload from lamp triples.
-// Each lamp: key, value, deltaPct (NaN-free strings), status ("" = no status).
+// macroLampJSON builds one lamp. value/delta are JSON literals ("null" = N/D);
+// status "" = no status.
 func macroLampJSON(key, label string, value, delta, status string) string {
 	ok := "true"
 	if value == "null" {
@@ -31,36 +31,37 @@ func macroFixtureJSON(regime string, composite string, lamps ...string) string {
 	  "generated_idea":""}`
 }
 
-// Flight-to-safety with a weak dollar: every voting lamp supports gold.
+// Every voting lamp is positive in the gold model (dollar and yields fell,
+// VIX above 25, S&P 500 fell more than 0.5%).
 func goldBullFixture() string {
 	return macroFixtureJSON("risk_off", "20",
-		macroLampJSON("dxy", "Dollar (DXY)", "97.90", "-0.8", "tailwind"), // dollar down → gold support
-		macroLampJSON("rates", "US 10Y", "4.10", "-0.6", "tailwind"),      // yields down → gold support
-		macroLampJSON("vix", "VIX", "28.4", "3.1", "headwind"),            // fear → haven bid
-		macroLampJSON("spx", "S&P 500", "7300.0", "-1.2", "headwind"),     // equities down → flight to safety
-		macroLampJSON("gold", "Gold", "3410.0", "0.9", "headwind"),        // the asset itself — excluded from the vote
+		macroLampJSON("dxy", "Dollar (DXY)", "97.90", "-0.8", "tailwind"),
+		macroLampJSON("rates", "US 10Y", "4.10", "-0.6", "tailwind"),
+		macroLampJSON("vix", "VIX", "28.4", "3.1", "headwind"),
+		macroLampJSON("spx", "S&P 500", "7300.0", "-1.2", "headwind"),
+		macroLampJSON("gold", "Gold", "3410.0", "0.9", "headwind"), // the asset itself — excluded from the vote
 	)
 }
 
-// Risk-on with a firm dollar: every voting lamp leans against gold.
+// Every voting lamp is negative in the gold model.
 func goldBearFixture() string {
 	return macroFixtureJSON("risk_on", "80",
-		macroLampJSON("dxy", "Dollar (DXY)", "99.90", "0.8", "headwind"), // dollar up strong → pressure
-		macroLampJSON("rates", "US 10Y", "4.60", "0.7", "headwind"),      // yields up → pressure
-		macroLampJSON("vix", "VIX", "15.2", "-1.0", "tailwind"),          // calm → haven bid unwinds
-		macroLampJSON("spx", "S&P 500", "7700.0", "0.9", "tailwind"),     // equities bid → pulls from havens
+		macroLampJSON("dxy", "Dollar (DXY)", "99.90", "0.8", "headwind"),
+		macroLampJSON("rates", "US 10Y", "4.60", "0.7", "headwind"),
+		macroLampJSON("vix", "VIX", "15.2", "-1.0", "tailwind"),
+		macroLampJSON("spx", "S&P 500", "7700.0", "0.9", "tailwind"),
 		macroLampJSON("gold", "Gold", "3290.0", "-0.6", "tailwind"),
 	)
 }
 
-// Split tape: dollar softer (gold support) but calm VIX (gold pressure),
-// rates/spx neutral → weighted score lands mid-band.
+// Split: dollar fell (positive for gold) but VIX below 18 (negative), rates
+// and S&P 500 neutral → the weighted score lands mid-band.
 func goldMixedFixture() string {
 	return macroFixtureJSON("mixed", "50",
 		macroLampJSON("dxy", "Dollar (DXY)", "98.60", "-0.3", "tailwind"),
 		macroLampJSON("rates", "US 10Y", "4.30", "0.1", "neutral"),
 		macroLampJSON("vix", "VIX", "16.9", "-0.4", "tailwind"),
-		macroLampJSON("spx", "S&P 500", "7500.0", "0.2", "neutral"),
+		macroLampJSON("spx", "S&P 500", "7500.0", "-0.2", "neutral"),
 		macroLampJSON("gold", "Gold", "3350.0", "0.0", "neutral"),
 	)
 }
@@ -71,22 +72,21 @@ func TestGoldLampViewMappingTable(t *testing.T) {
 	cases := []struct {
 		key, crypto, want string
 	}{
-		// Dollar / yields: same sign as crypto (both dislike a firm dollar and
-		// rising yields).
+		// Dollar / yields: same sign as the risk rule.
 		{"dxy", "tailwind", goldSupport},
 		{"dxy", "headwind", goldPressure},
 		{"dxy", "neutral", goldNeutral},
 		{"rates", "tailwind", goldSupport},
 		{"rates", "headwind", goldPressure},
 		{"rates", "neutral", goldNeutral},
-		// VIX / SPX: inverted (fear and falling equities feed the haven bid).
+		// VIX / SPX: inverted in this model.
 		{"vix", "tailwind", goldPressure},
 		{"vix", "headwind", goldSupport},
 		{"vix", "neutral", goldNeutral},
 		{"spx", "tailwind", goldPressure},
 		{"spx", "headwind", goldSupport},
 		{"spx", "neutral", goldNeutral},
-		// The gold lamp itself never votes on its own outlook.
+		// The gold lamp itself never votes on its own backdrop.
 		{"gold", "tailwind", ""},
 		{"gold", "headwind", ""},
 		// No crypto status → nothing to re-read.
@@ -112,17 +112,17 @@ func lampsOf(t *testing.T, fixture string) []MacroLamp {
 
 func TestGoldViewScoreFixtures(t *testing.T) {
 	if s := goldViewScore(lampsOf(t, goldBullFixture())); s == nil || *s != 100 {
-		t.Errorf("bull fixture score = %v, want 100 (all four voters support)", s)
+		t.Errorf("bull fixture score = %v, want 100 (all four voters positive)", s)
 	}
 	if s := goldViewScore(lampsOf(t, goldBearFixture())); s == nil || *s != 0 {
-		t.Errorf("bear fixture score = %v, want 0 (all four voters pressure)", s)
+		t.Errorf("bear fixture score = %v, want 0 (all four voters negative)", s)
 	}
-	// Mixed: dxy support(+40) + vix pressure(+0) + rates neutral(+12.5) +
+	// Mixed: dxy positive(+40) + vix negative(+0) + rates neutral(+12.5) +
 	// spx neutral(+5) = 57.5/100 → 58 (mid-band).
 	if s := goldViewScore(lampsOf(t, goldMixedFixture())); s == nil || *s != 58 {
 		t.Errorf("mixed fixture score = %v, want 58", s)
 	}
-	// Fewer than 3 voting lamps → nil (no verdict off half a map). Two live
+	// Fewer than 3 voting lamps → nil (no reading off half a map). Two live
 	// lamps, one of which is gold itself → only 1 voter.
 	thin := lampsOf(t, macroFixtureJSON("mixed", "null",
 		macroLampJSON("dxy", "Dollar (DXY)", "98.60", "-0.3", "tailwind"),
@@ -138,31 +138,36 @@ func TestGoldViewScoreFixtures(t *testing.T) {
 
 // ── per-asset cards ──────────────────────────────────────────────────────────
 
-func TestMacroGoldCardBullish(t *testing.T) {
+func TestMacroGoldCardPositive(t *testing.T) {
 	ag := newStubBackend(t, map[string]string{"/api/v1/macro": goldBullFixture()})
 	c := ag.MacroAssetCard(context.Background(), macroAssetGold)
 
 	if c.Asset != "GOLD" {
 		t.Errorf("asset = %q, want GOLD", c.Asset)
 	}
-	if c.Emoji != emojiBull {
-		t.Errorf("emoji = %q, want bull (gold supported)", c.Emoji)
+	if c.Emoji != emojiBull || c.State != goldSupport {
+		t.Errorf("emoji %q state %q, want bull / support (the Gold Agent branches on the state)", c.Emoji, c.State)
 	}
-	if !strings.Contains(c.Verdict, "SUPPORT") {
-		t.Errorf("verdict = %q, want a SUPPORT headline", c.Verdict)
+	if c.Verdict != "GOLD MACRO BACKDROP: POSITIVE — gold score 100/100 (experimental model)" {
+		t.Errorf("verdict = %q", c.Verdict)
 	}
 	if c.Status != statusOK || c.Offline {
 		t.Errorf("status = %v offline = %v, want a real reading", c.Status, c.Offline)
 	}
 	joined := strings.Join(c.Facts, "|")
-	// Per-lamp gold framing with the documented reasons.
+	// Each lamp: its rule condition and its contribution in this model — no
+	// causes ("softer dollar lifts gold", "flight to safety" are gone).
 	for _, want := range []string{
-		"→ support (softer dollar lifts gold)",
-		"→ support (falling yields favor holding gold)",
-		"→ support (fear = safe-haven bid)",
-		"→ mild support (flight to safety)",
-		"Gold itself: 3410",
-		"Rule: dollar/yields up = pressure · fear (VIX>25) / equities down = support",
+		"DXY 97.90, session -0.80% (fell) → positive for gold, +20.0",
+		"US 10Y 4.1000, session -0.60% (fell) → positive for gold, +12.5",
+		"VIX 28.40 (>25) → positive for gold, +12.5",
+		"S&P 500 7300, session -1.20% (fell >0.5%) → positive for gold, +5.0",
+		"Gold 3410, session +0.90% — the asset itself, not an input",
+		"Gold score 100/100 = 50 + the contributions above (positive above 65, negative below 35)",
+		"Positive holds while the gold score stays above 65 with at least 3 voting lamps",
+		"Rule: DXY, US 10Y count as in the risk model; VIX, S&P 500 count inverted; Gold itself does not vote",
+		"Weights: DXY 40 · US 10Y 25 · VIX 25 · S&P 500 10 (thresholds are the risk model's)",
+		"not in the gold score",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("facts missing %q:\n%v", want, c.Facts)
@@ -170,18 +175,19 @@ func TestMacroGoldCardBullish(t *testing.T) {
 	}
 }
 
-func TestMacroGoldCardBearishAndMixed(t *testing.T) {
+func TestMacroGoldCardNegativeAndMixed(t *testing.T) {
 	ag := newStubBackend(t, map[string]string{"/api/v1/macro": goldBearFixture()})
 	c := ag.MacroAssetCard(context.Background(), macroAssetGold)
-	if c.Emoji != emojiBear || !strings.Contains(c.Verdict, "PRESSURE") {
-		t.Errorf("bear fixture: emoji %q verdict %q, want bear PRESSURE", c.Emoji, c.Verdict)
+	if c.Emoji != emojiBear || c.State != goldPressure ||
+		c.Verdict != "GOLD MACRO BACKDROP: NEGATIVE — gold score 0/100 (experimental model)" {
+		t.Errorf("bear fixture: emoji %q state %q verdict %q", c.Emoji, c.State, c.Verdict)
 	}
 	joined := strings.Join(c.Facts, "|")
 	for _, want := range []string{
-		"→ pressure (firmer dollar weighs on gold)",
-		"→ pressure (rising yields raise the cost of holding gold)",
-		"→ pressure (calm tape unwinds the haven bid)",
-		"→ mild pressure (risk appetite pulls money from havens)",
+		"DXY 99.90, session +0.80% (rose >0.5%) → negative for gold, -20.0",
+		"US 10Y 4.6000, session +0.70% (rose >0.5%) → negative for gold, -12.5",
+		"VIX 15.20 (<18) → negative for gold, -12.5",
+		"S&P 500 7700, session +0.90% (rose) → negative for gold, -5.0",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("facts missing %q:\n%v", want, c.Facts)
@@ -190,8 +196,12 @@ func TestMacroGoldCardBearishAndMixed(t *testing.T) {
 
 	ag2 := newStubBackend(t, map[string]string{"/api/v1/macro": goldMixedFixture()})
 	c2 := ag2.MacroAssetCard(context.Background(), macroAssetGold)
-	if c2.Emoji != emojiNeutral || !strings.Contains(c2.Verdict, "MIXED") {
-		t.Errorf("mixed fixture: emoji %q verdict %q, want neutral MIXED", c2.Emoji, c2.Verdict)
+	if c2.Emoji != emojiNeutral || c2.State != goldNeutral || !strings.Contains(c2.Verdict, "MIXED — gold score 58/100") {
+		t.Errorf("mixed fixture: emoji %q state %q verdict %q", c2.Emoji, c2.State, c2.Verdict)
+	}
+	// 57.5 rounds to 58: the sum is marked approximate, not "=".
+	if !strings.Contains(strings.Join(c2.Facts, "|"), "Gold score 58/100 ≈ 50 + the contributions above") {
+		t.Errorf("mixed score line: %v", c2.Facts)
 	}
 }
 
@@ -201,7 +211,7 @@ func TestMacroAssetCardsUnknownHonesty(t *testing.T) {
 	for _, asset := range []string{macroAssetGold, macroAssetBTC} {
 		ag := newStubBackend(t, map[string]string{"/api/v1/macro": macroUnknownFixture(false)})
 		c := ag.MacroAssetCard(context.Background(), asset)
-		if !strings.HasPrefix(c.Verdict, strings.ToUpper(c.Asset)+" VIEW: UNKNOWN") {
+		if !strings.HasPrefix(c.Verdict, strings.ToUpper(c.Asset)+" MACRO BACKDROP: UNKNOWN") {
 			t.Errorf("%s verdict = %q, want an UNKNOWN admission", asset, c.Verdict)
 		}
 		if c.Status != statusMarketClosed {
@@ -211,25 +221,24 @@ func TestMacroAssetCardsUnknownHonesty(t *testing.T) {
 			t.Errorf("%s emoji = %q, want neutral", asset, c.Emoji)
 		}
 		joined := strings.Join(c.Facts, "|")
-		if strings.Contains(joined, "→ support") || strings.Contains(joined, "→ pressure") ||
-			strings.Contains(joined, "→ tailwind") || strings.Contains(joined, "→ headwind") {
-			t.Errorf("%s zero-input card claims lamp directions: %v", asset, c.Facts)
+		if strings.Contains(joined, "→ positive") || strings.Contains(joined, "→ negative") {
+			t.Errorf("%s zero-input card claims lamp contributions: %v", asset, c.Facts)
 		}
 
-		// Open window twin: no_data, no "market closed" claim.
+		// Open window twin: no_data, no closure claim.
 		agOpen := newStubBackend(t, map[string]string{"/api/v1/macro": macroUnknownFixture(true)})
 		cOpen := agOpen.MacroAssetCard(context.Background(), asset)
 		if cOpen.Status != statusNoData {
 			t.Errorf("%s open-window status = %v, want no_data", asset, cOpen.Status)
 		}
-		if strings.Contains(cOpen.Verdict, "market closed") {
+		if strings.Contains(cOpen.Verdict, "weekend") || strings.Contains(cOpen.Verdict, "closed") {
 			t.Errorf("%s open-window verdict claims closure: %q", asset, cOpen.Verdict)
 		}
 	}
 }
 
 // Too few voters for a gold read (but real lamps exist) → honest no_data, not
-// a fabricated verdict.
+// a fabricated reading.
 func TestMacroGoldCardTooFewVoters(t *testing.T) {
 	fixture := macroFixtureJSON("mixed", "null",
 		macroLampJSON("dxy", "Dollar (DXY)", "98.60", "-0.3", "tailwind"),
@@ -243,11 +252,14 @@ func TestMacroGoldCardTooFewVoters(t *testing.T) {
 	if c.Status != statusNoData {
 		t.Errorf("status = %v, want no_data (1 voter < 3)", c.Status)
 	}
-	if !strings.Contains(c.Verdict, "not enough live lamps") {
+	if c.Verdict != "GOLD MACRO BACKDROP: no read — 1 of 4 lamps vote, the model needs 3" {
 		t.Errorf("verdict = %q, want the voter-shortage admission", c.Verdict)
 	}
-	if c.Emoji != emojiNeutral {
-		t.Errorf("emoji = %q, want neutral", c.Emoji)
+	if c.Emoji != emojiNeutral || c.State != "" {
+		t.Errorf("emoji = %q state = %q, want neutral / no state", c.Emoji, c.State)
+	}
+	if !strings.Contains(strings.Join(c.Facts, "|"), "US 10Y — no data") {
+		t.Errorf("missing lamps must be stated: %v", c.Facts)
 	}
 }
 
@@ -258,35 +270,37 @@ func TestMacroBTCCardFraming(t *testing.T) {
 		t.Errorf("asset = %q, want BTC", c.Asset)
 	}
 	if c.Emoji != emojiBull {
-		t.Errorf("emoji = %q, want bull (risk-on = tailwind for BTC)", c.Emoji)
+		t.Errorf("emoji = %q, want bull (risk-on backdrop)", c.Emoji)
 	}
-	if !strings.Contains(c.Verdict, "BTC VIEW: TAILWIND") || !strings.Contains(c.Verdict, "risk-on") {
-		t.Errorf("verdict = %q, want the risk-on tailwind framing", c.Verdict)
+	if c.Verdict != "BTC MACRO BACKDROP: RISK-ON — rule score 80/100; BTC direction is not inferred" {
+		t.Errorf("verdict = %q", c.Verdict)
 	}
 	joined := strings.Join(c.Facts, "|")
-	if !strings.Contains(joined, "→ tailwind") || !strings.Contains(joined, "→ headwind") {
-		t.Errorf("per-lamp crypto lines missing: %v", c.Facts)
+	if !strings.Contains(joined, "VIX 15.20 (<18) → positive") || !strings.Contains(joined, "(rose >0.5%) → negative") {
+		t.Errorf("per-lamp rule lines missing: %v", c.Facts)
 	}
-	// The composite is a risk-appetite score (labeled fact), not a confidence.
+	// The composite is a rule score (labeled fact), not a confidence. This
+	// fixture's statuses score 60, not the served 80 (a skew): the plain score
+	// is shown, never a "50 + …" sum that would not add up.
 	if c.Confidence != nil {
 		t.Errorf("composite must not render as confidence, got %d", *c.Confidence)
 	}
-	if !strings.Contains(joined, "Risk appetite score: 80/100") {
+	if !strings.Contains(joined, "Rule score 80/100 (risk-on above 65, risk-off below 35)") {
 		t.Errorf("score line missing: %v", c.Facts)
 	}
 }
 
-// ── global card signal map ───────────────────────────────────────────────────
+// ── global card context lines ────────────────────────────────────────────────
 
-func TestMacroCardSignalMapBothViews(t *testing.T) {
+func TestMacroCardAssetContextLines(t *testing.T) {
 	ag := newStubBackend(t, map[string]string{"/api/v1/macro": goldBullFixture()})
 	c, _ := ag.MacroCard(context.Background())
 	joined := strings.Join(c.Facts, "|")
-	if !strings.Contains(joined, "BTC view: headwind — risk-off regime") {
-		t.Errorf("BTC view line missing: %v", c.Facts)
+	if !strings.Contains(joined, "BTC macro backdrop: risk-off (the regime itself); BTC direction is not inferred") {
+		t.Errorf("BTC context line missing: %v", c.Facts)
 	}
-	if !strings.Contains(joined, "Gold view: support — 4 lamps for gold / 0 against / 0 neutral") {
-		t.Errorf("Gold view line missing: %v", c.Facts)
+	if !strings.Contains(joined, "Gold macro backdrop: positive, gold score 100/100 (experimental model, own weights)") {
+		t.Errorf("gold context line missing: %v", c.Facts)
 	}
 }
 

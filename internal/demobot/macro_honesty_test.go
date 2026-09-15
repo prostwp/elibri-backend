@@ -2,12 +2,14 @@ package demobot
 
 // macro_honesty_test.go — the unknown-regime honesty contract (team-testing
 // defect 2026-08): when the backend has ZERO real tradfin lamps, the bot must
-// admit it — "UNKNOWN … no tradfin data" with a neutral semaphore — instead of
-// a confident "MIXED — no single regime in control" built on nothing. Covers:
-//   - the unknown card golden (closed + open window wording),
+// admit it — "UNKNOWN … no current tradfin data" with a neutral semaphore —
+// instead of a confident "MIXED" built on nothing. Covers:
+//   - the unknown card golden (scheduled weekend + open window wording; never
+//     "market closed": the week window knows no holidays),
 //   - the digest one-liner "⚪ Macro: unknown (no data)",
 //   - version-skew reclassification (old backend: "mixed" + all-null lamps),
-//   - the "Macro signals are split" line never rendering without a real lamp,
+//   - the backend's generated_idea never rendering (the card words the rule
+//     itself; an old backend's causal sentence must not leak through),
 //   - regime "unknown" never winning /top (priority_test.go holds the pickTop
 //     cases; here the HTTP envelope serves the unknown card as an honest 200).
 
@@ -20,21 +22,21 @@ import (
 
 // macroUnknownFixture is the NEW backend shape for the all-null case: regime
 // "unknown", per-lamp ok:false with propagated stale as_of, tradfin_ok false,
-// idea blanked. F&G (crypto side) still live.
+// idea blanked. F&G (crypto side) still live, with its own date.
 func macroUnknownFixture(marketOpen bool) string {
 	openStr := "false"
 	if marketOpen {
 		openStr = "true"
 	}
 	return `{"regime":"unknown","composite":null,"tradfin_market_open":` + openStr + `,"tradfin_ok":false,
-	  "captured_at":"2026-08-18T06:00:00Z",
+	  "tradfin_as_of":"2026-08-14T20:55:00Z","captured_at":"2026-08-18T06:00:00Z",
 	  "lamps":[
 	    {"key":"dxy","label":"Dollar (DXY)","value":null,"ok":false,"delta_pct":null,"status":"","as_of":"2026-08-14T20:55:00Z"},
 	    {"key":"rates","label":"US 10Y","value":null,"ok":false,"delta_pct":null,"status":"","as_of":""},
 	    {"key":"vix","label":"VIX","value":null,"ok":false,"delta_pct":null,"status":"","as_of":"2026-08-14T20:55:00Z"},
 	    {"key":"spx","label":"S&P 500","value":null,"ok":false,"delta_pct":null,"status":"","as_of":"2026-08-14T20:55:00Z"},
 	    {"key":"gold","label":"Gold","value":null,"ok":false,"delta_pct":null,"status":"","as_of":""}],
-	  "fng":{"value":61,"label":"Greed","ok":true},
+	  "fng":{"value":61,"label":"Greed","ok":true,"as_of":"2026-08-18T00:00:00Z","fetched_at":"2026-08-18T05:55:00Z"},
 	  "generated_idea":""}`
 }
 
@@ -54,13 +56,18 @@ func TestMacroCardUnknownRegimeClosedGolden(t *testing.T) {
 	if c.Deviation != 0 {
 		t.Errorf("deviation: got %d, want 0", c.Deviation)
 	}
+	if c.Blocks != nil || c.Macro != nil {
+		t.Errorf("no blocks / machine readout without a reading: %+v %+v", c.Blocks, c.Macro)
+	}
 
 	// Byte-exact card: neutral semaphore, an ADMISSION instead of a claim,
-	// facts limited to what IS known (crypto F&G).
+	// the weekend named as scheduled (never "market closed"), the last data
+	// date, and the crypto F&G with its own date — outside the score.
 	want := "⚪ <b>Macro Agent</b>\n" +
-		"<b>UNKNOWN — market closed, no tradfin data</b>\n" +
-		"• Lamps: no tradfin data right now (market closed)\n" +
-		"• Crypto Fear &amp; Greed: 61 — Greed\n" +
+		"<b>UNKNOWN — no current tradfin data (scheduled tradfin weekend)</b>\n" +
+		"• Lamps: no current tradfin data (scheduled tradfin weekend)\n" +
+		"• Last tradfin data in the feed: Aug 14\n" +
+		"• Crypto Fear &amp; Greed 61 (Greed), Aug 18 · separate index, not in the rule score\n" +
 		"\n<i>Analytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC</i>"
 	if got := c.RenderHTML(); got != want {
 		t.Errorf("unknown card golden mismatch:\ngot:\n%s\nwant:\n%s", got, want)
@@ -73,19 +80,20 @@ func TestMacroCardUnknownRegimeClosedGolden(t *testing.T) {
 }
 
 func TestMacroCardUnknownRegimeOpenWindowWording(t *testing.T) {
-	// Inside the open window (data lag) the card must not claim the market is
-	// closed — only that the data is missing right now.
+	// Inside the open window (data lag) the card must not mention the weekend
+	// — only that the data is missing.
 	ag := newStubBackend(t, map[string]string{"/api/v1/macro": macroUnknownFixture(true)})
 	c, regime := ag.MacroCard(context.Background())
 
 	if regime != "unknown" {
 		t.Fatalf("regime: got %q, want unknown", regime)
 	}
-	if c.Verdict != "UNKNOWN — no tradfin data right now" {
+	if c.Verdict != "UNKNOWN — no current tradfin data" {
 		t.Errorf("verdict: got %q", c.Verdict)
 	}
-	if strings.Contains(strings.Join(c.Facts, "|"), "market closed") {
-		t.Errorf("open window must not say 'market closed': %v", c.Facts)
+	joined := strings.Join(c.Facts, "|")
+	if strings.Contains(joined, "weekend") || strings.Contains(joined, "closed") {
+		t.Errorf("open window must not claim a closure: %v", c.Facts)
 	}
 	if c.Emoji != emojiNeutral {
 		t.Errorf("emoji: got %q, want neutral", c.Emoji)
@@ -122,12 +130,17 @@ func TestMacroCardOldBackendMixedAllNull(t *testing.T) {
 			t.Errorf("zero-input card rendered the knowledge claim %q:\n%s", banned, rendered)
 		}
 	}
+	// An old backend's F&G carries no time: the card says so instead of
+	// presenting the value as current.
+	if !strings.Contains(rendered, "update time unknown") {
+		t.Errorf("F&G without a time must say so:\n%s", rendered)
+	}
 }
 
-// TestMacroCardMixedWithRealLampsKeepsClaim — regression guard: with REAL
-// conflicting lamp values, "mixed" stays a legitimate verdict and the split
-// sentence may render.
-func TestMacroCardMixedWithRealLampsKeepsClaim(t *testing.T) {
+// TestMacroCardMixedWithRealLamps — with REAL conflicting lamp values "mixed"
+// is a legitimate verdict, worded by the rule, and the backend's idea line is
+// never rendered (an old backend still sends a "big-money" sentence).
+func TestMacroCardMixedWithRealLamps(t *testing.T) {
 	fixture := `{"regime":"mixed","composite":50,"tradfin_market_open":true,"tradfin_ok":true,
 	  "captured_at":"2026-08-18T06:00:00Z",
 	  "lamps":[
@@ -142,23 +155,27 @@ func TestMacroCardMixedWithRealLampsKeepsClaim(t *testing.T) {
 	if regime != "mixed" {
 		t.Fatalf("real lamps must keep mixed, got %q", regime)
 	}
-	if !strings.HasPrefix(c.Verdict, "MIXED") {
-		t.Errorf("verdict: got %q, want the MIXED claim (real inputs)", c.Verdict)
+	if c.Verdict != "MIXED — rule score 50/100 (risk-on above 65, risk-off below 35)" {
+		t.Errorf("verdict: got %q", c.Verdict)
 	}
 	joined := strings.Join(c.Facts, "|")
-	if !strings.Contains(joined, "Lamps: 1 tailwind / 1 headwind / 1 neutral") {
-		t.Errorf("lamp counts must render for real lamps: %v", c.Facts)
+	for _, want := range []string{
+		"Positive: DXY -0.20% (fell) → +16.7",
+		"Negative: VIX 27.10 (>25) → -16.7",
+		"Mixed while the rule score is 35-65: above 65 reads risk-on, below 35 risk-off",
+		// Two voting weights of 25 plus a neutral 25: every share is 33.3.
+		"Rule score 50 = 50 + DXY +16.7 + VIX -16.7 · neutral: S&P 500",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("facts missing %q:\n%v", want, c.Facts)
+		}
 	}
-	if !strings.Contains(joined, "signals are split") {
-		t.Errorf("split sentence is legitimate WITH real lamps: %v", c.Facts)
+	if strings.Contains(joined, "big-money") || strings.Contains(joined, "signals are split") {
+		t.Errorf("the backend idea line must not render: %v", c.Facts)
 	}
-	// The composite is a risk-appetite score, rendered as a labeled fact —
-	// never as a "Confidence" bar.
+	// The composite is a rule score in the verdict — never a "Confidence" bar.
 	if c.Confidence != nil {
 		t.Errorf("composite must not render as confidence, got %v", *c.Confidence)
-	}
-	if !strings.Contains(joined, "Risk appetite score: 50/100") {
-		t.Errorf("score line must flow from composite: %v", c.Facts)
 	}
 }
 
@@ -180,15 +197,15 @@ func TestHTTPMacroUnknownEnvelope(t *testing.T) {
 	if env.Agent != "Macro Agent" {
 		t.Errorf("agent: %q", env.Agent)
 	}
-	if env.Verdict != "UNKNOWN — market closed, no tradfin data" {
+	if env.Verdict != "UNKNOWN — no current tradfin data (scheduled tradfin weekend)" {
 		t.Errorf("verdict: %q", env.Verdict)
 	}
 	if env.Semaphore != "neutral" {
 		t.Errorf("semaphore: %q, want neutral", env.Semaphore)
 	}
-	// Machine-readable twin of the verdict: not a real reading, and the WHY is
-	// the closed tradfin window (the open-window twin asserts no_data in
-	// httpapi_status_test.go).
+	// Machine-readable twin of the verdict: not a real reading, and the WHY
+	// stays the enum market_closed outside the clock week (the open-window
+	// twin asserts no_data in httpapi_status_test.go).
 	if env.OK {
 		t.Error("unknown regime must serve ok=false")
 	}
@@ -199,13 +216,23 @@ func TestHTTPMacroUnknownEnvelope(t *testing.T) {
 		t.Errorf("confidence: %v, want null", env.Confidence)
 	}
 	joined := strings.Join(env.Facts, "|")
-	if !strings.Contains(joined, "no tradfin data right now (market closed)") {
+	if !strings.Contains(joined, "no current tradfin data (scheduled tradfin weekend)") {
 		t.Errorf("facts must state the absence: %v", env.Facts)
 	}
 	if strings.Contains(joined, "signals are split") {
 		t.Errorf("split sentence leaked into a zero-input envelope: %v", env.Facts)
 	}
-	if !strings.Contains(env.CardHTML, "UNKNOWN — market closed, no tradfin data") {
+	if !strings.Contains(env.CardHTML, "UNKNOWN — no current tradfin data (scheduled tradfin weekend)") {
 		t.Errorf("card_html must carry the unknown card:\n%s", env.CardHTML)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["macro"]; ok {
+		t.Errorf("no machine readout on a card without a reading: %s", raw["macro"])
+	}
+	if _, ok := raw["blocks"]; ok {
+		t.Errorf("no blocks on a card without a reading: %s", raw["blocks"])
 	}
 }

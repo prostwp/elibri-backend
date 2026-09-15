@@ -326,21 +326,33 @@ func TestMacroCardNoMoodReadAndScoreNotConfidence(t *testing.T) {
 	if c.Confidence != nil || strings.Contains(c.RenderHTML(), "Confidence:") {
 		t.Errorf("composite is a score, not a confidence:\n%s", c.RenderHTML())
 	}
-	if !strings.Contains(strings.Join(c.Facts, "|"), "Risk appetite score: 72/100 (risk-on above 65, risk-off below 35)") {
-		t.Errorf("score line missing: %v", c.Facts)
+	// The score rides in the verdict as a "rule score" with its bands.
+	if c.Verdict != "RISK-ON — rule score 72/100 (risk-on above 65, risk-off below 35)" {
+		t.Errorf("verdict: %q", c.Verdict)
+	}
+	// This fixture's three positive lamps add up to 100, not the served 72 —
+	// a version skew. The card must then print no contribution numbers and no
+	// breakdown that would not add up to its own headline.
+	joined := strings.Join(c.Facts, "|")
+	if strings.Contains(joined, "→ +") || strings.Contains(joined, "Rule score 72") {
+		t.Errorf("contributions printed although they do not reproduce the score: %v", c.Facts)
 	}
 	if c.Deviation != 44 {
 		t.Errorf("priority deviation must still flow from the composite: got %d, want 44", c.Deviation)
 	}
 }
 
-// A score needs real lamps behind it: a payload with no lamps must not print
-// "Risk appetite score" under a regime the lamps never voted for.
+// A score needs real lamps behind it: a payload with no lamps must not print a
+// rule score under a regime the lamps never voted for — and the regime itself
+// is reclassified to unknown (a regime is a knowledge claim).
 func TestMacroCardNoScoreWithoutRealLamps(t *testing.T) {
 	ag := newStubBackend(t, map[string]string{"/api/v1/macro": macroFixture})
-	c, _ := ag.MacroCard(context.Background())
-	if strings.Contains(strings.Join(c.Facts, "|"), "Risk appetite score") {
-		t.Errorf("no score line without real lamps: %v", c.Facts)
+	c, regime := ag.MacroCard(context.Background())
+	if regime != "unknown" || !strings.HasPrefix(c.Verdict, "UNKNOWN") {
+		t.Errorf("zero real lamps must read unknown: regime %q verdict %q", regime, c.Verdict)
+	}
+	if strings.Contains(strings.ToLower(c.Verdict+strings.Join(c.Facts, "|")), "rule score 62") {
+		t.Errorf("no score without real lamps: %q %v", c.Verdict, c.Facts)
 	}
 }
 
@@ -354,7 +366,7 @@ func TestMacroCardAIReadOmittedSilently(t *testing.T) {
 		t.Errorf("empty mood read must not render a block, got %q", c.AIHTML)
 	}
 	// Endpoint missing (404) → macro still renders, no block.
-	ag2 := newStubBackend(t, map[string]string{"/api/v1/macro": macroFixture})
+	ag2 := newStubBackend(t, map[string]string{"/api/v1/macro": macroScoreFixture})
 	c, _ := ag2.MacroCard(context.Background())
 	if c.AIHTML != "" {
 		t.Errorf("mood-read failure must not render a block, got %q", c.AIHTML)

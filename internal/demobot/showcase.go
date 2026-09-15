@@ -141,7 +141,7 @@ func (a *Agents) buildShowcase(ctx context.Context) *showcaseBuild {
 	_, top := topSelection(g)
 	cards[keyDigest] = top // the digest's head IS the winner card
 	cards[keyTop] = top
-	return &showcaseBuild{g: g, cards: cards, at: time.Now().UTC()}
+	return &showcaseBuild{g: g, cards: cards, at: a.clock()}
 }
 
 // showcaseEntry / showcaseMemo mirror aiMemo: a fresh result is served from
@@ -287,36 +287,29 @@ func (b *showcaseBuild) row(slug string) showcaseAgent {
 	return row
 }
 
-// rows renders the catalog in the /agents listing order (the bot's menu grid).
-// lastModified is when this page's content last CHANGED: the newest data time
-// across the rows.
+// lastModified is the Last-Modified of /showcase: the SWEEP time (b.at), not
+// any card's data time. (/showcase/example sends none — it carries a
+// per-request AI part, see handleShowcaseExample.)
 //
-// Note it is the opposite end of the range from the digest's data_as_of, and
-// deliberately so. The two answer different questions:
+// It used to be the newest data time across the rows, and that is not a
+// sound validator for a composite: a component can change while staying
+// older than the freshest one (a card whose data time is an old session stamp
+// gets a new value, a new verdict or a new status), and the newest stamp would
+// not move — a conditional GET would get 304 for a changed page. It became a
+// live regression when the macro card's data time turned into its OLDEST lamp
+// (2026-09-15). The sweep time is the only stamp that moves whenever the body
+// can change: every build is a new representation.
 //
-//	data_as_of    "how stale can anything here be"  → the OLDEST reading
-//	Last-Modified "when did this representation change" → the NEWEST
-//
-// Taking the oldest here would be a correctness bug, not just conservatism: if
-// one agent gets a new reading while the oldest stays put, the validator would
-// not move and a conditional request would get 304 for content that changed.
-//
-// The sweep time (b.at) is wrong for the opposite reason — it advances on
-// every memo refresh even when no reading moved, so no client would ever get
-// a 304 and the header would carry no value.
+// Cost, accepted: a validator that moves on every memo refresh, so a client
+// gets 304 only while the same memoized sweep is served (up to showcaseTTL) —
+// which is exactly as long as the body cannot change.
+// data_as_of is unaffected — it still answers "how stale can anything here
+// be" with the oldest reading.
 func (b *showcaseBuild) lastModified() time.Time {
-	var newest time.Time
-	for _, slug := range httpAgentNames {
-		c, ok := b.cards[slug]
-		if !ok || c.Offline || c.DataTime.IsZero() {
-			continue
-		}
-		if c.DataTime.After(newest) {
-			newest = c.DataTime
-		}
-	}
-	return newest.UTC()
+	return b.at.UTC()
 }
+
+// rows renders the catalog in the /agents listing order (the bot's menu grid).
 
 func (b *showcaseBuild) rows() []showcaseAgent {
 	out := make([]showcaseAgent, 0, len(httpAgentNames))
@@ -564,7 +557,14 @@ func (s *HTTPServer) handleShowcaseExample(w http.ResponseWriter, r *http.Reques
 		explained = strongestFact(card)
 	}
 
-	writeJSONAt(w, r, http.StatusOK, card.DataTime, showcaseExampleResp{
+	// NO validator (zero time → no Last-Modified, If-Modified-Since ignored,
+	// always 200). "explained" comes from an AI call made per request AFTER
+	// the memoized sweep, so within one sweep the body can still change (an AI
+	// failure falls back to the strongest fact; a success 30 s later does not)
+	// while the sweep time stays put — b.at would answer 304 for a changed
+	// body, and so would the card's own stamp. /showcase keeps b.at: its body
+	// is fixed for the life of the memoized sweep.
+	writeJSONAt(w, r, http.StatusOK, time.Time{}, showcaseExampleResp{
 		GeneratedAt: b.at.Format(time.RFC3339),
 		Agent:       card.Agent,
 		Slug:        slug,

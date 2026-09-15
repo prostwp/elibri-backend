@@ -54,21 +54,26 @@ type MacroLamp struct {
 	Key      string   `json:"key"`
 	Label    string   `json:"label"`
 	Value    *float64 `json:"value"`
-	OK       bool     `json:"ok"` // value present — false (with Value nil) on N/D; absent on older payloads, so readers also fall back to Value != nil
-	DeltaPct *float64 `json:"delta_pct"`
-	Status   string   `json:"status"` // tailwind | neutral | headwind | ""
+	OK       bool     `json:"ok"`        // value present — false (with Value nil) on N/D; absent on older payloads, so readers also fall back to Value != nil
+	DeltaPct *float64 `json:"delta_pct"` // Close − session Open, % (never a rolling 24h change)
+	Status   string   `json:"status"`    // tailwind | neutral | headwind | ""
+	AsOf     string   `json:"as_of"`     // RFC3339 source stamp of the lamp's session; "" unknown (older payloads)
+	Source   string   `json:"source"`    // "stooq" | "yahoo"; "" without a value (older payloads)
 }
 
 type FearGreedCheck struct {
-	Value int    `json:"value"`
-	Label string `json:"label"`
-	OK    bool   `json:"ok"`
+	Value     int    `json:"value"`
+	Label     string `json:"label"`
+	OK        bool   `json:"ok"`
+	AsOf      string `json:"as_of"`      // the index's own date (UTC day start); "" on older backends
+	FetchedAt string `json:"fetched_at"` // backend's last successful fetch; "" on older backends
 }
 
 type MacroResp struct {
 	Regime        string          `json:"regime"` // risk_on | mixed | risk_off | unknown (unknown = zero lamps carry a value)
 	Composite     *int            `json:"composite"`
 	TradfinOpen   bool            `json:"tradfin_market_open"` // clock-based futures week (Sun 22:00 → Fri 21:00 UTC), not a data signal
+	TradfinAsOf   string          `json:"tradfin_as_of"`       // freshest lamp stamp, "" when none
 	CapturedAt    string          `json:"captured_at"`
 	Lamps         []MacroLamp     `json:"lamps"`
 	FNG           *FearGreedCheck `json:"fng"`

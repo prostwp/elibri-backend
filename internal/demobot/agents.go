@@ -21,6 +21,18 @@ type Agents struct {
 	api    *BackendClient
 	klines *klineCache
 	ai     *aiClient // nil until EnableAI — every AI block silently omitted
+	// now is the clock for the showcase sweep time (b.at — generated_at and
+	// the /showcase Last-Modified). nil = wall clock; tests set it to step
+	// sweeps deterministically.
+	now func() time.Time
+}
+
+// clock is the composite build time (UTC).
+func (a *Agents) clock() time.Time {
+	if a.now != nil {
+		return a.now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func NewAgents(api *BackendClient) *Agents {
@@ -148,7 +160,7 @@ func insufficientCard(spec assetSpec, agent, shortName, command, how, what strin
 // howTexts back the [ℹ️ How it works] button. Telegram caps callback alerts
 // at 200 characters — keep every entry under that.
 var howTexts = map[string]string{
-	keyMacro:    "Reads 5 tradfin lamps (DXY, US 10Y, VIX, S&P 500, Gold) into a 0-100 risk appetite score: above 65 risk-on, below 35 risk-off. RISK-OFF outranks every other reading in the digest.",
+	keyMacro:    "Fixed rules score 5 tradfin lamps (DXY, US 10Y, VIX, S&P 500, Gold) into a 0-100 rule score: above 65 risk-on, below 35 risk-off. A backdrop, not a forecast. RISK-OFF tops the digest.",
 	keyWhale:    "Tracks large BTC transfers from the public mempool. These wallets carry no exchange labels, so the card reports transfer activity; exchange in/outflow appears only when labeled.",
 	keyFunding:  "Compares perp funding rates across majors. High positive funding = crowded longs (squeeze risk); negative = crowded shorts. Liquidation feed shows where forced exits cluster.",
 	keyMomentum: "RSI(14) + MACD histogram. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; else neutral. Crypto on 4h bars, FX and gold on 1h; a 1d scan is available.",
@@ -170,15 +182,29 @@ var howTexts = map[string]string{
 //
 // Honesty contract (team-testing defect 2026-08): a regime verdict is a
 // knowledge claim, so it needs at least one real lamp behind it. Regime
-// "unknown" (or an older backend's "mixed" with zero real lamps — reclassified
-// here) renders an explicit no-data card: UNKNOWN verdict, neutral semaphore,
-// facts limited to what IS known (crypto F&G), and never the "signals are
-// split" idea line.
+// "unknown" (or any regime served with zero real lamps — reclassified in
+// effectiveMacroRegime) renders an explicit no-data card: UNKNOWN verdict,
+// neutral semaphore, facts limited to what IS known (last data date, crypto
+// F&G).
+//
+// Everything the card says is worded in macro_text.go (readability plan,
+// 2026-09-15): regime and rule score → main factors → what holds it → data
+// dates → breakdown → BTC / gold context → F&G. The backend's generated_idea
+// is no longer rendered: the card words the same rule itself, and an older
+// backend's causal sentence ("tends to favor crypto") must not leak through a
+// version skew.
 func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 	m, err := a.api.Macro(ctx)
 	if err != nil {
 		return offlineCard("Macro Agent", "Macro", "", keyMacro, howTexts[keyMacro]), ""
 	}
+	return macroCardFrom(m)
+}
+
+// macroCardFrom is MacroCard's pure half: one backend payload → the card and
+// the effective regime. No network and no clock (every time on the card comes
+// from the payload), so tests can sweep any payload.
+func macroCardFrom(m *MacroResp) (Card, string) {
 	c := Card{
 		Agent:      "Macro Agent",
 		ShortName:  "Macro",
@@ -188,83 +214,24 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 	}
 
 	// A lamp is REAL when the payload carries a value for it; zero real lamps
-	// reclassify an old backend's "mixed" to unknown (a MIXED claim needs at
-	// least one input). Shared with the asset views — see effectiveMacroRegime.
-	regime, real := effectiveMacroRegime(m)
+	// reclassify any regime to unknown. Shared with the asset views — see
+	// effectiveMacroRegime.
+	regime, _ := effectiveMacroRegime(m)
 	c.State = regime // authoritative context for the AI layer (see Card.State)
 
-	switch regime {
-	case "risk_on":
-		// "tradfin lamps", not "big money": five price indicators read a
-		// regime, they do not observe anyone's positions or flows.
-		c.Emoji, c.Verdict, c.Short = emojiBull, "RISK-ON — tradfin lamps lean into risk", "risk-on"
-	case "risk_off":
-		c.Emoji, c.Verdict, c.Short = emojiBear, "RISK-OFF — tradfin lamps lean defensive", "risk-off"
-	case "unknown":
+	if regime == "unknown" {
 		// No tradfin inputs at all — say so instead of claiming a regime read.
 		// Machine status splits the two absences templates must distinguish:
-		// closed window = market_closed, open window with a dark feed = no_data.
-		verdict := "UNKNOWN — market closed, no tradfin data"
-		c.Status = statusMarketClosed
-		if m.TradfinOpen {
-			verdict = "UNKNOWN — no tradfin data right now"
-			c.Status = statusNoData
-		}
-		c.Emoji, c.Verdict, c.Short = emojiNeutral, verdict, "unknown (no data)"
-	default:
-		c.Emoji, c.Verdict, c.Short = emojiNeutral, "MIXED — no single regime in control", "mixed"
+		// outside the clock week = market_closed, inside it = no_data. The
+		// words never say "market closed": the week window knows no holidays.
+		c.Emoji, c.Short = emojiNeutral, "unknown (no data)"
+		c.Verdict = "UNKNOWN — " + macroNoDataNote(m.TradfinOpen)
+		c.Status = macroUnknownStatus(m.TradfinOpen)
+		c.Facts = macroUnknownFacts(m, riskModel.scoreName)
+		return c, regime
 	}
 
-	var tail, head, neut int
-	for _, l := range m.Lamps {
-		switch l.Status {
-		case "tailwind":
-			tail++
-		case "headwind":
-			head++
-		case "neutral":
-			neut++
-		}
-	}
-	if real == 0 && len(m.Lamps) > 0 {
-		// Zero real lamps → the counts line would be a fake "0/0/0 reading";
-		// state the absence instead (with the clock context).
-		note := "no tradfin data right now"
-		if !m.TradfinOpen {
-			note += " (market closed)"
-		}
-		c.Facts = append(c.Facts, "Lamps: "+note)
-	} else {
-		c.Facts = append(c.Facts, fmt.Sprintf("Lamps: %d tailwind / %d headwind / %d neutral", tail, head, neut))
-		// The composite is a risk-appetite SCORE, not a confidence: it used to
-		// render as "Confidence: 88%", which reads as an accuracy claim the
-		// agent has never earned. The regime bands ride beside the number.
-		if m.Composite != nil && real > 0 {
-			c.Facts = append(c.Facts, fmt.Sprintf("Risk appetite score: %d/100 (risk-on above %d, risk-off below %d)",
-				*m.Composite, macroRiskOnAbove, macroRiskOffBelow))
-		}
-	}
-	// Signal map (B2): the same lamps read for both assets, one line each —
-	// only with at least one real lamp behind them (an asset verdict is a
-	// knowledge claim like any other).
-	if real > 0 {
-		c.Facts = append(c.Facts, macroViewLines(regime, m.Lamps)...)
-	}
-	// What IS known even when tradfin is dark: the crypto side (F&G is 24/7),
-	// rendered only when its own ok flag says the read is live.
-	if m.FNG != nil && m.FNG.OK {
-		c.Facts = append(c.Facts, fmt.Sprintf("Crypto Fear & Greed: %d — %s", m.FNG.Value, m.FNG.Label))
-	}
-	// The generated idea (e.g. "Macro signals are split…") is a claim about
-	// lamp data — it must NEVER render without at least one real lamp. The
-	// backend already blanks it for unknown; this guard also covers version
-	// skew.
-	if idea := strings.TrimSpace(m.GeneratedIdea); idea != "" && real > 0 {
-		c.Facts = append(c.Facts, truncate(idea, 180))
-	}
-	if m.Composite != nil {
-		c.Deviation = clampInt(abs(*m.Composite-50)*2, 0, 100)
-	}
+	newMacroView(m, regime).fillGlobal(&c)
 	// No AI mood read on this card. The mood read is written from the
 	// CoinMarketCap Fear & Greed index and the narrative themes, while this
 	// card shows a different F&G feed: a live card printed "Crypto Fear &
@@ -273,14 +240,6 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 	// name on one card is a contradiction a reader cannot resolve.
 	return c, regime
 }
-
-// macroRiskOnAbove / macroRiskOffBelow mirror regimeRiskOnAbove /
-// regimeRiskOffBelow in internal/macro/compute.go — the bands the backend
-// classifies the composite with. Printed beside the score on the card.
-const (
-	macroRiskOnAbove  = 65
-	macroRiskOffBelow = 35
-)
 
 // ── Whale flow ───────────────────────────────────────────────────────────────
 

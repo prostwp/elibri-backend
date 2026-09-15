@@ -86,13 +86,17 @@ type httpEnvelope struct {
 	// Blocks is the content-ready sentence set (trend, and S/R cards that
 	// show at least one level) — absent for every other agent, on degraded
 	// cards and on the S/R "no significant levels" finding.
-	Blocks     *ContentBlocks `json:"blocks,omitempty"`
-	Confidence *int           `json:"confidence"`         // 0-100, null when the source gave none
-	AIText     *string        `json:"ai_text"`            // plain-text AI block, null when absent
-	Sections   []string       `json:"sections,omitempty"` // digest only: the one-liners
-	DataAsOf   string         `json:"data_as_of"`         // RFC3339, same stamp as the card footer
-	Disclaimer string         `json:"disclaimer"`
-	CardHTML   string         `json:"card_html"` // the exact Telegram HTML card
+	Blocks *ContentBlocks `json:"blocks,omitempty"`
+	// Macro is the macro cards' machine readout (rule score, bands, per-lamp
+	// contributions, freshness, Fear & Greed age) — absent for every other
+	// agent and on macro cards without a reading (unknown / offline).
+	Macro      *MacroReadout `json:"macro,omitempty"`
+	Confidence *int          `json:"confidence"`         // 0-100, null when the source gave none
+	AIText     *string       `json:"ai_text"`            // plain-text AI block, null when absent
+	Sections   []string      `json:"sections,omitempty"` // digest only: the one-liners
+	DataAsOf   string        `json:"data_as_of"`         // RFC3339, same stamp as the card footer
+	Disclaimer string        `json:"disclaimer"`
+	CardHTML   string        `json:"card_html"` // the exact Telegram HTML card
 }
 
 // semaphoreOf maps the card emoji contract to the JSON semaphore words.
@@ -141,6 +145,7 @@ func cardEnvelope(c Card) httpEnvelope {
 		Levels:     c.Levels,
 		Results:    c.Results,
 		Blocks:     c.Blocks,
+		Macro:      c.Macro,
 		DataAsOf:   c.DataTime.UTC().Format(time.RFC3339),
 		Disclaimer: disclaimerText,
 		CardHTML:   c.RenderHTML(),
@@ -594,7 +599,7 @@ func (s *HTTPServer) writeCard(w http.ResponseWriter, r *http.Request, card Card
 		})
 		return
 	}
-	writeJSONAt(w, r, http.StatusOK, card.DataTime, cardEnvelope(card))
+	writeJSONAt(w, r, http.StatusOK, card.modTime(), cardEnvelope(card))
 }
 
 func (s *HTTPServer) handleRisk(w http.ResponseWriter, r *http.Request, q url.Values) {
@@ -653,7 +658,14 @@ func digestHeadline(top Card) string {
 func (s *HTTPServer) handleDigest(w http.ResponseWriter, r *http.Request, ctx context.Context) {
 	g := s.ag.gather(ctx)
 	brief := s.ag.aiBrief(ctx, g) // same aiMemo as the Telegram path
-	writeJSONAt(w, r, http.StatusOK, digestDataTime(g), digestEnvelope(g, brief))
+	// NO validator (zero time → no Last-Modified, If-Modified-Since ignored,
+	// always 200). The digest re-sweeps on every request, so no stamp is
+	// sound: a component stamp can lag a changed component (it may be neither
+	// the newest nor the oldest reading), and the build time is truncated to
+	// the second in the header, so two different builds inside one second
+	// would share it. A validator on a per-request rebuild buys nothing.
+	// data_as_of (the oldest reading) is unaffected.
+	writeJSONAt(w, r, http.StatusOK, time.Time{}, digestEnvelope(g, brief))
 }
 
 // digestEnvelope is the pure half of handleDigest: one gathered sweep + the AI
@@ -714,7 +726,12 @@ func (s *HTTPServer) handleTop(w http.ResponseWriter, r *http.Request, ctx conte
 		env.AIText = &joined
 	}
 	env.CardHTML = renderTopHTML(card, brief, why)
-	// The winner's own data time: /top serves one card, so unlike /digest it
-	// has a single honest instant.
-	writeJSONAt(w, r, http.StatusOK, card.DataTime, env)
+	// NO validator (zero time → no Last-Modified, If-Modified-Since ignored,
+	// always 200), like /agents/digest. The winner's stamp does not cover the
+	// whole response: the AI brief and why-line are added per request (an AI
+	// failure is cached only briefly, so a response without AI and the next
+	// one with it would share the stamp), and the brief reads the whole sweep,
+	// so a non-winning agent's change alters it without moving the winner's
+	// data time. The card's own data time stays in data_as_of.
+	writeJSONAt(w, r, http.StatusOK, time.Time{}, env)
 }
