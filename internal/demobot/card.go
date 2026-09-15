@@ -229,6 +229,17 @@ type Card struct {
 	// card ("" when confirmed and for every other agent). Not served; the
 	// showcase uses it instead of calling a card with an EMA lean "neutral".
 	trendConclusion string
+	// confirmed marks a reading on which the agent's OWN rule committed to a
+	// finding: funding crowded (either side), momentum bullish/bearish on a
+	// ranked crypto asset, trend up/down. Digest ranking only (priority.go):
+	// an unconfirmed reading never outranks a confirmed one. Not rendered,
+	// not served.
+	confirmed bool
+	// rankAsOf is the data time of the reading Deviation comes from, when it
+	// differs from DataTime (momentum: its Binance reads, while DataTime is
+	// the oldest bar on the card, gold included). Zero → DataTime. Freshness
+	// check of the digest ranking only; not rendered.
+	rankAsOf time.Time
 	// AIHTML is a pre-rendered AI block ("<b>AI idea:</b> <i>…</i>") appended
 	// after the facts and confidence bar. Builders MUST esc() every dynamic
 	// value when composing it — RenderHTML writes it verbatim.

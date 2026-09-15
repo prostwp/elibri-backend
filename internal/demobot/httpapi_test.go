@@ -552,16 +552,19 @@ func TestDigestHeadlineNamesWinnerAsset(t *testing.T) {
 // produced no reading, so it must not compete for the top slot — even on a
 // tie, where funding would otherwise win by the fixed order.
 func TestDegradedFundingNeverTopsDigest(t *testing.T) {
-	g := gathered{cards: map[string]Card{
-		keyFunding:  {Agent: "Funding Agent", Verdict: "Funding rates unavailable — liquidations only", Status: statusSourceOffline},
-		keyMomentum: {Agent: "Momentum Agent", Verdict: "BTC: NEUTRAL"},
-		keyTrend:    {Agent: "Trend Agent", Asset: "BTC", Verdict: "Flat — no readable trend"},
+	at := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	g := gathered{at: at, cards: map[string]Card{
+		keyFunding:  {Agent: "Funding Agent", Verdict: "Funding rates unavailable — liquidations only", Status: statusSourceOffline, DataTime: at},
+		keyMomentum: {Agent: "Momentum Agent", Verdict: "BTC: NEUTRAL", DataTime: at.Add(-time.Hour)},
+		keyTrend:    {Agent: "Trend Agent", Asset: "BTC", Verdict: "Flat — no readable trend", DataTime: at.Add(-time.Hour)},
 	}}
-	if _, ok := g.deviations()[keyFunding]; ok {
-		t.Fatal("degraded funding must drop out of the priority inputs")
+	for _, c := range g.selection().Candidates {
+		if c.Key == keyFunding && (c.Eligible || c.Excluded != excludedDegraded) {
+			t.Fatalf("degraded funding must drop out of the priority inputs: %+v", c)
+		}
 	}
 	if winner, _ := topSelection(g); winner != keyMomentum {
-		t.Fatalf("tie among live cards must go to momentum, got %q", winner)
+		t.Fatalf("tie among live unconfirmed cards must go to momentum, got %q", winner)
 	}
 }
 

@@ -93,14 +93,15 @@ var showcaseCategories = map[string]string{
 	keyGold:     "metals",
 }
 
-// exampleOrder is the fallback preference when the /top winner is degraded:
-// the priority trio first (reusing signalOrder, so the funding > momentum >
-// trend tie-break can never drift from priority.go), then the remaining
-// single-agent reads. digest/top are excluded — an aggregate is not one
-// agent's story — and so is risk, which is arithmetic on user numbers, not a
-// market observation with a "detected" moment.
-var exampleOrder = append(append([]string{}, signalOrder...),
-	keyMacro, keyWhale, keySR, keyVol, keyFX, keyNews)
+// exampleFallbackOrder is the FIXED preference among the non-trio agents when
+// the /top winner is degraded and no funding/momentum/trend reading is
+// eligible. Their scales (macro composite, whale flow, S/R touches, vol ratio)
+// are not comparable, so there is no cross-agent "strongest" here: the first
+// live card in this order tells the story. digest/top are excluded — an
+// aggregate is not one agent's story — and so is risk, which is arithmetic on
+// user numbers, not a market observation with a "detected" moment. Gold is
+// not listed (unchanged from the previous order; a product decision).
+var exampleFallbackOrder = []string{keyMacro, keyWhale, keySR, keyVol, keyFX, keyNews}
 
 // ── one memoized sweep ───────────────────────────────────────────────────────
 
@@ -219,6 +220,11 @@ type showcaseAgent struct {
 	OneLiner   string  `json:"one_liner"`
 	DataAsOf   string  `json:"data_as_of"`
 	ExampleURL string  `json:"example_url"`
+	// DigestStatus is the digest row's unified status (live | partial |
+	// degraded) — the same value /agents/digest serves as digest.status.
+	// Additive; absent on every other row. Status above stays live|degraded
+	// (partial reads "live" there: the digest has live sections).
+	DigestStatus string `json:"digest_status,omitempty"`
 }
 
 type showcaseResp struct {
@@ -231,25 +237,17 @@ type showcaseResp struct {
 // status is the machine state of one showcase row. Ten agents answer with
 // their card's own status; the digest is special-cased because it aggregates
 // (it renders whatever is alive and labels the rest offline, so it is only
-// degraded when the WHOLE sweep is dark).
+// degraded when the WHOLE sweep is dark). The digest's state comes from
+// gathered.health — the very function /agents/digest serves digest.status
+// from, so the two endpoints cannot disagree on the sweep. /agents/digest's
+// top-level ok/reason are the highlighted card's and may differ from this row.
 func (b *showcaseBuild) status(slug string) cardStatus {
 	if slug == keyDigest {
-		firstDegraded := statusSourceOffline
-		found := false
-		for _, k := range digestOrder {
-			c, ok := b.g.cards[k]
-			if !ok {
-				continue
-			}
-			st := c.effectiveStatus()
-			if st == statusOK {
-				return statusOK
-			}
-			if !found {
-				firstDegraded, found = st, true
-			}
+		h := b.g.health()
+		if h.Status == digestDegraded {
+			return h.Reason
 		}
-		return firstDegraded
+		return statusOK
 	}
 	return b.cards[slug].effectiveStatus()
 }
@@ -272,7 +270,8 @@ func (b *showcaseBuild) row(slug string) showcaseAgent {
 	if slug == keyDigest {
 		// The digest composes at request time and speaks for the sweep, not
 		// for one card — same wording and same stamp /agents/digest serves.
-		row.Headline = digestHeadline(c)
+		row.Headline = digestHeadlineFor(b.g.selection(), c)
+		row.DigestStatus = b.g.health().Status
 		// The oldest reading the digest renders, not the sweep time — the same
 		// rule as /agents/digest. This line kept the original defect after
 		// that one was fixed: the collapsed row claimed a fresh stamp and the
@@ -395,32 +394,47 @@ type showcaseExampleResp struct {
 	DataAsOf    string   `json:"data_as_of"`
 }
 
-// exampleCard picks the story agent: the /top winner (same deterministic
-// priority rule, via topSelection — never a second copy of it) when it
-// produced a real reading, otherwise the strongest ok agent in exampleOrder.
-// "Strongest" is the same deviation-from-neutral the priority rule ranks on;
-// strict > while scanning keeps the earlier agent on ties, so the pick is
-// deterministic. ok=false means every candidate is degraded → the caller
-// serves an honest 503 rather than a story built on a dead source.
+// exampleCard picks the story agent:
+//
+//  1. the /top winner (via topSelection — never a second copy of the rule)
+//     when it produced a real reading;
+//  2. otherwise funding/momentum/trend under the DIGEST's own rule — the same
+//     eligibility (live and fresh, rankCandidate) and the same tiers
+//     (confirmed first by rankScore, then unconfirmed; pickTop without the
+//     macro gate). A flat/grey/conflict trend never wins on raw ADX, a stale
+//     reading is never picked;
+//  3. otherwise the first live card in exampleFallbackOrder (fixed order, no
+//     cross-agent comparison of incomparable scales).
+//
+// ok=false means every candidate is degraded → the caller serves an honest
+// 503 rather than a story built on a dead source.
 func (b *showcaseBuild) exampleCard() (slug string, card Card, ok bool) {
 	winner, top := topSelection(b.g)
 	if top.effectiveStatus() == statusOK {
 		return winner, top, true
 	}
-	best, bestDev := "", -1
-	for _, k := range exampleOrder {
-		c, exists := b.cards[k]
-		if !exists || c.effectiveStatus() != statusOK {
-			continue
-		}
-		if c.Deviation > bestDev {
-			best, bestDev = k, c.Deviation
+	now := b.g.at
+	if now.IsZero() {
+		now = b.at
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var cands []topCandidate
+	for _, k := range signalOrder {
+		if c, exists := b.cards[k]; exists {
+			cands = append(cands, rankCandidate(k, c, now))
 		}
 	}
-	if best == "" {
-		return "", Card{}, false
+	if w, rule := pickTop("", cands); rule != ruleFallbackMacro {
+		return w, b.cards[w], true
 	}
-	return best, b.cards[best], true
+	for _, k := range exampleFallbackOrder {
+		if c, exists := b.cards[k]; exists && c.effectiveStatus() == statusOK {
+			return k, c, true
+		}
+	}
+	return "", Card{}, false
 }
 
 // detectedSentence is what the agent noticed, derived from the card's own

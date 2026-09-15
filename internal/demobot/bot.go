@@ -475,6 +475,13 @@ type gathered struct {
 	// Telegram-escaped render strings, the AI prompt needs the raw data.
 	topNarr *NarrativeSnapshot
 	mood    string
+	// at is the sweep time: the clock the digest ranking judges freshness at
+	// (priority.go) and the digest's generated_at. Zero only in hand-built
+	// test sweeps → selection() falls back to the wall clock.
+	at time.Time
+	// narrAt is the narrative radar's captured_at, the data time of the
+	// narrative line (zero when the radar sent none).
+	narrAt time.Time
 }
 
 // digestOrder is the render order of the one-liner section.
@@ -485,7 +492,7 @@ func (a *Agents) gather(ctx context.Context) gathered {
 	ctx, cancel := context.WithTimeout(ctx, digestBudget)
 	defer cancel()
 
-	g := gathered{cards: map[string]Card{}}
+	g := gathered{cards: map[string]Card{}, at: a.clock()}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	put := func(key string, c Card) {
@@ -534,6 +541,7 @@ func (a *Agents) gather(ctx context.Context) gathered {
 			if top.MentionCount >= newsMinMentions {
 				mu.Lock()
 				g.topNarr = &top
+				g.narrAt = parseWhen(n.CapturedAt)
 				g.extras = append(g.extras, fmt.Sprintf("📖 <b>Narrative</b>: %s (%s, score %d)",
 					esc(top.Narrative), esc(top.Stage), top.TrendScore))
 				mu.Unlock()
@@ -620,19 +628,125 @@ func digestDataTime(g gathered) time.Time {
 	return oldest
 }
 
-// deviations extracts the priority inputs: only cards whose headline reading
-// was produced compete. Checking the Offline flag alone let a funding card
-// with its rate source down (Status source_offline, Offline false, deviation
-// 0) win a tie against live neutral momentum/trend and top the digest with
-// "Funding rates unavailable".
-func (g gathered) deviations() map[string]int {
-	out := map[string]int{}
-	for _, k := range signalOrder {
-		if c, ok := g.cards[k]; ok && c.effectiveStatus() == statusOK {
-			out[k] = c.Deviation
+// ── digest sections and health ───────────────────────────────────────────────
+
+// Unified digest status, served as digest.status on /agents/digest and as
+// digest_status on the /showcase digest row — one function, both endpoints.
+const (
+	digestLive     = "live"     // every counted section produced a real reading
+	digestPartial  = "partial"  // some sections live, some degraded
+	digestDegraded = "degraded" // nothing live
+)
+
+// digestSection is one block the digest renders BELOW the highlighted card,
+// in render order. The HTML and the JSON are both built from this list, so
+// the two can never list different contents.
+type digestSection struct {
+	key    string     // agent key, "fx" or "narrative"
+	title  string     // HTML header rendered above the lines ("" = none)
+	lines  []string   // HTML lines, exactly as rendered
+	status cardStatus // statusOK when the section carries a real reading
+	asOf   time.Time  // data time of the section; zero = none (offline, no stamp)
+}
+
+// digestSections lists every block below the winner: the one-liners of the
+// other digest agents, the FX block and the narrative line.
+func digestSections(g gathered, winner string, now time.Time) []digestSection {
+	var out []digestSection
+	for _, k := range digestOrder {
+		if k == winner {
+			continue
 		}
+		c, ok := g.cards[k]
+		if !ok {
+			continue
+		}
+		s := digestSection{key: k, lines: []string{c.OneLiner()}, status: c.effectiveStatus()}
+		if !c.Offline {
+			s.asOf = c.DataTime
+		}
+		out = append(out, s)
+	}
+	// Compact FX block (informational — FX does not compete for the top slot).
+	fx := digestSection{key: keyFX, title: "<b>FX</b>", status: statusSourceOffline}
+	if !isForexOpen(now) {
+		fx.title += " <i>(market closed — Friday data)</i>"
+	}
+	if g.fxAnyOK {
+		fx.status = statusOK
+		for _, r := range g.fx {
+			fx.lines = append(fx.lines, fxLine(r))
+			if r.OK && !r.CloseAt.IsZero() && (fx.asOf.IsZero() || r.CloseAt.Before(fx.asOf)) {
+				fx.asOf = r.CloseAt.UTC()
+			}
+		}
+	} else {
+		fx.lines = []string{"⚪ FX: data unavailable right now"}
+	}
+	out = append(out, fx)
+	if len(g.extras) > 0 { // best-effort context line, omitted when the radar is silent
+		out = append(out, digestSection{key: "narrative", lines: append([]string{}, g.extras...), asOf: g.narrAt})
 	}
 	return out
+}
+
+// digestHealth is the unified status of one digest sweep.
+type digestHealth struct {
+	Status   string     // digestLive | digestPartial | digestDegraded
+	Live     int        // sections with a real reading
+	Total    int        // sections counted: the seven digest agents + the FX block
+	Degraded []string   // keys of the degraded sections, in render order
+	Reason   cardStatus // the first degraded section's status (for ok=false)
+}
+
+// health counts what a digest reader actually gets: every digest agent and
+// the FX block (the narrative line is optional context and not counted). It
+// no longer depends on which card won the top slot — /agents/digest used to
+// inherit ok/reason from the winner while /showcase called the same sweep
+// live, and a dead macro fallback made the digest "ok=false" beside live
+// sections.
+func (g gathered) health() digestHealth {
+	h := digestHealth{Reason: statusOK}
+	count := func(key string, st cardStatus) {
+		h.Total++
+		if st == statusOK {
+			h.Live++
+			return
+		}
+		if h.Reason == statusOK {
+			h.Reason = st
+		}
+		h.Degraded = append(h.Degraded, key)
+	}
+	for _, k := range digestOrder {
+		if c, ok := g.cards[k]; ok {
+			count(k, c.effectiveStatus())
+		}
+	}
+	if g.fxAnyOK {
+		count(keyFX, statusOK)
+	} else {
+		count(keyFX, statusSourceOffline)
+	}
+	switch {
+	case h.Live == h.Total:
+		h.Status = digestLive
+	case h.Live == 0:
+		h.Status = digestDegraded
+	default:
+		h.Status = digestPartial
+	}
+	return h
+}
+
+// digestHeadlineFor is the digest headline for a full selection. It is the
+// plain digestHeadline except in the no_highlight state with the display flag
+// on (off by default — the human decision is pending).
+func digestHeadlineFor(p topPick, top Card) string {
+	if p.NoHighlight && digestShowNoHighlight {
+		return "No highlighted reading — nothing confirmed among " + allSignalNames()
+	}
+	return digestHeadline(top)
 }
 
 func (b *Bot) digestReply(ctx context.Context) string {
@@ -644,6 +758,7 @@ func (b *Bot) digestReply(ctx context.Context) string {
 // optional AI brief → the exact Telegram HTML message. Shared verbatim by the
 // Telegram /digest command and the HTTP /agents/digest endpoint.
 func renderDigestHTML(g gathered, brief string) string {
+	p := g.selection()
 	winner, top := topSelection(g)
 
 	var sb strings.Builder
@@ -654,38 +769,22 @@ func renderDigestHTML(g gathered, brief string) string {
 		sb.WriteString(esc(brief))
 		sb.WriteString("</i>\n\n")
 	}
-	sb.WriteString("<b>AlphaVizor Digest</b> — top signal first\n\n")
+	sb.WriteString("<b>AlphaVizor Digest</b> — top signal first\n")
+	// How the card below was chosen: the rule, not the market.
+	sb.WriteString("<i>" + esc(selectionLine(p)) + "</i>\n\n")
+	if p.NoHighlight && digestShowNoHighlight {
+		sb.WriteString("<b>" + esc(digestHeadlineFor(p, top)) + "</b>\n")
+	}
 	sb.WriteString(top.renderBody())
 	sb.WriteString("\n<b>Everything else</b>\n")
-	for _, k := range digestOrder {
-		if k == winner {
-			continue
+	for _, s := range digestSections(g, winner, p.At) {
+		if s.title != "" {
+			sb.WriteString("\n" + s.title + "\n")
 		}
-		c, ok := g.cards[k]
-		if !ok {
-			continue
-		}
-		sb.WriteString(c.OneLiner())
-		sb.WriteString("\n")
-	}
-	// Compact FX block (informational — see priority.go: FX does not
-	// compete for the top slot in v1).
-	fxHeader := "\n<b>FX</b>"
-	if !isForexOpen(time.Now()) {
-		fxHeader += " <i>(market closed — Friday data)</i>"
-	}
-	sb.WriteString(fxHeader + "\n")
-	if g.fxAnyOK {
-		for _, r := range g.fx {
-			sb.WriteString(fxLine(r))
+		for _, l := range s.lines {
+			sb.WriteString(l)
 			sb.WriteString("\n")
 		}
-	} else {
-		sb.WriteString("⚪ FX: data unavailable right now\n")
-	}
-	for _, ex := range g.extras {
-		sb.WriteString(ex)
-		sb.WriteString("\n")
 	}
 	sb.WriteString("\n<i>Analytics, not financial advice · AlphaVizor · ")
 	// The oldest reading on the card, not now(): see oldestData.

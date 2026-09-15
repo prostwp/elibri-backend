@@ -466,42 +466,54 @@ func TestShowcaseExampleFallsBackWhenTopDegraded(t *testing.T) {
 	}
 }
 
-// The fallback ranking itself: strongest deviation wins, ties keep the
-// earlier agent in exampleOrder (funding > momentum > trend, from the same
-// signalOrder the priority rule uses).
-func TestShowcaseExamplePicksStrongestOnFallback(t *testing.T) {
+// The fallback after a degraded winner reuses the digest's own rule for the
+// trio (eligibility + confirmed tier), and a FIXED order for everything else
+// — never a cross-agent "strongest" by raw Deviation.
+func TestShowcaseExampleFallbackUsesDigestRule(t *testing.T) {
 	degradedMacro := Card{Emoji: emojiNeutral, Agent: "Macro Agent", Verdict: "UNKNOWN", Status: statusNoData}
+	fresh := goldenTime.Add(-time.Hour)
 	okCard := func(agent string, dev int) Card {
-		return Card{Emoji: emojiBull, Agent: agent, Verdict: agent + " reading", Short: "ok", Deviation: dev}
+		return Card{Emoji: emojiBull, Agent: agent, Verdict: agent + " reading", Short: "ok", Deviation: dev, DataTime: fresh}
 	}
 	build := func(cards map[string]Card) *showcaseBuild {
 		return &showcaseBuild{
-			// risk_off pins the top slot on macro whatever the deviations are.
-			g:     gathered{regime: "risk_off", cards: map[string]Card{keyMacro: cards[keyMacro]}},
+			// Only the degraded macro is in the sweep, so topSelection falls
+			// back to it and the example has to choose among b.cards.
+			g:     gathered{regime: "unknown", at: goldenTime, cards: map[string]Card{keyMacro: cards[keyMacro]}},
 			cards: cards,
 			at:    goldenTime,
 		}
 	}
 
-	b := build(map[string]Card{
-		keyMacro:   degradedMacro,
-		keyFunding: okCard("Funding Agent", 10),
-		keyTrend:   okCard("Trend Agent", 40),
-		keySR:      okCard("S/R Agent", 40), // ties trend, but comes later in exampleOrder
-	})
-	slug, card, ok := b.exampleCard()
-	if !ok || slug != keyTrend {
-		t.Errorf("fallback picked %q (ok=%v), want %q — highest deviation, ties keep the earlier agent", slug, ok, keyTrend)
+	// Flat trend with a high raw ADX vs a confirmed but lower-scored
+	// momentum → the confirmed one.
+	flat := okCard("Trend Agent", 45)
+	flat.State = trendFlat
+	mom := okCard("Momentum Agent", 12)
+	mom.confirmed = true
+	b := build(map[string]Card{keyMacro: degradedMacro, keyTrend: flat, keyMomentum: mom, keySR: okCard("S/R Agent", 90)})
+	if slug, card, ok := b.exampleCard(); !ok || slug != keyMomentum || card.Agent != "Momentum Agent" {
+		t.Errorf("flat ADX 45 vs confirmed momentum 12: got %q (ok=%v), want %q", slug, ok, keyMomentum)
 	}
-	if card.Agent != "Trend Agent" {
-		t.Errorf("card %q, want the trend card", card.Agent)
+
+	// A stale candidate is never picked, even confirmed and strongest.
+	staleTrend := okCard("Trend Agent", 90)
+	staleTrend.State, staleTrend.confirmed = trendUp, true
+	staleTrend.DataTime = goldenTime.Add(-20 * time.Hour)
+	b = build(map[string]Card{keyMacro: degradedMacro, keyTrend: staleTrend, keyWhale: okCard("Whale Flow Agent", 1)})
+	if slug, _, ok := b.exampleCard(); !ok || slug != keyWhale {
+		t.Errorf("stale trend: got %q (ok=%v), want the live whale card", slug, ok)
+	}
+
+	// Only non-trio cards live → the documented fixed order, whatever their
+	// Deviation says (S/R 99 does not beat whale 1: whale comes first).
+	b = build(map[string]Card{keyMacro: degradedMacro, keySR: okCard("S/R Agent", 99), keyWhale: okCard("Whale Flow Agent", 1), keyVol: okCard("Volatility Agent", 80)})
+	if slug, _, ok := b.exampleCard(); !ok || slug != keyWhale {
+		t.Errorf("non-trio fallback: got %q (ok=%v), want %q (exampleFallbackOrder)", slug, ok, keyWhale)
 	}
 
 	// A healthy winner is never overridden by a stronger-looking other agent.
-	healthy := build(map[string]Card{
-		keyMacro: okCard("Macro Agent", 5),
-		keyTrend: okCard("Trend Agent", 99),
-	})
+	healthy := build(map[string]Card{keyMacro: okCard("Macro Agent", 5), keySR: okCard("S/R Agent", 99)})
 	if slug, _, ok := healthy.exampleCard(); !ok || slug != keyMacro {
 		t.Errorf("healthy top winner: got %q (ok=%v), want %q", slug, ok, keyMacro)
 	}

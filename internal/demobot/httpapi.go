@@ -94,9 +94,129 @@ type httpEnvelope struct {
 	Confidence *int          `json:"confidence"`         // 0-100, null when the source gave none
 	AIText     *string       `json:"ai_text"`            // plain-text AI block, null when absent
 	Sections   []string      `json:"sections,omitempty"` // digest only: the one-liners
-	DataAsOf   string        `json:"data_as_of"`         // RFC3339, same stamp as the card footer
-	Disclaimer string        `json:"disclaimer"`
-	CardHTML   string        `json:"card_html"` // the exact Telegram HTML card
+	// Digest is the digest's own machine readout (digest only, additive
+	// 2026-09-15): unified status, how the highlighted card was selected and
+	// every section card_html renders (FX and narrative included), each with
+	// its own data time.
+	Digest     *DigestReadout `json:"digest,omitempty"`
+	DataAsOf   string         `json:"data_as_of"` // RFC3339, same stamp as the card footer
+	Disclaimer string         `json:"disclaimer"`
+	CardHTML   string         `json:"card_html"` // the exact Telegram HTML card
+}
+
+// DigestReadout is the envelope's "digest" object (docs/demobot-http.md
+// "Digest readout").
+type DigestReadout struct {
+	Status          string          `json:"status"` // live | partial | degraded — same value as /showcase digest_status
+	LiveSections    int             `json:"live_sections"`
+	TotalSections   int             `json:"total_sections"`   // seven digest agents + the FX block
+	DegradedSources []string        `json:"degraded_sources"` // section keys, [] when none
+	GeneratedAt     string          `json:"generated_at"`     // sweep time
+	Selection       DigestSelection `json:"selection"`
+	Sections        []DigestSection `json:"sections"` // every block below the highlighted card, render order
+}
+
+// DigestSelection says how the highlighted card was chosen.
+type DigestSelection struct {
+	State             string            `json:"state"`  // selected | no_highlight
+	Rule              string            `json:"rule"`   // macro_risk_off | strongest_confirmed | fallback_unconfirmed | fallback_macro
+	Winner            string            `json:"winner"` // agent key of the highlighted card
+	Line              string            `json:"line"`   // the one-line reason shown in card_html
+	HighlightOK       bool              `json:"highlight_ok"`
+	HighlightReason   *string           `json:"highlight_reason"`
+	HighlightDataAsOf string            `json:"highlight_data_as_of"`
+	MacroRegime       string            `json:"macro_regime"`
+	MacroRiskOffGate  string            `json:"macro_risk_off_gate,omitempty"` // only when the regime is risk_off
+	ScalesCalibrated  bool              `json:"scales_calibrated"`             // always false for now
+	Candidates        []DigestCandidate `json:"candidates"`                    // funding, momentum, trend
+}
+
+// DigestCandidate is one priority agent's standing in the sweep.
+type DigestCandidate struct {
+	Agent         string  `json:"agent"`
+	Eligible      bool    `json:"eligible"`
+	Excluded      *string `json:"excluded"`  // degraded | stale | no_data_time; null when eligible
+	Confirmed     bool    `json:"confirmed"` // the agent's own rule committed to a finding
+	Score         int     `json:"score"`     // 0..100, comparable only within one tier
+	DataAsOf      *string `json:"data_as_of"`
+	MaxAgeMinutes int     `json:"max_age_minutes"` // freshness limit for the top slot
+}
+
+// DigestSection is one rendered block below the highlighted card.
+type DigestSection struct {
+	Key      string   `json:"key"`   // macro | whale | funding | momentum | trend | sr | vol | fx | narrative
+	Title    *string  `json:"title"` // plain header above the lines (FX), null when none
+	Lines    []string `json:"lines"` // plain text, exactly as in card_html
+	OK       bool     `json:"ok"`
+	Reason   *string  `json:"reason"`
+	DataAsOf *string  `json:"data_as_of"` // null without a data time (offline, unstamped)
+}
+
+func rfcPtr(t time.Time) *string {
+	if t.IsZero() {
+		return nil
+	}
+	s := t.UTC().Format(time.RFC3339)
+	return &s
+}
+
+func reasonPtr(st cardStatus) *string {
+	if st == statusOK {
+		return nil
+	}
+	r := st.reason()
+	return &r
+}
+
+// digestReadout builds the "digest" object from the same sweep, selection and
+// section list the HTML renders.
+func digestReadout(g gathered, p topPick, top Card) *DigestReadout {
+	h := g.health()
+	out := &DigestReadout{
+		Status:          h.Status,
+		LiveSections:    h.Live,
+		TotalSections:   h.Total,
+		DegradedSources: append([]string{}, h.Degraded...),
+		GeneratedAt:     p.At.UTC().Format(time.RFC3339),
+		Sections:        []DigestSection{},
+	}
+	state := "selected"
+	if p.NoHighlight {
+		state = "no_highlight"
+	}
+	sel := DigestSelection{
+		State: state, Rule: p.Rule, Winner: p.Winner, Line: selectionLine(p),
+		HighlightOK:       top.effectiveStatus() == statusOK,
+		HighlightReason:   reasonPtr(top.effectiveStatus()),
+		HighlightDataAsOf: top.DataTime.UTC().Format(time.RFC3339),
+		MacroRegime:       p.MacroRegime,
+		MacroRiskOffGate:  p.MacroGate,
+		Candidates:        []DigestCandidate{},
+	}
+	for _, c := range p.Candidates {
+		dc := DigestCandidate{
+			Agent: c.Key, Eligible: c.Eligible, Confirmed: c.Confirmed, Score: c.Score,
+			DataAsOf: rfcPtr(c.AsOf), MaxAgeMinutes: int(c.MaxAge / time.Minute),
+		}
+		if c.Excluded != "" {
+			ex := c.Excluded
+			dc.Excluded = &ex
+		}
+		sel.Candidates = append(sel.Candidates, dc)
+	}
+	out.Selection = sel
+	for _, s := range digestSections(g, p.Winner, p.At) {
+		ds := DigestSection{Key: s.key, OK: s.status == statusOK, Reason: reasonPtr(s.status), DataAsOf: rfcPtr(s.asOf)}
+		if s.title != "" {
+			t := htmlToPlain(s.title)
+			ds.Title = &t
+		}
+		for _, l := range s.lines {
+			ds.Lines = append(ds.Lines, htmlToPlain(l))
+		}
+		out.Sections = append(out.Sections, ds)
+	}
+	return out
 }
 
 // semaphoreOf maps the card emoji contract to the JSON semaphore words.
@@ -671,11 +791,18 @@ func (s *HTTPServer) handleDigest(w http.ResponseWriter, r *http.Request, ctx co
 // digestEnvelope is the pure half of handleDigest: one gathered sweep + the AI
 // brief → the digest envelope. No network, no clock — testable on its own.
 func digestEnvelope(g gathered, brief string) httpEnvelope {
+	p := g.selection()
 	winner, top := topSelection(g)
 	env := cardEnvelope(top)
 	env.Agent = digestAgentName
 	env.Asset = ""
-	env.Verdict = digestHeadline(top)
+	env.Verdict = digestHeadlineFor(p, top)
+	// Top-level ok/reason stay the HIGHLIGHTED card's status, exactly as
+	// before (cardEnvelope above): clients gate showing verdict/semaphore on
+	// them. The sweep's health lives only in the additive digest.status /
+	// live_sections / degraded_sources (and /showcase digest_status);
+	// digest.selection.highlight_ok/_reason repeat the top-level pair.
+	env.Digest = digestReadout(g, p, top)
 	// blocks are one agent's content sentences (trend only). Inherited from the
 	// winner card they read as the DIGEST's own conclusion — a live digest said
 	// "Macro: risk-on" in its sections while blocks.regime said "flat — no

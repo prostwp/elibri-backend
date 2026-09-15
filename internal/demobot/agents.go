@@ -169,8 +169,8 @@ var howTexts = map[string]string{
 	keyVol:      "ATR(14) now vs its 30-bar average. Ratio 1.25+ = volatility expanding; 0.8- = compressed. Measures how far price moves per bar, not which way, and does not confirm a breakout.",
 	keyRisk:     "Position size = (balance × risk%) ÷ |entry − stop|. Valid when a 1.0 price move changes one unit's value by 1.0 in account currency (spot); FX lots, futures, CFDs differ.",
 	keyFX:       "EMA50 vs EMA200 trend on 1h bars, RSI(14) and 24h change from Yahoo Finance for EURUSD, GBPUSD, USDJPY and gold (COMEX GC=F futures). Weekend closures are flagged.",
-	keyDigest:   "Deterministic priority: RISK-OFF macro always tops; otherwise the strongest deviation from neutral among funding, momentum, trend. Ties break funding > momentum > trend.",
-	keyTop:      "Deterministic priority: RISK-OFF macro always tops; otherwise the strongest deviation from neutral among funding, momentum, trend. Ties break funding > momentum > trend.",
+	keyDigest:   "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",
+	keyTop:      "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",
 	keyGold:     goldHow,
 	keyNews:     "Crypto themes in CoinDesk and CoinTelegraph headlines plus Reddit posts when reachable. Score 0-100 blends mention growth, volume, sentiment, impact, source spread. From 5 mentions/24h.",
 }
@@ -447,12 +447,28 @@ func mentionsWord(n int) string {
 // Funding-rate verdict thresholds (8h rate, absolute):
 // +0.03% and above = longs crowded; -0.01% and below = shorts crowded
 // (negative funding is rarer, so its threshold is tighter). In between =
-// balanced. Deviation scales |widest| against 0.10%/8h == 100.
+// balanced. Deviation: see fundingDeviation.
 const (
 	fundingLongsCrowded  = 0.0003
 	fundingShortsCrowded = -0.0001
-	fundingDevFullScale  = 0.0010
+	// fundingThresholdScore is the digest score of a rate sitting exactly on
+	// its side's threshold. 30 keeps the positive side identical to the old
+	// |rate|/0.10% scale (+0.03% → 30, +0.10% → 100).
+	fundingThresholdScore = 30
 )
+
+// fundingDeviation is the digest ranking score of the widest rate, measured
+// against the threshold of ITS OWN side, so crossing either threshold scores
+// the same 30. The old symmetric |rate|/0.10% scale ignored the asymmetric
+// thresholds: −0.010% ("shorts crowded") scored 10 while +0.029% ("balanced")
+// scored 29. Ranking only — the verdict switch in FundingCard is unchanged.
+func fundingDeviation(widest float64) int {
+	th := fundingLongsCrowded
+	if widest < 0 {
+		th = -fundingShortsCrowded
+	}
+	return clampInt(int(math.Round(math.Abs(widest)/th*fundingThresholdScore)), 0, 100)
+}
 
 func (a *Agents) FundingCard(ctx context.Context) Card {
 	rates, ratesErr := fetchFundingRates(ctx, fundingSymbols)
@@ -481,8 +497,10 @@ func (a *Agents) FundingCard(ctx context.Context) Card {
 		switch {
 		case widest >= fundingLongsCrowded:
 			c.Emoji, c.Verdict, c.Short = emojiBear, "Longs crowded — squeeze risk building", "longs crowded"
+			c.confirmed = true
 		case widest <= fundingShortsCrowded:
 			c.Emoji, c.Verdict, c.Short = emojiBull, "Shorts crowded — squeeze fuel above", "shorts crowded"
+			c.confirmed = true
 		default:
 			c.Emoji, c.Verdict, c.Short = emojiNeutral, "Funding balanced — no crowd to punish", "balanced"
 		}
@@ -494,7 +512,7 @@ func (a *Agents) FundingCard(ctx context.Context) Card {
 		if btc, ok := rates["BTCUSDT"]; ok && widestSym != "BTCUSDT" {
 			c.Facts = append(c.Facts, fmt.Sprintf("BTC funding: %+.4f%%/8h", btc*100))
 		}
-		c.Deviation = clampInt(int(math.Round(math.Abs(widest)/fundingDevFullScale*100)), 0, 100)
+		c.Deviation = fundingDeviation(widest)
 	} else {
 		c.Emoji, c.Verdict, c.Short = emojiNeutral, "Funding rates unavailable — liquidations only", "rates offline"
 		// The agent's headline reading (funding skew) was not produced — the
@@ -671,6 +689,18 @@ func (a *Agents) momentumReadFor(ctx context.Context, spec assetSpec) (momentumR
 	return momentumReadFromCandles(spec, candles)
 }
 
+// momentumRankScore is one read's digest ranking score: |RSI−50|×2 for a
+// CONFIRMED bullish/bearish read, 0 otherwise. A neutral read (RSI and MACD
+// disagree, or RSI inside 45–55) used to score on RSI distance alone and took
+// the top slot with a card where every asset said NEUTRAL. Ranking only — the
+// verdict rule (momentumVerdict) is unchanged.
+func momentumRankScore(r momentumRead) int {
+	if r.verdict != "bullish" && r.verdict != "bearish" {
+		return 0
+	}
+	return clampInt(int(math.Abs(r.rsi-50)*2), 0, 100)
+}
+
 func momentumEmoji(verdict string) string {
 	switch verdict {
 	case "bullish":
@@ -786,11 +816,19 @@ func (a *Agents) MomentumCard(ctx context.Context) Card {
 		}
 		// Deviation drives the /digest priority rule and is CRYPTO-ONLY in
 		// v1 — FX reads never push momentum to the top slot (see priority.go).
+		// Only a confirmed read scores (momentumRankScore). The ranking's
+		// freshness is the oldest RANKED (Binance) bar, not gold's.
 		// No Confidence bar either: the card contract shows one only where an
 		// API supplies confidence, and this read is computed locally.
 		if r.source == srcBinance {
-			if d := int(math.Abs(r.rsi-50) * 2); d > maxDev {
-				maxDev = clampInt(d, 0, 100)
+			if d := momentumRankScore(r); d > maxDev {
+				maxDev = d
+			}
+			if r.verdict == "bullish" || r.verdict == "bearish" {
+				c.confirmed = true
+			}
+			if !r.closeAt.IsZero() && (c.rankAsOf.IsZero() || r.closeAt.Before(c.rankAsOf)) {
+				c.rankAsOf = r.closeAt
 			}
 		}
 	}
@@ -884,7 +922,8 @@ func (a *Agents) MomentumAssetCard(ctx context.Context, spec assetSpec) Card {
 		Emoji:      momentumEmoji(r.verdict),
 		Verdict:    fmt.Sprintf("%s: %s", r.name, strings.ToUpper(r.verdict)),
 		Short:      r.verdict,
-		Deviation:  clampInt(int(math.Abs(r.rsi-50)*2), 0, 100),
+		Deviation:  momentumRankScore(r),
+		confirmed:  r.verdict == "bullish" || r.verdict == "bearish",
 	}
 	c.Facts = append(c.Facts,
 		fmt.Sprintf("RSI(14): %.1f", r.rsi),
@@ -1012,8 +1051,14 @@ func (a *Agents) MomentumScanCard(ctx context.Context, keys []string, tf string)
 			}
 			// Deviation stays CRYPTO-ONLY (v1 priority rule — see priority.go).
 			if spec.Source == srcBinance {
-				if d := clampInt(int(math.Abs(r.rsi-50)*2), 0, 100); d > maxDev {
+				if d := momentumRankScore(r); d > maxDev {
 					maxDev = d
+				}
+				if r.verdict == "bullish" || r.verdict == "bearish" {
+					c.confirmed = true
+				}
+				if !r.closeAt.IsZero() && (c.rankAsOf.IsZero() || r.closeAt.Before(c.rankAsOf)) {
+					c.rankAsOf = r.closeAt
 				}
 			}
 		}
@@ -1501,8 +1546,11 @@ func trendCardFrom(r trendRead, spec assetSpec, dataTime time.Time) Card {
 	}
 	c.Blocks = v.blocks(c.Short)
 	c.trendConclusion = v.neutralConclusion(spec.Display)
-	// Confirmed trends count double toward the priority rule; unconfirmed
-	// states carry only the raw ADX (documented in pickTop's rule 2).
+	// Confirmed trends count double toward the priority rule. Unconfirmed
+	// states keep the raw ADX here, but the digest ranking (and the showcase
+	// fallback, which reuses it) scores them 0 and never lets them outrank a
+	// confirmed reading (rankScore / pickTop in priority.go).
+	c.confirmed = r.Confirmed()
 	if state == trendUp || state == trendDown {
 		c.Deviation = clampInt(int(r.ADX)*2, 0, 100)
 	} else {

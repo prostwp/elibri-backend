@@ -285,7 +285,8 @@ narrative radar).
       "headline": "Top signal: Trend Agent · BTC — Confirmed UPTREND",
       "one_liner": "🟢 Trend BTC: confirmed uptrend",
       "data_as_of": "2026-08-25T12:31:04Z",
-      "example_url": "/agents/digest"
+      "example_url": "/agents/digest",
+      "digest_status": "live"
     }
   ]
 }
@@ -294,9 +295,10 @@ narrative radar).
 | Field | Meaning |
 |---|---|
 | `generated_at` | When the **sweep** ran, not when the request arrived — with the 60s memo a render can legitimately serve a payload up to a minute old, and saying so is the honest form of a cache |
-| `live_count` / `total_count` | Agents that returned `ok: true` on this sweep, out of every agent that exists |
-| `status` | `live` \| `degraded` — **never `planned`**. This endpoint only lists agents whose builder actually ran; there is no fictional state and no roadmap entry here |
-| `ok` / `reason` | The same machine-readable pair the agent envelopes carry (`source_offline`, `insufficient_history`, `below_threshold`, `no_data`, `market_closed`), `null` when `ok` |
+| `live_count` / `total_count` | Rows with `ok: true` on this sweep, out of every agent that exists. The `digest` row counts by the sweep's health (see `ok` below), not by its highlighted card |
+| `status` | `live` \| `degraded` — **never `planned`**. This endpoint only lists agents whose builder actually ran; there is no fictional state and no roadmap entry here. For `digest`, `partial` reads `live` here; the three-state value is `digest_status` |
+| `ok` / `reason` | The same machine-readable pair the agent envelopes carry (`source_offline`, `insufficient_history`, `below_threshold`, `no_data`, `market_closed`), `null` when `ok`. **Exception — the `digest` row:** the pair speaks for the whole sweep (`ok: false` only when no section is live, `reason` = the first degraded section's), so it can differ from the top-level pair of `/agents/digest`, which describes the highlighted card. Example: macro and the funding/momentum/trend trio offline, whale live → this row `ok: true`, `digest_status: "partial"`; `/agents/digest` `ok: false`, `"reason": "source_offline"` |
+| `digest_status` | `digest` row only: `live` \| `partial` \| `degraded` — the same value `/agents/digest` serves as `digest.status`. Absent on every other row |
 | `headline` | The card's verdict line — for `digest`, the prioritized "Top signal: …" line |
 | `one_liner` | The digest-style one-liner, plain text |
 | `category` | `crypto` \| `forex` \| `metals` \| `macro` \| `onchain` \| `derivatives` \| `news` \| `tools`. `tools` holds the three that are not a single-market read: `digest`, `top`, `risk`; `metals` holds the gold agent |
@@ -336,12 +338,15 @@ reads it: **detected → explained → data → conclusion**.
 ```
 
 - **Which agent tells the story**: the same deterministic priority rule
-  `/top` uses (`topSelection` — RISK-OFF macro first, otherwise the strongest
-  deviation from neutral among funding/momentum/trend, ties breaking
-  funding > momentum > trend). If that winner is **degraded**, the story
-  falls back to the strongest `ok` agent instead of narrating a dead source;
-  `digest`, `top` and `risk` are never the subject (an aggregate is not one
-  agent's story, and the calculator has no "detected" moment).
+  `/top` uses (`topSelection` — see [digest readout](#digest-readout)). If
+  that winner is **degraded**, the story falls back instead of narrating a
+  dead source: first funding/momentum/trend under the digest's own rule
+  (live and fresh only, confirmed readings first — never a flat trend on raw
+  ADX), then the first live card in the fixed order macro → whale → S/R →
+  volatility → FX → narrative radar. No cross-agent "strongest" is computed:
+  those scales are not comparable. `digest`, `top` and `risk` are never the
+  subject (an aggregate is not one agent's story, and the calculator has no
+  "detected" moment).
 - **`explained`** is the AI why-line when one is available, taken from the
   **same 5-minute memo `/top` uses** — the landing costs no extra LLM spend
   and opens no new prompt kind. On the fallback path there is deliberately no
@@ -481,6 +486,7 @@ Every agent endpoint answers with one shape:
 | `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a **rule score**, not a confidence or a strength, and ships in the verdict (`RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)`) and in `macro.rule_score`. The `?asset=gold` view has its own `gold score` and also serves `confidence: null` |
 | `ai_text` | string \| null | Plain-text AI block (mood read / idea / brief / why-line); `null` when AI is disabled or the call failed |
 | `sections` | string[] | **digest only**: plain-text one-liners of every other agent (the winner heads the envelope) |
+| `digest` | object | **digest only** (additive, 2026-09-15): unified status, how the highlighted card was selected, and every block `card_html` renders below it (FX and narrative included), each with its own data time — see [digest readout](#digest-readout) |
 | `data_as_of` | string | RFC3339 UTC; for candle-based agents this is the **close time of the last closed bar used** — the same stamp as the card footer. **Macro** (since 2026-09-15): the **oldest** `as_of` among the live lamps (the source's session stamp), never the response build time — `UNKNOWN` macro cards keep the response time |
 | `Last-Modified` (header) | HTTP date | The validator for `If-Modified-Since` → `304`. **Single cards**: the card's data time (macro: the newest of `captured_at` and every stamp it renders — see [macro card](#macro-card-and-content-blocks)). **`/showcase`** (since 2026-09-15): the sweep time (`generated_at`) — its body is fixed for the life of the memoized sweep, so it returns `304` only while that sweep is served (up to 60 s). **`/agents/digest`, `/agents/top` and `/showcase/example` send no `Last-Modified` and ignore `If-Modified-Since`** (always `200`): the digest re-sweeps on every request (and the header's one-second resolution could not tell two builds apart); `/top` and the example add per-request AI text (brief, why-line, explanation) that reads the whole sweep, so the winner card's stamp does not cover them. No component stamp is sound for a composite — a component can change while being neither the newest nor the oldest reading. `data_as_of` is unaffected (still the oldest reading) |
 | `disclaimer` | string | Always `"Analytics, not financial advice"` |
@@ -502,9 +508,53 @@ Every envelope carries the pair; when `ok` is `false`, `reason` is one of:
 For `digest` / `top` the pair (and `levels`) describes the **top signal
 card** heading the envelope — with every source dead, the honest macro
 fallback yields `ok: false`, `"reason": "source_offline"` inside the 200.
-`blocks` (one agent's content sentences) ship on `/agents/top` only — the
-digest envelope never carries them, since they describe that one card, not
-the whole sweep (fixed 2026-09-15).
+The health of the whole digest sweep is **not** in this pair: it is
+`digest.status` (`live` \| `partial` \| `degraded`, the same value as the
+`/showcase` digest row's `digest_status`), with `digest.live_sections` and
+`digest.degraded_sources`. `digest.selection.highlight_ok` /
+`highlight_reason` repeat the top-level pair. `blocks` (one agent's content sentences) ship on
+`/agents/top` only — the digest envelope never carries them, since they
+describe that one card, not the whole sweep (fixed 2026-09-15).
+
+### Digest readout
+
+`digest` on `/agents/digest` (additive). The rule, in order:
+
+1. Macro `risk_off` takes the slot only when the card is `ok`, has at least
+   the rule's minimum voting lamps behind a rule score, and its oldest live
+   lamp is at most **80 h** old (72 h weekend gap between session stamps + 8 h
+   for a late feed). Otherwise `selection.macro_risk_off_gate` says why
+   (`degraded` | `partial_lamps` | `stale`) and the crypto rule decides.
+2. Among funding, momentum, trend: only **eligible** candidates compete —
+   status `ok` and fresh: funding ≤ **15 min** (a request-time read),
+   momentum and trend ≤ **8 h** (two 4 h bars; momentum judged on its BTC/ETH
+   bars, not gold). The strongest **confirmed** reading wins (funding
+   crowded, momentum bullish/bearish on BTC/ETH, trend up/down); ties
+   funding > momentum > trend.
+3. Scores (0–100, **not calibrated against each other**): funding = widest
+   rate against its own side's threshold (either threshold = 30; +0.10% or
+   −0.033% = 100); momentum = |RSI−50|×2 of a confirmed read, else 0; trend =
+   ADX×2 when confirmed, else 0.
+4. Nothing confirmed → `selection.state: "no_highlight"`. Until the product
+   decision the digest still shows a card (the highest eligible unconfirmed
+   score, ties momentum > trend > funding — a balanced funding never wins a
+   tie); `selection.line` says nothing was confirmed. No eligible candidate
+   at all → the macro card (`fallback_macro`).
+
+| Field | Meaning |
+|---|---|
+| `status` | `live` \| `partial` \| `degraded` over the seven digest agents + the FX block. Same value as the `/showcase` digest row's `digest_status` |
+| `live_sections` / `total_sections` / `degraded_sources` | Coverage behind `status` |
+| `generated_at` | Sweep time; freshness is judged at this instant |
+| `selection.state` | `selected` \| `no_highlight` |
+| `selection.rule` | `macro_risk_off` \| `strongest_confirmed` \| `fallback_unconfirmed` \| `fallback_macro` |
+| `selection.winner` | Agent key of the highlighted card |
+| `selection.line` | The one-line reason printed under the digest header (≤110 chars) |
+| `selection.highlight_ok` / `highlight_reason` / `highlight_data_as_of` | The highlighted card's own status and data time |
+| `selection.macro_regime` / `macro_risk_off_gate` | The regime; the gate outcome only when it is `risk_off` |
+| `selection.scales_calibrated` | Always `false` for now |
+| `selection.candidates[]` | `{agent, eligible, excluded (degraded\|stale\|no_data_time\|null), confirmed, score, data_as_of, max_age_minutes}` |
+| `sections[]` | Every block `card_html` renders below the highlighted card, in order: `{key, title, lines, ok, reason, data_as_of}`; `key` is an agent key, `fx` or `narrative`; `lines` are the plain-text lines exactly as rendered |
 
 The `503` error body carries the same pair beside the message, so single-agent
 degraded states are branchable too:

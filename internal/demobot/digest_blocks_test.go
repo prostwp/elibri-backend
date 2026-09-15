@@ -14,7 +14,7 @@ func TestDigestEnvelopeDropsWinnerBlocks(t *testing.T) {
 	trend := Card{
 		Agent: "Trend Agent", ShortName: "Trend", Asset: "BTC", AssetKey: "btc",
 		Command: keyTrend, Verdict: "Confirmed UPTREND · 4h", Short: "confirmed uptrend",
-		Emoji: emojiBull, State: trendUp, Deviation: 90, DataTime: at,
+		Emoji: emojiBull, State: trendUp, Deviation: 90, DataTime: at, confirmed: true,
 		Blocks: &ContentBlocks{},
 	}
 	macro := Card{
@@ -22,7 +22,7 @@ func TestDigestEnvelopeDropsWinnerBlocks(t *testing.T) {
 		Verdict: "RISK-ON — tradfin lamps lean into risk", Short: "risk-on",
 		Emoji: emojiBull, Deviation: 10, DataTime: at,
 	}
-	g := gathered{cards: map[string]Card{keyTrend: trend, keyMacro: macro}, regime: "risk_on"}
+	g := gathered{cards: map[string]Card{keyTrend: trend, keyMacro: macro}, regime: "risk_on", at: at.Add(time.Hour)}
 
 	winner, top := topSelection(g)
 	if winner != keyTrend {
