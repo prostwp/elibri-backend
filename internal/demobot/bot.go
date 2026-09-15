@@ -668,21 +668,33 @@ func digestSections(g gathered, winner string, now time.Time) []digestSection {
 		out = append(out, s)
 	}
 	// Compact FX block (informational — FX does not compete for the top slot).
-	fx := digestSection{key: keyFX, title: "<b>FX</b>", status: statusSourceOffline}
-	if !isForexOpen(now) {
-		fx.title += " <i>(market closed — Friday data)</i>"
-	}
-	if g.fxAnyOK {
+	// The lines are the /fx card's market lines, verbatim (fxMarketLine).
+	// The title carries the oldest bar ("as of"); rows with a newer bar are
+	// named on one extra line, so no row passes for fresher than it is.
+	fx := digestSection{key: keyFX, status: statusSourceOffline}
+	switch {
+	case g.fxAnyOK:
 		fx.status = statusOK
 		for _, r := range g.fx {
-			fx.lines = append(fx.lines, fxLine(r))
+			fx.lines = append(fx.lines, fxMarketLine(r, now))
 			if r.OK && !r.CloseAt.IsZero() && (fx.asOf.IsZero() || r.CloseAt.Before(fx.asOf)) {
 				fx.asOf = r.CloseAt.UTC()
 			}
 		}
-	} else {
+		if l := fxDigestNewerLine(g.fx, fx.asOf); l != "" {
+			fx.lines = append(fx.lines, l)
+		}
+	case fxStatus(g.fx) == statusInsufficientHistory:
+		fx.status = statusInsufficientHistory
+		line := "insufficient history on 1h bars"
+		if !fxAllShort(g.fx) { // short and dead instruments: the card's coverage
+			line = fxCoverage(g.fx, now)
+		}
+		fx.lines = []string{"⚪ FX: " + line}
+	default:
 		fx.lines = []string{"⚪ FX: data unavailable right now"}
 	}
+	fx.title = fxDigestTitle(now, fx.asOf, fxPairsRead(g.fx) > 0)
 	out = append(out, fx)
 	if len(g.extras) > 0 { // best-effort context line, omitted when the radar is silent
 		out = append(out, digestSection{key: "narrative", lines: append([]string{}, g.extras...), asOf: g.narrAt})
@@ -726,7 +738,7 @@ func (g gathered) health() digestHealth {
 	if g.fxAnyOK {
 		count(keyFX, statusOK)
 	} else {
-		count(keyFX, statusSourceOffline)
+		count(keyFX, fxStatus(g.fx)) // insufficient_history or source_offline
 	}
 	switch {
 	case h.Live == h.Total:

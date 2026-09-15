@@ -135,7 +135,7 @@ func (a *Agents) buildShowcase(ctx context.Context) *showcaseBuild {
 	for k, c := range g.cards { // macro, whale, funding, momentum, trend, sr, vol
 		cards[k] = c
 	}
-	cards[keyFX] = fxCardFromReads(g.fx)
+	cards[keyFX] = fxCardFromReads(g.fx, g.at)
 	cards[keyNews] = news
 	cards[keyGold] = gold
 	cards[keyRisk] = a.RiskCard(riskExampleValues, true, nil)
@@ -449,10 +449,12 @@ func detectedSentence(c Card) string {
 
 // strongestFact is the card's leading fact — the builders order facts
 // most-important-first. The weekend banner is skipped: it is context about
-// the clock, not the reading it sits above.
+// the clock, not the reading it sits above. On the FX card so are the rows of
+// instruments that produced no reading and the gold section header (a
+// disclosure, not a reading) — the card itself keeps its order.
 func strongestFact(c Card) string {
 	for _, f := range c.Facts {
-		if f == fxClosedBanner {
+		if f == fxClosedBanner || (c.Command == keyFX && (fxUnreadLine(f) || f == fxGoldHeader)) {
 			continue
 		}
 		if strings.TrimSpace(f) != "" {
@@ -474,6 +476,9 @@ func exampleFacts(c Card) []string {
 	for _, f := range c.Facts {
 		if len(out) == showcaseFactsMax {
 			break
+		}
+		if c.Command == keyFX && fxUnreadLine(f) { // a dead row is not a data point
+			continue
 		}
 		if strings.TrimSpace(f) != "" {
 			out = append(out, f)

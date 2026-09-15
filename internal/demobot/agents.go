@@ -213,7 +213,7 @@ var howTexts = map[string]string{
 	keySR:       "Clusters swing highs/lows within 0.5% on closed 4h candles (1h FX/gold), 3 strongest per side. Test = a close within 0.25 ATR; reaction or break within 3 candles. 7+ pivots = established.",
 	keyVol:      "ATR(14) now vs its 30-bar average. Ratio 1.25+ = volatility expanding; 0.8- = compressed. Measures how far price moves per bar, not which way, and does not confirm a breakout.",
 	keyRisk:     "Position size = (balance × risk%) ÷ |entry − stop|. Valid when a 1.0 price move changes one unit's value by 1.0 in account currency (spot); FX lots, futures, CFDs differ.",
-	keyFX:       "EMA50 vs EMA200 trend on 1h bars, RSI(14) and 24h change from Yahoo Finance for EURUSD, GBPUSD, USDJPY and gold (COMEX GC=F futures). Weekend closures are flagged.",
+	keyFX:       "Per instrument on closed 1h Yahoo bars: price, change over 24h (or since the close before a gap), place in that range, EMA50 vs EMA200, RSI(14). Gold = COMEX GC=F futures. No overall verdict.",
 	keyDigest:   "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",
 	keyTop:      "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",
 	keyGold:     goldHow,
@@ -1072,86 +1072,115 @@ func (a *Agents) fxReads(ctx context.Context) []fxRead {
 		wg.Add(1)
 		go func(i int, spec assetSpec) {
 			defer wg.Done()
-			r := fxRead{Pair: spec.Display}
 			candles, err := a.candlesFor(ctx, spec)
 			if err != nil {
-				reads[i] = r // OK=false → "data unavailable"
+				reads[i] = fxRead{Pair: spec.Display, spec: spec} // OK=false → "data unavailable"
 				return
 			}
-			closes := closesOf(candles)
-			ema50, ok50 := emaLast(closes, 50)
-			ema200, ok200 := emaLast(closes, 200)
-			rsi, okRSI := rsiWilder(closes, 14)
-			if !ok50 || !ok200 || !okRSI {
-				r.Insufficient = true // explicit, never a confident flat
-				reads[i] = r
-				return
-			}
-			r.OK = true
-			r.RSI = rsi
-			r.CloseAt = closeTimeOf(candles, spec.Interval)
-			switch {
-			case ema50 > ema200:
-				r.Dir = "up"
-			case ema50 < ema200:
-				r.Dir = "down"
-			default:
-				r.Dir = "flat"
-			}
-			if pos, ok := dayRange(candles); ok {
-				r.DayPos, r.HasRange = pos, true
-			}
-			lastBar := candles[len(candles)-1]
-			for j := len(candles) - 2; j >= 0; j-- {
-				if candles[j].Time <= lastBar.Time-86400 {
-					if candles[j].Close != 0 {
-						r.DayChangePct = (lastBar.Close - candles[j].Close) / candles[j].Close * 100
-						r.HasDay = true
-					}
-					break
-				}
-			}
-			reads[i] = r
+			reads[i] = fxReadFromCandles(spec, candles)
 		}(i, assetTable[key])
 	}
 	wg.Wait()
 	return reads
 }
 
-// FXCard builds the /fx overview from live reads. Footer time = the newest
-// closed bar among the pairs that produced data.
+// fxReadFromCandles is the pure read of one instrument (the rule, unchanged
+// in FX stage 1): EMA50 vs EMA200 and RSI(14) on the closed bars, the last
+// close, its change against the latest bar at least 24h older, and its place
+// in the trailing-24h range. What changed is what the read keeps: the price,
+// the reference bar's close time and whether that reference is more than
+// 24h+fxDayTolerance back (after the weekend it is Friday's last bar).
+func fxReadFromCandles(spec assetSpec, candles []types.OHLCVCandle) fxRead {
+	r := fxRead{Pair: spec.Display, spec: spec}
+	closes := closesOf(candles)
+	ema50, ok50 := emaLast(closes, 50)
+	ema200, ok200 := emaLast(closes, 200)
+	rsi, okRSI := rsiWilder(closes, 14)
+	if !ok50 || !ok200 || !okRSI {
+		r.Insufficient = true // explicit, never a confident flat
+		return r
+	}
+	r.OK = true
+	r.RSI = rsi
+	r.CloseAt = closeTimeOf(candles, spec.Interval)
+	lastBar := candles[len(candles)-1]
+	r.Price = lastBar.Close
+	switch {
+	case ema50 > ema200:
+		r.Dir = "up"
+	case ema50 < ema200:
+		r.Dir = "down"
+	default:
+		r.Dir = "flat"
+	}
+	if pos, ok := dayRange(candles); ok {
+		r.DayPos, r.HasRange = pos, true
+	}
+	sec := intervalSeconds[spec.Interval]
+	for j := len(candles) - 2; j >= 0; j-- {
+		if candles[j].Time <= lastBar.Time-86400 {
+			if candles[j].Close != 0 {
+				r.DayChangePct = (lastBar.Close - candles[j].Close) / candles[j].Close * 100
+				r.HasDay = true
+				r.RefAt = time.Unix(candles[j].Time+sec, 0).UTC()
+				r.SinceClose = lastBar.Time-candles[j].Time > 86400+int64(fxDayTolerance/time.Second)
+			}
+			break
+		}
+	}
+	return r
+}
+
+// FXCard builds the /fx overview from live reads at the card's clock.
 func (a *Agents) FXCard(ctx context.Context) Card {
-	return fxCardFromReads(a.fxReads(ctx))
+	return fxCardFromReads(a.fxReads(ctx), a.clock())
 }
 
 // fxCardFromReads is the pure half of FXCard: reads already computed → the
-// card. Split out so a caller that ALREADY holds a sweep's fx reads (the
+// card at now (the freshness and weekend wording follow it; zero = wall
+// clock). Split out so a caller that ALREADY holds a sweep's fx reads (the
 // landing showcase reuses gather's) rebuilds the exact same card without a
 // second round of Yahoo fetches — same builder, no duplicated logic.
-func fxCardFromReads(reads []fxRead) Card {
-	anyOK := false
-	var latest time.Time
-	for _, r := range reads {
-		if !r.OK {
-			continue
-		}
-		anyOK = true
-		if r.CloseAt.After(latest) {
-			latest = r.CloseAt
-		}
+//
+// Data time (footer, data_as_of) = the OLDEST bar shown: one fresh pair must
+// not hide a lagging one. Without any reading the card is degraded —
+// insufficient_history when at least one instrument answered with too little
+// history (the rows say which; with dead ones too the header states the
+// coverage), source_offline when none answered.
+func fxCardFromReads(reads []fxRead, now time.Time) Card {
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
-	if !anyOK {
+	st := fxStatus(reads)
+	if st != statusOK {
 		c := offlineCard("FX Agent", "FX", "", keyFX, howTexts[keyFX])
 		c.Verdict = fxOfflineVerdict
 		c.SourceNote = "data: Yahoo Finance"
+		anyShort := false
+		for _, r := range reads {
+			anyShort = anyShort || r.Insufficient
+			c.Results = append(c.Results, fxResult(r, now))
+		}
+		if st == statusInsufficientHistory {
+			c.Verdict = "Insufficient history on 1h bars — no FX overview"
+			c.Short = "insufficient history"
+			if !fxAllShort(reads) { // some instruments dead too: state the coverage
+				c.Short = fxCoverage(reads, now)
+				c.Verdict = fxVerdictPrefix + c.Short
+			}
+			c.Status = statusInsufficientHistory
+		}
+		if anyShort { // say which row lacks history and which is dead
+			for _, r := range reads {
+				c.Facts = append(c.Facts, fxMarketLine(r, now))
+			}
+		}
 		return c
 	}
-	if latest.IsZero() {
-		latest = time.Now().UTC()
-	}
-	c := fxOverviewCard(reads, isForexOpen(time.Now()), latest)
-	// Four series plus the banner: an older pair can update, drop out or
-	// recover while the newest close stays put — no validator.
+	c := fxOverviewCard(reads, now)
+	// Four series plus the clock-driven wording (banner, freshness): a pair
+	// can update, drop out or recover while the oldest close stays put — no
+	// validator.
 	c.noValidator = true
 	return c
 }

@@ -33,7 +33,7 @@ Telegram.
 | `GET /agents/trend/chart` | `?asset=` optional (default `btc`) | Chart data for the Trend Agent: the candles it reads, EMA20/50/200, pivots, zone and invalidation (see [trend chart](#trend-chart)) |
 | `GET /agents/sr` | `?asset=` optional (default `btc`) | Support/resistance swing clusters: class, reactions/breaks counts, last touch, content `blocks` |
 | `GET /agents/vol` | `?asset=` optional (default `btc`) | ATR(14) expansion/compression check |
-| `GET /agents/fx` | — | Forex overview: EURUSD, GBPUSD, USDJPY, XAUUSD |
+| `GET /agents/fx` | — | Forex overview: EURUSD, GBPUSD, USDJPY and gold (COMEX GC=F futures) — price, change, place in range, per-row freshness (see [FX card](#fx-card)) |
 | `GET /agents/news` | — | Narrative radar (48h mention window) + AI idea |
 | `GET /agents/risk` | `?balance=&risk=&entry=&stop=` all required | Position-size calculator |
 | `GET /agents/digest` | — | All agents in one sweep, prioritized; AI brief in `ai_text`, one-liners in `sections` |
@@ -258,6 +258,156 @@ only; `ok` entries add:
 served as `0`); `data_as_of` is the close of that asset's last closed bar
 (the envelope's `data_as_of` stays the oldest of them). Indicator output that
 is not finite degrades the asset to `insufficient_history`.
+
+## FX card
+
+> ⚠️ **FX `verdict` format changed 2026-09-15 — do not parse it.**
+> Before: `EMA trend on 1h bars: 4 down` (a count of EMA50/EMA200 sides) and
+> `short` = `4 down`. Now the verdict is a **coverage** line with no
+> direction: `FX overview · 1h · 3 pairs + gold read[ · N short
+> history][ · N unavailable][ · N data delayed][ · gold: no recent bar]`;
+> `short` is the same line without the `FX overview · 1h · ` prefix. Per-row
+> numbers are machine-readable in `results[]` (below). `verdict` and `facts`
+> are display text and may change again.
+>
+> ⚠️ **`reason` changed too, 2026-09-15:** when **no** instrument has a
+> reading and **at least one** answered with too little history (the others
+> may be unavailable), `/agents/fx` answers `503` with `"reason":
+> "insufficient_history"` (it used to be `source_offline`). The `fx` row of
+> `/showcase` follows it: still `status: "degraded"`, `ok: false`, now
+> `reason: "insufficient_history"`. The digest's FX section (`sections[]`,
+> key `fx`) carries the same reason. `digest.status`, `live_sections` and
+> `/showcase` `digest_status` do **not** change: the block was degraded
+> before and still is.
+
+What changed 2026-09-15: presentation and honesty only. The rule is
+**unchanged** — per instrument, on closed 1h Yahoo bars: EMA50 vs EMA200,
+RSI(14), the last close against the latest bar at least 24h older, and the
+last close's place inside the trailing-24h high-low range. Every line is at
+most 110 characters.
+
+```
+⚪ FX Agent
+FX overview · 1h · 3 pairs + gold read
+• EURUSD 1.1537 · 24h -0.05% · 23% of the 24h range
+• EURUSD: EMA50 below EMA200 · RSI(1h) 36.3 · last bar Sep 15 09:00 UTC
+• GBPUSD 1.3475 · 24h -0.07% · 20% of the 24h range
+• GBPUSD: EMA50 below EMA200 · RSI(1h) 38.6 · last bar Sep 15 09:00 UTC
+• USDJPY 155.00 · 24h +0.28% · 81% of the 24h range
+• USDJPY: EMA50 below EMA200 · RSI(1h) 65.6 · last bar Sep 15 09:00 UTC
+• Gold: COMEX GC=F futures, not spot XAUUSD; Forex hours and the weekend banner do not apply
+• GOLD 4302.8 · 24h -1.01% · 15% of the 24h range
+• GOLD: EMA50 below EMA200 · RSI(1h) 35.6 · last bar Sep 15 09:00 UTC
+```
+
+- **No combined verdict, neutral semaphore.** Raw pair directions cannot be
+  added up (a rising USDJPY is a stronger USD, a rising EURUSD a weaker
+  one), so the header states only what was read. `semaphore` is always
+  `neutral`; the card never competes for the digest's top slot.
+- **No row colour.** EMA50 vs EMA200 is one of four facts on a row; a
+  coloured dot made it read as the row's verdict (USDJPY was red at +0.32%
+  near its day high). The fact is stated as it is — `EMA50 below EMA200` —
+  never as a "trend" (that is the [Trend agent's](#trend-card-and-content-blocks)
+  state machine).
+- **Two lines per instrument.** The market line (price = close of the last
+  closed bar at the S/R card's precision, change, place in range, a freshness
+  flag when due) and the indicator line (EMA50 vs EMA200, RSI, the row's own
+  last-bar time). A failed instrument gets one line: `data unavailable right
+  now` or `insufficient history for EMA50/EMA200/RSI(14) on 1h bars`.
+- **Change window.** `24h ±x%` only when the reference bar's close is 24h to
+  **26h** back (tolerance 2h: one or two missing Yahoo hourly bars, or the
+  daily COMEX break — one missing GC=F bar; its UTC hour moves with daylight
+  saving). Further back the
+  reference is the last close before a session gap — after a weekend,
+  Friday's — and the line names it: `since Sep 11 22:00 UTC close -0.35%`;
+  the range then reads `% of the range since then` (every bar after that
+  close is inside the trailing-24h window, so it is exactly the range since
+  the reopen). Same calculation as before; only the label is honest now.
+- **Place in range as a number**: `43% of the 24h range` (0% = the low, 100%
+  = the high). It replaces `near day low / mid-range / near day high`, which
+  were the same value bucketed at 20/80.
+- **Data time** (`data_as_of`, footer) = the **oldest** last bar among the
+  rows shown (it used to be the newest, so one fresh pair hid a lagging one).
+  Each row prints its own bar time and serves it as `results[].data_as_of`.
+- **Short history is not "no data"**: it is counted as `short history`.
+  With no reading at all the card is degraded (`503`) and the reason is
+  chosen by one rule: `insufficient_history` when at least one instrument
+  answered with too little history — the source is alive —, `source_offline`
+  only when none answered. The rows say which instrument is which. Wording:
+  all short → `Insufficient history on 1h bars — no FX overview`; short and
+  unavailable mixed → the coverage header, e.g. `FX overview · 1h · 0 of 3
+  pairs read · 2 short history · 2 unavailable` (the digest shows the same
+  coverage on one line: `⚪ FX: 0 of 3 pairs read · 2 short history · 2
+  unavailable`); all unavailable → `FX data source unavailable right now`.
+
+**Freshness per row** (`results[].freshness`, flag at the end of the market
+line):
+
+| Instrument | Value | Card text | Rule |
+|---|---|---|---|
+| pairs | `on_time` | — | the Momentum rule, so a pair never reads differently on two cards |
+| pairs | `market_closed` | the `⏸ Forex market closed` banner above the pairs | inside the fixed weekend window (Friday 21:00 → Sunday 21:00 UTC) |
+| pairs | `data_delayed` | `data delayed`, counted in the header | the last closed bar is older than two bars while the market has been open for those two bars |
+| gold | `on_time` | — | last closed bar at most 3h old |
+| gold | `no_recent_bar` | `no bar in the last 3h`, and `gold: no recent bar` in the header | older than 3h: the pairs' two bars plus one for the daily COMEX break (one GC=F bar is missing every day). Hypothesis, not measured: Yahoo may also publish GC=F bars late, and a 2h bound would then flag gold after the break for nothing. The service has no COMEX calendar, so it states the bar age only — never `market closed`, never `delayed`. On a weekend this is the expected state |
+
+The weekend banner applies to the pairs only, and only when at least one
+pair was read (it dates the pairs' data; with every pair down there is
+nothing to date) — the digest's `forex closed` note follows the same rule.
+The gold section has its own header. A gold row with `no_recent_bar` also leaves the header's `+ gold`
+coverage and is named at its end: `3 pairs read · gold: no recent bar`.
+
+**Gold reads differently on the FX and Momentum cards — a known,
+deliberate gap until the gold stage.** The FX card judges gold by bar age
+alone (`no_recent_bar`, no weekend banner over the gold section); the
+Momentum card still judges gold by the Forex window (`market_closed`, and
+the `⏸ Forex market closed` banner covers gold too — see [freshness per
+asset](#momentum-card-and-content-blocks)). On a weekend the same GC=F bar is
+therefore `no_recent_bar` on `/agents/fx` and `market_closed` on
+`/agents/momentum`. The pairs share one rule and never differ.
+
+Known limit of the fixed window: the pairs' first Sunday bar on Yahoo comes
+after the window opens at 21:00 UTC (observed at 23:00 UTC — an observation
+of the feed, not a documented schedule), so from the window's opening until
+the close of that first bar a pair shows Friday's data, and from two bars
+after the opening it reads `data delayed` although no bar was due yet (the same
+edge exists on the Momentum card, which shares the rule). The digest block's
+`as of` (below) shows the Friday bar time in that interval.
+
+**`results[]`** (one entry per instrument, in card order; additive to
+`{asset, ok, reason}`, present on `ok` rows only):
+
+| Field | Meaning |
+|---|---|
+| `asset` | `EURUSD` \| `GBPUSD` \| `USDJPY` \| `GOLD · COMEX GC=F` |
+| `timeframe` | `1h` |
+| `price` | close of the last closed bar, raw precision |
+| `change_pct` | change of the last close against the reference close, % |
+| `change_window` | `24h` \| `since_previous_close` (rule above) |
+| `change_from` | RFC3339 close time of the reference bar |
+| `rsi` | RSI(14) on 1h, raw precision |
+| `ema_relation` | `above` \| `below` \| `equal` (EMA50 vs EMA200 on 1h) |
+| `range_position_pct` | place of the last close in the range, 0–100, raw precision |
+| `data_as_of` | RFC3339 close time of the row's last closed bar |
+| `freshness` | table above |
+
+Absent on a row when not computable: `change_*` without a reference bar,
+`range_position_pct` on a flat range.
+
+**Digest.** The FX block shows each instrument's market line verbatim, in
+card order, under a title with the oldest bar shown: `FX (as of Sep 15 07:00
+UTC · gold = COMEX GC=F futures)`; on a weekend `FX (forex closed: pairs show
+Friday data · as of Sep 11 21:00 UTC · gold = COMEX GC=F futures)`. The
+market lines carry no bar time, so rows whose last bar is newer than that
+`as of` are named on one extra line, grouped by bar: `Newer bars: EURUSD,
+GOLD Sep 15 08:00 UTC` (absent when every row shares one bar). Its
+`data_as_of` is the oldest bar, as on the card. A sweep where every
+instrument lacks history counts the block as `insufficient_history`, not
+`source_offline`.
+
+**AI brief input.** The FX rows sent to the model are the market line plus
+the indicators; gold is named `GOLD (COMEX GC=F futures)` there, since the
+model sees no gold section header and would otherwise call it spot.
 
 ## ⚠️ Macro correlations changed meaning (B2)
 
@@ -651,7 +801,7 @@ Every agent endpoint answers with one shape:
 | `semaphore` | string | `bullish` \| `bearish` \| `neutral` — the card's traffic light |
 | `facts` | string[] | The card's bullet facts, `[]` when none |
 | `levels` | object | **trend / sr / vol only**: raw-precision numeric levels — see [levels](#machine-readable-levels). Absent for other agents, on `ok: false` cards, and **on trend cards that are not a confirmed trend** (flat / grey / conflict — since 2026-09-15 there is nothing to invalidate there) |
-| `results` | array | **momentum only**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Since 2026-09-15 also on the single-asset momentum card (one entry), and every `ok` entry carries the read itself (`rsi`, `macd_histogram`, `verdict`, `state`, `why`, `timeframe`, `data_as_of`, `freshness`, `blocks`) — see [momentum card](#momentum-card-and-content-blocks). Absent elsewhere |
+| `results` | array | **momentum and fx**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Since 2026-09-15 also on the single-asset momentum card (one entry), and every `ok` entry carries the read itself (`rsi`, `macd_histogram`, `verdict`, `state`, `why`, `timeframe`, `data_as_of`, `freshness`, `blocks`) — see [momentum card](#momentum-card-and-content-blocks). On `/agents/fx` (since 2026-09-15) one entry per instrument with `price`, `change_pct`, `change_window`, `change_from`, `rsi`, `ema_relation`, `range_position_pct`, `timeframe`, `data_as_of`, `freshness` — see [FX card](#fx-card). Absent elsewhere |
 | `blocks` | object | **trend, sr, the global macro card and the single-asset momentum card** (additive): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks), [macro card and content blocks](#macro-card-and-content-blocks) and [momentum card](#momentum-card-and-content-blocks) (multi-asset momentum cards carry them per asset, in `results[].blocks`). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they belong to the winning card (never on the digest, below) |
 | `macro` | object | **macro cards only** (additive, 2026-09-15): the numbers behind the card — rule score, bands, per-lamp rule / weight / contribution / source / `as_of`, freshness, Fear & Greed age. See [macro card](#macro-card-and-content-blocks). Absent for every other agent and on macro cards without a reading (`UNKNOWN`, offline) |
 | `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a **rule score**, not a confidence or a strength, and ships in the verdict (`RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)`) and in `macro.rule_score`. The `?asset=gold` view has its own `gold score` and also serves `confidence: null` |
@@ -691,7 +841,7 @@ whale top-3 window now hangs off the snapshot's `captured_at`.
 | `/agents/macro`, `?asset=btc`, `?asset=gold` | **no** | The backend's `captured_at` is its request time at one-second resolution, so two different payloads can share it; no lamp stamp versions the body either (a lamp value moves during its session under the same `as_of`) |
 | `/showcase` | yes | The sweep time (`generated_at`): the body is fixed for the life of the memoized sweep (up to 60 s) |
 | `/agents/gold` | **no** | Daily bars, the hourly price and its age, the macro payload and the weekend clock. The daily close versions none of the rest |
-| `/agents/fx` | **no** | Four series plus the banner: an older pair can update, drop out or recover while the newest close stays put |
+| `/agents/fx` | **no** | Four series plus clock-driven wording (the banner, `data delayed`, gold's `no bar in the last 3h`): a pair can update, drop out or recover while the oldest close (`data_as_of`) stays put |
 | `/agents/funding` | **no** | Point-in-time reads (rates, the liquidation feed, a 1h window from the request time, the BTC price). The request time is not a version of that body |
 | `/agents/momentum` without params, `?tf=` alone, `?assets=` with two or more assets | **no** | Composite: the oldest bar (`data_as_of`) can stay put while another asset, the ETH-vs-BTC read, an asset's freshness (`market closed` / `data delayed`) or a source failure/recovery changes the body |
 | `/agents/digest`, `/agents/top`, `/showcase/example` | **no** | The digest re-sweeps per request; `/top` and the example add per-request AI text that reads the whole sweep |
@@ -1270,7 +1420,9 @@ curl -s localhost:8090/showcase/example | jq -r '.detected, .explained, (.data[]
 - **No fake numbers, ever.** A dead source is a `503` (single agents) or an
   explicit `offline` line (digest/top). Too little history for an indicator
   says so instead of rendering a confident flat. Weekend FX data carries the
-  `⏸ Forex market closed` banner fact and is computed on Friday's close.
+  `⏸ Forex market closed` banner fact and is computed on Friday's close. On
+  `/agents/fx` the banner covers the pairs only: gold (COMEX GC=F) is judged
+  by its bar age, never told the market is closed.
 - **Closed bars only**: indicator math never uses the still-forming candle,
   so `data_as_of` can legitimately lag wall clock by up to one interval, plus
   up to 60 s after a close. On every candle-based card (Binance and Yahoo:

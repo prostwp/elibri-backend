@@ -101,83 +101,60 @@ func TestResolveAsset(t *testing.T) {
 
 // ── /fx overview card goldens ────────────────────────────────────────────────
 
-func mixedFXReads() []fxRead {
-	return []fxRead{
-		{Pair: "EURUSD", OK: true, Dir: "up", RSI: 58.3, DayChangePct: 0.24, HasDay: true},
-		{Pair: "GBPUSD", OK: true, Dir: "down", RSI: 41.2, DayChangePct: -0.31, HasDay: true},
-		{Pair: "USDJPY", OK: false},
-		{Pair: "XAUUSD", OK: true, Dir: "up", RSI: 66.0, DayChangePct: 1.05, HasDay: true},
-	}
-}
+// Stage-1 goldens live in fx_readable_test.go. These keep the older
+// guarantees in the new wording.
 
-func TestFXOverviewCardGoldenOpen(t *testing.T) {
-	// Both horizons labeled on every line — "EMA trend up" is the EMA50/200
-	// cross on 1h bars (a multi-day trend, NOT the last hour), "24h ±x%" the
-	// day change — and the header names the bar size once.
-	c := fxOverviewCard(mixedFXReads(), true, goldenTime)
-	want := "⚪ <b>FX Agent</b>\n" +
-		"<b>EMA trend on 1h bars: 2 up · 1 down · 1 no data</b>\n" +
-		"• 🟢 EURUSD: EMA trend up · 24h +0.24% · RSI(1h) 58.3\n" +
-		"• 🔴 GBPUSD: EMA trend down · 24h -0.31% · RSI(1h) 41.2\n" +
-		"• ⚪ USDJPY: data unavailable\n" +
-		"• 🟢 XAUUSD: EMA trend up · 24h +1.05% · RSI(1h) 66.0\n" +
-		"\n<i>Analytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC · data: Yahoo Finance</i>"
-	if got := c.RenderHTML(); got != want {
-		t.Fatalf("fx open golden mismatch:\ngot:\n%s\nwant:\n%s", got, want)
-	}
-}
-
-func TestFXOverviewCardGoldenClosed(t *testing.T) {
-	c := fxOverviewCard(mixedFXReads(), false, goldenTime)
+// Closed market: the banner is the first fact, before any pair line, and the
+// data still renders underneath — a closed market hides nothing.
+func TestFXOverviewCardClosedBannerFirst(t *testing.T) {
+	c := fxCardFromReads(liveFXReads(), fxWeekend)
 	got := c.RenderHTML()
-	wantBanner := "• ⏸ Forex market closed (weekend) — data as of Friday close\n"
-	if !strings.Contains(got, wantBanner) {
+	if !strings.Contains(got, "• ⏸ Forex market closed (weekend) — data as of Friday close\n") {
 		t.Fatalf("closed card must carry the banner line, got:\n%s", got)
 	}
-	// Banner must be the FIRST fact — prominent, before any pair line.
 	bannerIdx := strings.Index(got, "⏸")
 	firstPairIdx := strings.Index(got, "EURUSD")
 	if bannerIdx < 0 || firstPairIdx < 0 || bannerIdx > firstPairIdx {
 		t.Fatalf("banner must precede pair lines:\n%s", got)
 	}
-	// Levels/trend still render — closed market hides nothing.
-	for _, want := range []string{"EURUSD: EMA trend up", "GBPUSD: EMA trend down", "USDJPY: data unavailable"} {
+	for _, want := range []string{"EURUSD 1.1543 · 24h -0.05%", "EURUSD: EMA50 below EMA200", "GOLD 4320.7"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("closed card missing %q:\n%s", want, got)
 		}
 	}
 }
 
-func TestFXOverviewCardAllDown(t *testing.T) {
+// Every pair on the same side of its EMA200 is still no verdict: the header
+// counts coverage, never directions.
+func TestFXOverviewCardAllBelowIsNoVerdict(t *testing.T) {
 	reads := []fxRead{
-		{Pair: "EURUSD", OK: true, Dir: "down", RSI: 30, DayChangePct: -1.2, HasDay: true},
-		{Pair: "GBPUSD", OK: true, Dir: "down", RSI: 28, DayChangePct: -0.9, HasDay: true},
+		fxOK("eurusd", 1.1, "down", 30, -1.2, 0.1, fxAt(15, 8)),
+		fxOK("gbpusd", 1.3, "down", 28, -0.9, 0.1, fxAt(15, 8)),
 	}
-	c := fxOverviewCard(reads, true, goldenTime)
-	if !strings.Contains(c.Verdict, "2 down") || strings.Contains(c.Verdict, "up") {
-		t.Errorf("all-down verdict wrong: %q", c.Verdict)
-	}
-	if c.Short != "2 down" {
-		t.Errorf("short: got %q, want \"2 down\"", c.Short)
+	c := fxCardFromReads(reads, fxNow)
+	if c.Verdict != "FX overview · 1h · 2 pairs read" || c.Short != "2 pairs read" || c.Emoji != emojiNeutral {
+		t.Errorf("all-below: verdict %q short %q emoji %q", c.Verdict, c.Short, c.Emoji)
 	}
 }
 
-// Day-change omitted when the reference bar is missing — the 1h/RSI labels
-// stay explicit either way.
+// Day change omitted when no reference bar exists — the indicator line keeps
+// its labels either way.
 func TestFXLineWithoutDayChange(t *testing.T) {
-	line := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "flat", RSI: 50.0})
-	want := "⚪ EURUSD: EMA trend flat · RSI(1h) 50.0"
-	if line != want {
-		t.Errorf("fxLine no-day: got %q, want %q", line, want)
+	r := fxOK("eurusd", 1.1, "flat", 50.0, 0, 0.5, fxAt(15, 8))
+	r.HasDay = false
+	if got := fxMarketLine(r, fxNow); got != "EURUSD 1.1000 · 50% of the 24h range" {
+		t.Errorf("no-day line: %q", got)
+	}
+	if got := fxContextLine(r); got != "EURUSD: EMA50 equal to EMA200 · RSI(1h) 50.0 · last bar Sep 15 08:00 UTC" {
+		t.Errorf("flat context line: %q", got)
 	}
 }
 
-// Item 6: too little history is stated explicitly, never rendered as a
-// confident flat/neutral read.
+// Too little history is stated explicitly, never rendered as a confident
+// flat/neutral read.
 func TestFXLineInsufficientHistory(t *testing.T) {
-	line := fxLine(fxRead{Pair: "EURUSD", Insufficient: true})
-	want := "⚪ EURUSD: insufficient history"
-	if line != want {
-		t.Errorf("fxLine insufficient: got %q, want %q", line, want)
+	r := fxRead{Pair: "EURUSD", spec: assetTable["eurusd"], Insufficient: true}
+	if got := fxMarketLine(r, fxNow); got != "EURUSD: insufficient history for EMA50/EMA200/RSI(14) on 1h bars" {
+		t.Errorf("insufficient: %q", got)
 	}
 }

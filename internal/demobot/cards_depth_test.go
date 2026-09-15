@@ -717,26 +717,20 @@ func TestDayRange(t *testing.T) {
 	}
 }
 
-func TestDayRangeLabelAndFXLine(t *testing.T) {
-	cases := map[float64]string{0.95: "near day high", 0.8: "near day high", 0.5: "mid-range", 0.2: "near day low", 0.0: "near day low"}
+// FX stage 1: the range position is printed as a number (the same dayRange
+// value that used to be bucketed into near day high / mid-range / near day
+// low), and the line drops it when the range is degenerate.
+func TestDayRangePositionOnFXLine(t *testing.T) {
+	cases := map[float64]string{0.95: "95%", 0.8: "80%", 0.5: "50%", 0.2: "20%", 0.0: "0%"}
 	for pos, want := range cases {
-		if got := dayRangeLabel(pos); got != want {
-			t.Errorf("dayRangeLabel(%v): got %q, want %q", pos, got, want)
+		r := fxOK("eurusd", 1.1, "up", 58.3, 0.24, pos, fxAt(15, 8))
+		if got := fxMarketLine(r, fxNow); got != "EURUSD 1.1000 · 24h +0.24% · "+want+" of the 24h range" {
+			t.Errorf("pos %v: got %q", pos, got)
 		}
 	}
-	line := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "up", RSI: 58.3, DayChangePct: 0.24, HasDay: true, DayPos: 0.9, HasRange: true})
-	want := "🟢 EURUSD: EMA trend up · 24h +0.24% · RSI(1h) 58.3 · near day high"
-	if line != want {
-		t.Errorf("fxLine with range: got %q, want %q", line, want)
-	}
-	// Without range data the labeled horizons stay.
-	noRange := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "up", RSI: 58.3, DayChangePct: 0.24, HasDay: true})
-	if noRange != "🟢 EURUSD: EMA trend up · 24h +0.24% · RSI(1h) 58.3" {
-		t.Errorf("fxLine without range regressed: %q", noRange)
-	}
-	// The spec's own sample shape (near day low, negative day).
-	sample := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "up", RSI: 44.5, DayChangePct: -0.15, HasDay: true, DayPos: 0.1, HasRange: true})
-	if sample != "🟢 EURUSD: EMA trend up · 24h -0.15% · RSI(1h) 44.5 · near day low" {
-		t.Errorf("fxLine sample shape: got %q", sample)
+	noRange := fxOK("eurusd", 1.1, "up", 58.3, 0.24, 0, fxAt(15, 8))
+	noRange.HasRange = false
+	if got := fxMarketLine(noRange, fxNow); got != "EURUSD 1.1000 · 24h +0.24%" {
+		t.Errorf("without range: %q", got)
 	}
 }

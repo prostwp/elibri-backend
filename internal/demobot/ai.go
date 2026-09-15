@@ -447,19 +447,18 @@ func aiPayload(g gathered) string {
 			Offline:              c.Offline,
 		}
 	}
+	// FX: the card's own wording (market line + indicators), never a bare
+	// "up/down" that the model could read as the pair's direction.
+	fxAt := g.at
+	if fxAt.IsZero() {
+		fxAt = time.Now().UTC()
+	}
 	var fxLines []string
 	for _, r := range g.fx {
 		if !r.OK {
 			continue
 		}
-		line := fmt.Sprintf("%s %s, RSI %.1f", r.Pair, r.Dir, r.RSI)
-		if r.HasDay {
-			line += fmt.Sprintf(", %+.2f%% 24h", r.DayChangePct)
-		}
-		if r.HasRange {
-			line += ", " + dayRangeLabel(r.DayPos)
-		}
-		fxLines = append(fxLines, line)
+		fxLines = append(fxLines, fxAILine(r, fxAt))
 	}
 	payload := struct {
 		Regime    string               `json:"macro_regime,omitempty"`

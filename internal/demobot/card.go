@@ -189,6 +189,18 @@ type AssetResult struct {
 	RSI           *float64       `json:"rsi,omitempty"`
 	MACDHistogram *float64       `json:"macd_histogram,omitempty"`
 	Blocks        *ContentBlocks `json:"blocks,omitempty"`
+	// FX rows only (additive, 2026-09-15 — see fxResult): the last close,
+	// its change and the window it spans ("24h" | "since_previous_close")
+	// with the reference bar's close time, EMA50 vs EMA200 (above | below |
+	// equal) and the close's place in the range, 0–100. freshness on an FX
+	// row is on_time | market_closed | data_delayed (pairs) or on_time |
+	// no_recent_bar (gold).
+	Price            *float64 `json:"price,omitempty"`
+	ChangePct        *float64 `json:"change_pct,omitempty"`
+	ChangeWindow     string   `json:"change_window,omitempty"`
+	ChangeFrom       string   `json:"change_from,omitempty"`
+	EMARelation      string   `json:"ema_relation,omitempty"`
+	RangePositionPct *float64 `json:"range_position_pct,omitempty"`
 }
 
 // Card is one agent's reply. RenderHTML produces the exact Telegram

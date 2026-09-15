@@ -90,7 +90,7 @@ func fakeGathered() gathered {
 			keySR:       {ShortName: "S/R", Agent: "S/R Agent", Command: keySR, Verdict: "Key levels around 118000", Facts: []string{"Resistance: 119000 (3 touches)", "Support: 117000 (4 touches)"}},
 			keyVol:      {ShortName: "Volatility", Agent: "Volatility Agent", Command: keyVol, Verdict: "Volatility NORMAL — no expansion signal"},
 		},
-		fx:      []fxRead{{Pair: "EURUSD", OK: true, Dir: "up", RSI: 58.3, DayChangePct: 0.24, HasDay: true}},
+		fx:      []fxRead{{Pair: "EURUSD", OK: true, Dir: "up", RSI: 58.3, Price: 1.1712, DayChangePct: 0.24, HasDay: true}},
 		fxAnyOK: true,
 		topNarr: &NarrativeSnapshot{Narrative: "ai-agents", Stage: "trending", TrendScore: 84, MentionCount: 412},
 		mood:    "Calm drift upward with greed building.",
@@ -166,7 +166,7 @@ func TestAIRequestShape(t *testing.T) {
 		t.Errorf("role: got %q", role)
 	}
 	content, _ := msg["content"].(string)
-	for _, want := range []string{"```data\n", `"macro_regime":"risk_on"`, "ai-agents", "Confirmed UPTREND", "EURUSD up, RSI 58.3"} {
+	for _, want := range []string{"```data\n", `"macro_regime":"risk_on"`, "ai-agents", "Confirmed UPTREND", "EURUSD 1.1712 · 24h +0.24% · EMA50 above EMA200 · RSI(1h) 58.3"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("user message missing %q:\n%s", want, content)
 		}
