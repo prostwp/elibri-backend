@@ -183,15 +183,50 @@ var equalFundingRates = map[string]string{"BTCUSDT": "0.00010000", "ETHUSDT": "0
 // liveHookAgents is every source alive and stable, funding rates tied.
 func liveHookAgents(t *testing.T) *Agents { return liveHookAgentsRates(t, equalFundingRates) }
 
-// liveHookAgentsRates: Binance and Yahoo candles, Binance funding rates per
+// liveHookAgentsRates is liveHookAgentsAt built on the wall clock.
+func liveHookAgentsRates(t *testing.T, rates map[string]string) *Agents {
+	return liveHookAgentsAt(t, rates, time.Now())
+}
+
+// hookFixtureClock is the fixture's frozen Agents clock: the wall time held
+// inside its hour, [:01, :58], so a read a minute later (the 61 s step of
+// TestHookHashStableAcrossCalls) stays in the same hour. Every clock-judged
+// wording on these cards is hour-aligned against the fixture's hourly Yahoo
+// bars: the Forex week (isForexOpen), the pairs' bar age (barMaxAge) and
+// gold's (fxGoldMaxAge 3h). On the wall clock a run crossing HH:00 flipped
+// gold to "no bar in the last 3h" between two reads (2026-09-15, 20:00 UTC).
+// Built on the real wall it is held at most 2 min from it: the digest judges
+// the wall-stamped funding read against this clock (fundingMaxAge 15 min).
+// A synthetic wall (the "built at HH:59:30" subtest) sits in the previous
+// hour, up to ~62 min behind the stub's real-time funding stamps: their age
+// is negative, so funding stays eligible on both reads (priority.go
+// rankCandidate) and the stale branch is simply not exercised there. The
+// previous hour is the safe side: the next one would put the clock up to
+// 58 min ahead of the wall and age funding past 15 min (for any run before
+// HH:43), switching the digest branch.
+func hookFixtureClock(wall time.Time) time.Time {
+	h := wall.UTC().Truncate(time.Hour)
+	if lo := h.Add(time.Minute); wall.Before(lo) {
+		return lo
+	}
+	if hi := h.Add(58 * time.Minute); wall.After(hi) {
+		return hi
+	}
+	return wall.UTC()
+}
+
+// liveHookAgentsAt: Binance and Yahoo candles, Binance funding rates per
 // symbol, and a backend that stamps captured_at with ITS request time on
 // macro and liquidations — exactly like the real handlers
-// (macro_handlers.go, funding_handlers.go).
-func liveHookAgentsRates(t *testing.T, rates map[string]string) *Agents {
+// (macro_handlers.go, funding_handlers.go). The Agents clock is frozen at
+// hookFixtureClock(wall) and the last hourly Yahoo bar closes two hours
+// before its hour, so every read sees the same bar ages.
+func liveHookAgentsAt(t *testing.T, rates map[string]string, wall time.Time) *Agents {
 	t.Helper()
+	at := hookFixtureClock(wall)
 	stubExternalBases(t)
 	stubBinanceKlinesWave(t, binanceFetchLimit)
-	stubYahooWave(t, time.Now().UTC().Truncate(time.Hour).Add(-2*time.Hour), 600)
+	stubYahooWave(t, at.Truncate(time.Hour).Add(-2*time.Hour), 600)
 	prem := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// markPrice moves on every request, as the real one does; the card body
 		// must not (TestHookHashStableAcrossCalls): the cluster band below
@@ -230,7 +265,9 @@ func liveHookAgentsRates(t *testing.T, rates map[string]string) *Agents {
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
-	return NewAgents(NewBackendClient(srv.URL))
+	ag := NewAgents(NewBackendClient(srv.URL))
+	ag.now = func() time.Time { return at }
+	return ag
 }
 
 func hashOf(t *testing.T, agent string, body []byte, start, end time.Time) string {
@@ -1059,10 +1096,22 @@ func TestHookRunStopsWithContext(t *testing.T) {
 // the request clock moved (wall seconds for funding / the backend captured_at,
 // the agents clock for the digest sweep) → the same hash. The raw bodies of
 // the request-time readers really differ, so the masking is what makes them
-// equal.
+// equal. Both reads fall in one hour of the fixture clock (hookFixtureClock)
+// — also when the fixture is built at HH:59:30, the run that failed on the
+// wall clock.
 func TestHookHashStableAcrossCalls(t *testing.T) {
-	ag := liveHookAgents(t)
-	base := time.Now().UTC()
+	t.Run("wall clock", func(t *testing.T) { hookHashStableAcrossCalls(t, liveHookAgents(t)) })
+	t.Run("built at HH:59:30", func(t *testing.T) {
+		wall := time.Now().UTC().Truncate(time.Hour).Add(-30 * time.Second)
+		hookHashStableAcrossCalls(t, liveHookAgentsAt(t, equalFundingRates, wall))
+	})
+}
+
+func hookHashStableAcrossCalls(t *testing.T, ag *Agents) {
+	base := ag.clock()
+	if base.Add(61*time.Second).Truncate(time.Hour) != base.Truncate(time.Hour) {
+		t.Fatalf("fixture clock %s: the 61 s step leaves its hour", base.Format(time.RFC3339))
+	}
 	clk := &stepClock{t: base}
 	ag.now = clk.now
 	th := newTestHook(t, ag, "http://127.0.0.1:1", nil)
