@@ -439,9 +439,17 @@ func aiPayload(g gathered) string {
 		if k == keyMomentum {
 			facts = momentumAIFacts(facts)
 		}
+		// The model gets the card's own state word: volatility's machine
+		// "expanding" beside an "ELEVATED" verdict invites "volatility is
+		// expanding", a dynamic the formula never measured. stateConfirms
+		// below still reads the machine state.
+		state := c.State
+		if k == keyVol && state != "" {
+			state = volWord(state)
+		}
 		agents[k] = agentRead{
 			AuthoritativeVerdict: c.Verdict,
-			State:                c.State,
+			State:                state,
 			ConfirmationWithheld: !stateConfirms(c),
 			Facts:                facts,
 			Offline:              c.Offline,

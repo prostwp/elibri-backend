@@ -104,6 +104,12 @@ type TrendLevels struct {
 //   - regime: the local regime in one line (state · timeframe · ADX)
 //   - context: macro only (additive, 2026-09-15) — the asset backdrops and
 //     Fear & Greed beside the regime; absent on every other agent
+//   - state_changes_when, limitations: volatility only (additive,
+//     2026-09-15) — what changes the state on the next closed candle, and
+//     what the agent does not measure; absent on every other agent
+//
+// Volatility (vol_text.go) has no price level and no directional idea: its
+// why_level explains the ratio thresholds and invalidates is always null.
 //
 // Macro has no price level, so its why_level is always "" (macro_text.go).
 // Momentum (momentum_text.go, 2026-09-15) has none either: its why_level
@@ -117,6 +123,8 @@ type ContentBlocks struct {
 	Invalidates  *string  `json:"invalidates"`
 	Regime       string   `json:"regime"`
 	Context      string   `json:"context,omitempty"`
+	StateChanges string   `json:"state_changes_when,omitempty"`
+	Limitations  string   `json:"limitations,omitempty"`
 }
 
 // SRPoint is one clustered level at raw precision (SRLevel.Raw — the cluster
@@ -159,9 +167,28 @@ type SRLevels struct {
 	Resistances []SRPoint `json:"resistances"`
 }
 
-// VolLevels — ATR(14) now over its 30-bar average, unrounded.
+// VolThresholds are the volatility rule's ratio thresholds: compressed at a
+// ratio ≤ Compressed, expanding at ≥ Expanding. Keys match the state values.
+type VolThresholds struct {
+	Compressed float64 `json:"compressed"`
+	Expanding  float64 `json:"expanding"`
+}
+
+// VolLevels — the volatility read at raw precision. ExpansionRatio is the
+// original field (ATR(14) of the last closed candle over the mean of the 30
+// ATR(14) values before it, unrounded). Added 2026-09-15 (additive): state
+// (expanding | normal | compressed — the card words expanding "elevated"),
+// timeframe, atr, atr_pct (ATR / last close × 100), baseline, ratio (the same
+// value as expansion_ratio) and thresholds.
 type VolLevels struct {
-	ExpansionRatio float64 `json:"expansion_ratio"`
+	ExpansionRatio float64       `json:"expansion_ratio"`
+	State          string        `json:"state"`
+	Timeframe      string        `json:"timeframe"`
+	ATR            float64       `json:"atr"`
+	ATRPct         float64       `json:"atr_pct"`
+	Baseline       float64       `json:"baseline"`
+	Ratio          float64       `json:"ratio"`
+	Thresholds     VolThresholds `json:"thresholds"`
 }
 
 // AssetResult is one asset's machine-readable outcome inside a momentum card

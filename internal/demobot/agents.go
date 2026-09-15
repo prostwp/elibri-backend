@@ -211,7 +211,7 @@ var howTexts = map[string]string{
 	keyMomentum: "RSI(14) + MACD histogram. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; else neutral. Crypto on 4h bars, FX and gold on 1h; a 1d scan is available.",
 	keyTrend:    "State machine on 4h bars (1h for FX/gold): ADX<20 flat, 20-25 grey zone, ADX 25+ with price and EMA50/200 aligned = confirmed unless swing structure disagrees; else conflict.",
 	keySR:       "Clusters swing highs/lows within 0.5% on closed 4h candles (1h FX/gold), 3 strongest per side. Test = a close within 0.25 ATR; reaction or break within 3 candles. 7+ pivots = established.",
-	keyVol:      "ATR(14) now vs its 30-bar average. Ratio 1.25+ = volatility expanding; 0.8- = compressed. Measures how far price moves per bar, not which way, and does not confirm a breakout.",
+	keyVol:      "ATR(14) vs the mean of its previous 30 values, on closed candles. Ratio ≤0.80 compressed, ≥1.25 elevated: the agent's thresholds, not a market benchmark. Size of moves, not direction or breakout.",
 	keyRisk:     "Position size = (balance × risk%) ÷ |entry − stop|. Valid when a 1.0 price move changes one unit's value by 1.0 in account currency (spot); FX lots, futures, CFDs differ.",
 	keyFX:       "Per instrument on closed 1h Yahoo bars: price, change over 24h (or since the close before a gap), place in that range, EMA50 vs EMA200, RSI(14). Gold = COMEX GC=F futures. No overall verdict.",
 	keyDigest:   "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",
@@ -1629,12 +1629,13 @@ const (
 	volNormal     = "normal"
 )
 
-// volState: ATR(14) now vs its 30-bar average.
+// volState: ATR(14) of the last closed candle over the mean of the 30 ATR(14)
+// values before it. Thresholds: vol_text.go (0.80 / 1.25).
 func volState(ratio float64) string {
 	switch {
-	case ratio >= 1.25:
+	case ratio >= volExpandingAt:
 		return volExpanding
-	case ratio <= 0.8:
+	case ratio <= volCompressedAt:
 		return volCompressed
 	default:
 		return volNormal
@@ -1655,52 +1656,24 @@ func (a *Agents) VolCard(ctx context.Context, spec assetSpec) Card {
 		c.DataTime = closeTimeOf(candles, spec.Interval)
 		return c
 	}
-	now := series[n-1]
 	var sum float64
 	for _, v := range series[n-31 : n-1] {
 		sum += v
 	}
-	avg := sum / 30
-	if avg <= 0 {
+	r := volRead{atr: series[n-1], baseline: sum / 30, price: closes[len(closes)-1], interval: spec.Interval}
+	if !r.valid() {
 		// A zero 30-bar ATR baseline makes the ratio 0/0. It used to be left
 		// at 0.0, which volState reads as CONFIRMED COMPRESSION — a claim
 		// manufactured out of missing data. There is nothing to compare
-		// against, so the card says exactly that.
-		c := insufficientCard(spec, "Volatility Agent", "Volatility", keyVol, howTexts[keyVol],
-			"ATR(14) 30-bar baseline (the baseline is flat zero — nothing to compare against)")
+		// against, so the card says exactly that. Non-finite input
+		// (overflowing prices) and a non-positive last close degrade the
+		// same way, each with its own reason (volRead.invalidReason).
+		c := insufficientCard(spec, "Volatility Agent", "Volatility", keyVol, howTexts[keyVol], r.invalidReason())
 		c.DataTime = closeTimeOf(candles, spec.Interval)
 		return c
 	}
-	ratio := now / avg
-	state := volState(ratio)
-	c := Card{
-		Emoji:      emojiNeutral,
-		Agent:      "Volatility Agent",
-		ShortName:  "Volatility",
-		Asset:      spec.Display,
-		AssetKey:   spec.Key,
-		Command:    keyVol,
-		HowItWorks: howTexts[keyVol],
-		DataTime:   closeTimeOf(candles, spec.Interval),
-		Levels:     VolLevels{ExpansionRatio: ratio}, // unrounded, envelope "levels"
-		State:      state,
-	}
-	switch state {
-	case volExpanding:
-		// "ranges widening", not "breakout conditions": ATR measures bar
-		// size, it does not see a level being broken.
-		c.Verdict, c.Short = "Volatility EXPANDING — bar ranges widening", fmt.Sprintf("expanding %.2f×", ratio)
-	case volCompressed:
-		c.Verdict, c.Short = "Volatility COMPRESSED — range conditions, expansion often follows", fmt.Sprintf("compressed %.2f×", ratio)
-	default:
-		c.Verdict, c.Short = "Volatility NORMAL — no expansion signal", fmt.Sprintf("normal %.2f×", ratio)
-	}
-	last := closes[len(closes)-1]
-	c.Facts = append(c.Facts,
-		fmt.Sprintf("ATR(14) now: %s (%.2f%% of price)", trimFloat(now), now/last*100),
-		fmt.Sprintf("30-bar ATR average: %s", trimFloat(avg)),
-		fmt.Sprintf("Ratio: %.2f× (expansion at 1.25×, compression at 0.80×)", ratio),
-	)
+	// Presentation lives in vol_text.go; the body depends on the bars only.
+	c := volCardFrom(spec, r, closeTimeOf(candles, spec.Interval))
 	if spec.Source == srcYahoo {
 		decorateFXAt(&c, a.clock())
 	}

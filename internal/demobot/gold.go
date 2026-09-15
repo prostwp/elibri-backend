@@ -391,11 +391,12 @@ func (a *Agents) GoldCard(ctx context.Context) Card {
 		c.Facts = append(c.Facts, line)
 	}
 
-	// Volatility: the ATR agent's own read, stated in its own words.
+	// Volatility: the ATR agent's own read, in the Volatility card's own words
+	// (volShortLine: the human state word, the ratio printed toward 1 so it
+	// never crosses a threshold, the timeframe) — never the machine state.
 	if vol := a.VolCard(ctx, goldDailySpec); !vol.Offline && vol.State != "" {
 		if lv, ok := vol.Levels.(VolLevels); ok {
-			c.Facts = append(c.Facts, fmt.Sprintf("Volatility: %s (ATR now %.2f× its 30-bar average)",
-				vol.State, lv.ExpansionRatio))
+			c.Facts = append(c.Facts, "Volatility: "+volShortLine(lv.Ratio, lv.Timeframe))
 		}
 	}
 

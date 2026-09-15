@@ -32,7 +32,7 @@ Telegram.
 | `GET /agents/trend` | `?asset=` optional (default `btc`) | Trend state machine (ADX + EMA50/EMA200), pullback zone in confirmed trends |
 | `GET /agents/trend/chart` | `?asset=` optional (default `btc`) | Chart data for the Trend Agent: the candles it reads, EMA20/50/200, pivots, zone and invalidation (see [trend chart](#trend-chart)) |
 | `GET /agents/sr` | `?asset=` optional (default `btc`) | Support/resistance swing clusters: class, reactions/breaks counts, last touch, content `blocks` |
-| `GET /agents/vol` | `?asset=` optional (default `btc`) | ATR(14) expansion/compression check |
+| `GET /agents/vol` | `?asset=` optional (default `btc`) | ATR(14) against its 30-bar baseline: compressed / normal / elevated, machine readout in `levels`, content `blocks` (see [volatility card](#volatility-card-and-content-blocks)) |
 | `GET /agents/fx` | — | Forex overview: EURUSD, GBPUSD, USDJPY and gold (COMEX GC=F futures) — price, change, place in range, per-row freshness (see [FX card](#fx-card)) |
 | `GET /agents/news` | — | Narrative radar (48h mention window) + AI idea |
 | `GET /agents/risk` | `?balance=&risk=&entry=&stop=` all required | Position-size calculator |
@@ -802,7 +802,7 @@ Every agent endpoint answers with one shape:
 | `facts` | string[] | The card's bullet facts, `[]` when none |
 | `levels` | object | **trend / sr / vol only**: raw-precision numeric levels — see [levels](#machine-readable-levels). Absent for other agents, on `ok: false` cards, and **on trend cards that are not a confirmed trend** (flat / grey / conflict — since 2026-09-15 there is nothing to invalidate there) |
 | `results` | array | **momentum and fx**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Since 2026-09-15 also on the single-asset momentum card (one entry), and every `ok` entry carries the read itself (`rsi`, `macd_histogram`, `verdict`, `state`, `why`, `timeframe`, `data_as_of`, `freshness`, `blocks`) — see [momentum card](#momentum-card-and-content-blocks). On `/agents/fx` (since 2026-09-15) one entry per instrument with `price`, `change_pct`, `change_window`, `change_from`, `rsi`, `ema_relation`, `range_position_pct`, `timeframe`, `data_as_of`, `freshness` — see [FX card](#fx-card). Absent elsewhere |
-| `blocks` | object | **trend, sr, the global macro card and the single-asset momentum card** (additive): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks), [macro card and content blocks](#macro-card-and-content-blocks) and [momentum card](#momentum-card-and-content-blocks) (multi-asset momentum cards carry them per asset, in `results[].blocks`). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they belong to the winning card (never on the digest, below) |
+| `blocks` | object | **trend, sr, vol, the global macro card and the single-asset momentum card** (additive): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks), [volatility card](#volatility-card-and-content-blocks), [macro card and content blocks](#macro-card-and-content-blocks) and [momentum card](#momentum-card-and-content-blocks) (multi-asset momentum cards carry them per asset, in `results[].blocks`). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they belong to the winning card (never on the digest, below) |
 | `macro` | object | **macro cards only** (additive, 2026-09-15): the numbers behind the card — rule score, bands, per-lamp rule / weight / contribution / source / `as_of`, freshness, Fear & Greed age. See [macro card](#macro-card-and-content-blocks). Absent for every other agent and on macro cards without a reading (`UNKNOWN`, offline) |
 | `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a **rule score**, not a confidence or a strength, and ships in the verdict (`RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)`) and in `macro.rule_score`. The `?asset=gold` view has its own `gold score` and also serves `confidence: null` |
 | `ai_text` | string \| null | Plain-text AI block (mood read / idea / brief / why-line); `null` when AI is disabled or the call failed |
@@ -977,7 +977,7 @@ display-rounded strings shown in `facts`:
 |---|---|
 | `trend` | **Confirmed trend (`up`/`down`) only** — flat, grey (incl. structure-demoted) and conflict envelopes have **no `levels` key**. Shape: `{"invalidation": 63297.4, "invalidation_side": "below", "pullback_zone": {"from": 64850.1, "to": 64210.7}}`. `invalidation` is **direction-aware**: an uptrend's sits BELOW the EMA cluster (min(EMA50,EMA200) − 1 ATR, `"below"`), a downtrend's ABOVE it (max + 1 ATR, `"above"`), checked on a **closed** candle of the agent's timeframe. `invalidation` and `invalidation_side` are present together or not at all: both are absent only on a degenerate series with no ATR, leaving `{"pullback_zone": …}`. `pullback_zone` is the EMA20-EMA50 band, always present when confirmed (`from` = EMA20, `to` = EMA50 — so `from` > `to` in an uptrend) |
 | `sr` | `{"supports": [{"level": 76406.66375, "label": "76407", "class": "established", "display_rank": 1, "strength_rank": 1, "touches": 8, "strength": 11, "weakening": false, "breaks": 2, "holds": 1, "last_touch": "2026-09-14T00:00:00Z"}, …], "resistances": […]}` — strength-sorted raw cluster means (the three strongest per side); an empty side is `[]`, never `null`. **The card lines render the same three levels nearest-first** — `levels` keeps strength order, so `supports[0]` is the strongest, not necessarily the nearest. The order is explicit per point: `strength_rank` = 1-based position in this array, `display_rank` = 1-based position of the level's line on the card within its side (nearest to price = 1). `label` = the level exactly as the card prints it (instrument precision: BTC 0 decimals, ETH and gold 1, EURUSD/GBPUSD 4, USDJPY 2); every % on the card is computed from the printed numbers. `class` = `established` (touches ≥ 7) · `candidate` (2–6) · `single_swing` (1). On the card `touches` is worded "pivots"; `holds` are worded "reactions". `strength` = touches + 0.5 per touch on above-median volume (median over NON-ZERO volumes; on a level whose touches are mostly volume-less the volume features disable and `strength` equals `touches`). `weakening` = ≥7 touches with the last 3 touches' mean volume below the first 3's (same volume gate). `breaks`/`holds` are **frequency counts** of level tests over the 249-bar window: a test = a close entering the ±0.25×ATR band (ATR frozen at the entry bar); within 3 bars a close beyond the level on the far side = **break**, a close back beyond the band on the approach side = **hold** (a hold IS the rejection); price stalling inside the band for 3 bars is **unresolved and dropped** — never counted as a hold. Frequencies, never probabilities. `last_touch` = RFC3339 UTC of the newest touch — the later of the last swing in the cluster and the last close-test of the level |
-| `vol` | `{"expansion_ratio": 1.01}` — ATR(14) over its 30-bar average, unrounded |
+| `vol` | `{"expansion_ratio": 0.8778378378378378, "state": "normal", "timeframe": "1h", "atr": 0.000812, "atr_pct": 0.0692094608992116, "baseline": 0.000925, "ratio": 0.8778378378378378, "thresholds": {"compressed": 0.8, "expanding": 1.25}}` (example values, served at full float precision, never rounded). `expansion_ratio` is the original field: ATR(14) of the last closed candle over `baseline`, the mean of the 30 ATR(14) values before it. Added 2026-09-15 (additive): `state` (`expanding` \| `normal` \| `compressed`), `timeframe`, `atr`, `atr_pct` (ATR / last close × 100), `baseline`, `ratio` (same value as `expansion_ratio`), `thresholds` (compressed at ratio ≤ `compressed`, expanding at ≥ `expanding`). See [volatility card](#volatility-card-and-content-blocks) |
 
 `sr` with **no levels at all** is never a "Key levels around …" reading: a
 window with ZERO swing points (monotone/flat tape) degrades to a `503`
@@ -1111,6 +1111,89 @@ are about the nearest shown level:
 | `scenarios` | Exactly two market events, worded from the side of price the level is on now: `"If a 4h close tests 2531.0 and a close within 3 candles exits its band below, the level holds as resistance"` / `"If a 4h candle closes above 2531.0's band, the level is broken and moves below price"` (mirrored for a support below price). No counts, no targets, no probabilities, no forecast |
 | `invalidates` | What makes the level no longer this side: `"A closed 4h candle above 2531.0 puts it below price: it no longer reads as resistance"` |
 | `regime` | Local level context only (not macro, not trend): `"Levels on both sides · nearest shown: resistance, 0.6% away · 4h"`, or `"Resistance only, none below price · nearest shown 0.7% away · 1h"` |
+
+## Volatility card and content blocks
+
+> ⚠️ **Volatility `verdict` format changed 2026-09-15 — do not parse it.**
+> Before: `Volatility EXPANDING — bar ranges widening`, `Volatility
+> COMPRESSED — range conditions, expansion often follows`, `Volatility
+> NORMAL — no expansion signal`; the digest line was `normal 0.92×`. Now:
+> `<STATE> · <tf> — ATR <distance> its 30-bar baseline`, e.g. `NORMAL ·
+> 1h — ATR 12% below its 30-bar baseline`, and the digest line is `normal ·
+> 1h · ATR 0.878× its 30-bar baseline`. The state is machine-readable in
+> `levels.state` (`expanding | normal | compressed`, unchanged names; the card
+> words `expanding` as **elevated** — the formula sees a level, not a
+> widening). The AI payload carries the card word too (`elevated`), while
+> the confirmation flag still follows the machine state.
+> `verdict`, `facts` and the digest line are display text and may change
+> again.
+
+What changed 2026-09-15: presentation and honesty only. The rule is
+**unchanged**: ATR(14) (Wilder) of the last closed candle over the mean of the
+30 ATR(14) values before it, on the same candles and timeframes (BTC/ETH 4h,
+FX and gold 1h); ratio ≤ 0.80 compressed, ≥ 1.25 expanding, else normal. The
+semaphore stays `neutral`, caching and the digest are untouched.
+
+- No forecast: "expansion often follows" is gone — the agent never measured
+  what follows a compression. No dynamics: the formula sees the ATR **level**
+  against its baseline, not whether it is rising, so the card says
+  "elevated", never "widening" or "expanding".
+- The timeframe is in the verdict; normal is shown between both thresholds
+  (`0.80 < 1.013 < 1.25 → normal`), not as "no expansion signal". The word
+  is not "within range": to a trader "range" means a sideways market.
+- One check line: the ratio printed with three decimals, **rounded toward
+  1**, so a printed ratio never sits on the other side of 0.80 or 1.25 from
+  the real one (1.246 prints `1.246`, not `1.25`; 0.8004 prints `0.801`;
+  0.7995 prints `0.800 ≤ 0.80 → compressed`). The verdict's percentage is the
+  printed ratio's distance from 1, truncated (`19% below` inside the range,
+  never `20%`); within 1% reads `within 1% of its 30-bar baseline`.
+- One absolute number: ATR, one decimal finer than the card's price precision
+  (EURUSD/GBPUSD 5, USDJPY 3, gold and ETH 2, BTC 1), with its share of the
+  last close. The baseline is no longer printed in price units (the old
+  EURUSD card showed 0.0008 / 0.0009 beside 0.92×, which reads as ~0.89×);
+  it is `levels.baseline`.
+- 0.80 and 1.25 are labelled as the agent's own thresholds, not a market benchmark.
+- Four content lines, every line (verdict, facts, digest line, each `blocks`
+  field) at most 110 characters. The FX weekend banner still leads Yahoo
+  cards (not counted as content).
+- Non-finite input (overflowing prices) or a non-positive close degrades to
+  `insufficient_history`, like the zero baseline already did.
+
+```
+⚪ Volatility Agent · EURUSD
+NORMAL · 1h — ATR 12% below its 30-bar baseline
+• ATR/baseline check: 0.80 < 0.878 < 1.25 → normal
+• ATR(14): 0.00081, 0.07% of price · baseline = mean of the previous 30 ATR(14) values
+• Agent's own thresholds, not a market benchmark: ≤ 0.80 compressed, ≥ 1.25 elevated, between them normal
+• Read on closed 1h candles; measures how far price moves per candle, not direction or breakout
+```
+
+Elevated reads `ELEVATED · 4h — ATR 31% above its 30-bar baseline` with
+`ATR/baseline check: 1.311 ≥ 1.25 → elevated`; compressed reads
+`COMPRESSED · 1h — ATR 22% below its 30-bar baseline` with `ATR/baseline
+check: 0.772 ≤ 0.80 → compressed`. (Example numbers, not a live read.)
+
+`blocks` (vol envelopes with a reading; absent on degraded cards). Volatility
+has no price level and no directional idea; two additive keys are its own:
+
+| Field | Meaning |
+|---|---|
+| `what_happened` | `"BTC 4h ATR(14) is 5% above its 30-bar baseline (ratio 1.050): normal."` |
+| `why_level` | There is no price level: `"No price level: 0.80 and 1.25 are the agent's own ATR/baseline thresholds, not a market benchmark"` |
+| `scenarios` | Exactly two conditional state changes at a closed candle, never a price direction. Normal: `"If a closed 4h candle puts the ratio at 0.80 or below, the state turns compressed"` / `"… at 1.25 or above, the state turns elevated"`. Elevated: `"If closed 4h candles keep the ratio at 1.25 or above, the state stays elevated"` / `"If a closed 4h candle puts the ratio below 1.25, the state turns normal (compressed at 0.80 or below)"`; compressed mirrored |
+| `invalidates` | Always `null`: there is no directional idea to invalidate |
+| `state_changes_when` | **vol only** (additive): `"A closed 4h candle with the ratio below 1.25 ends the elevated state"`; normal: `"A closed 4h candle with the ratio at 0.80 or below (compressed) or 1.25 or above (elevated) changes the state"` |
+| `regime` | The **local amplitude** regime, not a market regime: `"Local amplitude regime · BTC 4h · normal: ATR 1.050× its 30-bar baseline"` |
+| `limitations` | **vol only** (additive): `"Measures how far price moves per candle, not its direction; it does not confirm a breakout"` |
+
+The Gold card's volatility line uses the same words (daily gold series):
+`Volatility: normal · 1d · ATR 1.000× its 30-bar baseline` (before:
+`Volatility: normal (ATR now 1.00× its 30-bar average)`).
+
+Degraded reads (`insufficient_history`, the fact names the reason): too few
+bars (`ATR(14) 30-bar baseline`), a flat zero baseline, non-finite input
+(overflowing prices), or a last close that is not positive (`ATR(14) as a
+share of price (the last close is not positive)`).
 
 ## Macro card and content blocks
 
