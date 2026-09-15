@@ -225,7 +225,10 @@ func fxLine(r fxRead) string {
 	case "down":
 		emoji = emojiBear
 	}
-	line := fmt.Sprintf("%s %s: 1h %s", emoji, r.Pair, r.Dir)
+	// "EMA trend", not "1h": the direction is EMA50 vs EMA200 ON 1h bars — a
+	// multi-day trend. "1h down" read as "fell in the last hour" and sat next
+	// to a positive 24h change looking like a contradiction.
+	line := fmt.Sprintf("%s %s: EMA trend %s", emoji, r.Pair, r.Dir)
 	if r.HasDay {
 		line += fmt.Sprintf(" · 24h %+.2f%%", r.DayChangePct)
 	}
@@ -282,9 +285,9 @@ func fxOverviewCard(reads []fxRead, open bool, dataTime time.Time) Card {
 	add(flat, "flat", true)
 	add(dead, "no data", false)
 
-	// Header names both horizons so the labeled pair lines below read
-	// unambiguously (the counts themselves are 1h-trend counts).
-	verdict := "1h trend vs 24h change: " + strings.Join(parts, " · ")
+	// The counts are EMA50/EMA200 trend counts on 1h bars; the header says so
+	// once, the per-pair lines carry the 24h change beside it.
+	verdict := "EMA trend on 1h bars: " + strings.Join(parts, " · ")
 	short := strings.Join(shortParts, " · ")
 	if short == "" {
 		short = "no data"

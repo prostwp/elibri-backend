@@ -267,8 +267,12 @@ func TestMacroBTCCardFraming(t *testing.T) {
 	if !strings.Contains(joined, "→ tailwind") || !strings.Contains(joined, "→ headwind") {
 		t.Errorf("per-lamp crypto lines missing: %v", c.Facts)
 	}
-	if c.Confidence == nil || *c.Confidence != 80 {
-		t.Errorf("confidence = %v, want 80 (composite)", c.Confidence)
+	// The composite is a risk-appetite score (labeled fact), not a confidence.
+	if c.Confidence != nil {
+		t.Errorf("composite must not render as confidence, got %d", *c.Confidence)
+	}
+	if !strings.Contains(joined, "Risk appetite score: 80/100") {
+		t.Errorf("score line missing: %v", c.Facts)
 	}
 }
 

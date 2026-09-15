@@ -111,15 +111,16 @@ func mixedFXReads() []fxRead {
 }
 
 func TestFXOverviewCardGoldenOpen(t *testing.T) {
-	// Batch-2: both horizons labeled on every line — "1h up" is the EMA-cross
-	// trend, "24h ±x%" the day change — and the header names the pairing.
+	// Both horizons labeled on every line — "EMA trend up" is the EMA50/200
+	// cross on 1h bars (a multi-day trend, NOT the last hour), "24h ±x%" the
+	// day change — and the header names the bar size once.
 	c := fxOverviewCard(mixedFXReads(), true, goldenTime)
 	want := "⚪ <b>FX Agent</b>\n" +
-		"<b>1h trend vs 24h change: 2 up · 1 down · 1 no data</b>\n" +
-		"• 🟢 EURUSD: 1h up · 24h +0.24% · RSI(1h) 58.3\n" +
-		"• 🔴 GBPUSD: 1h down · 24h -0.31% · RSI(1h) 41.2\n" +
+		"<b>EMA trend on 1h bars: 2 up · 1 down · 1 no data</b>\n" +
+		"• 🟢 EURUSD: EMA trend up · 24h +0.24% · RSI(1h) 58.3\n" +
+		"• 🔴 GBPUSD: EMA trend down · 24h -0.31% · RSI(1h) 41.2\n" +
 		"• ⚪ USDJPY: data unavailable\n" +
-		"• 🟢 XAUUSD: 1h up · 24h +1.05% · RSI(1h) 66.0\n" +
+		"• 🟢 XAUUSD: EMA trend up · 24h +1.05% · RSI(1h) 66.0\n" +
 		"\n<i>Analytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC · data: Yahoo Finance</i>"
 	if got := c.RenderHTML(); got != want {
 		t.Fatalf("fx open golden mismatch:\ngot:\n%s\nwant:\n%s", got, want)
@@ -140,7 +141,7 @@ func TestFXOverviewCardGoldenClosed(t *testing.T) {
 		t.Fatalf("banner must precede pair lines:\n%s", got)
 	}
 	// Levels/trend still render — closed market hides nothing.
-	for _, want := range []string{"EURUSD: 1h up", "GBPUSD: 1h down", "USDJPY: data unavailable"} {
+	for _, want := range []string{"EURUSD: EMA trend up", "GBPUSD: EMA trend down", "USDJPY: data unavailable"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("closed card missing %q:\n%s", want, got)
 		}
@@ -165,7 +166,7 @@ func TestFXOverviewCardAllDown(t *testing.T) {
 // stay explicit either way.
 func TestFXLineWithoutDayChange(t *testing.T) {
 	line := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "flat", RSI: 50.0})
-	want := "⚪ EURUSD: 1h flat · RSI(1h) 50.0"
+	want := "⚪ EURUSD: EMA trend flat · RSI(1h) 50.0"
 	if line != want {
 		t.Errorf("fxLine no-day: got %q, want %q", line, want)
 	}

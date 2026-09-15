@@ -454,7 +454,7 @@ func TestSRCardB4FactsAndLevels(t *testing.T) {
 	joined := strings.Join(c.Facts, "|")
 	// The strength formula + the frequency wording must be documented on the
 	// card itself ("frequency", never "probability").
-	if !strings.Contains(joined, "strength = touches + 0.5 per above-median-volume touch") {
+	if !strings.Contains(joined, "strength = swing pivots + 0.5 per above-median-volume pivot") {
 		t.Errorf("strength formula line missing: %v", c.Facts)
 	}
 	if !strings.Contains(joined, "held") || !strings.Contains(joined, "of") {

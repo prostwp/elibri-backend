@@ -323,10 +323,13 @@ func BuildDiagnosis(regime string, lamps []Lamp) string {
 			out = "The dollar is softening and volatility is low — a risk-on backdrop that tends to favor crypto."
 		case spx == StatusTailwind:
 			// Template #4.
-			out = "Equities are bid and the macro tape leans risk-on, which has historically been a tailwind for crypto."
+			// No "historically": nothing in this pipeline measures that
+			// history, so the card must not claim it (2026-09-15).
+			out = "Equities are bid and the macro tape leans risk-on, a backdrop that tends to favor crypto."
 		default:
-			// Generic risk-on (still safe, no banned words).
-			out = "The big-money markets are leaning risk-on, a backdrop that tends to favor crypto."
+			// Generic risk-on (still safe, no banned words). "tradfin", not
+			// "big-money": the lamps are prices, not anyone's positions.
+			out = "The tradfin markets are leaning risk-on, a backdrop that tends to favor crypto."
 		}
 	case RegimeRiskOff:
 		switch {
@@ -338,11 +341,11 @@ func BuildDiagnosis(regime string, lamps []Lamp) string {
 			out = "Money is rotating into gold and the dollar — a flight-to-safety tone that weighs on crypto."
 		default:
 			// Generic risk-off (still safe).
-			out = "The big-money markets are leaning risk-off, a backdrop that weighs on crypto."
+			out = "The tradfin markets are leaning risk-off, a backdrop that weighs on crypto."
 		}
 	default:
 		// Template #3 — mixed / anything uncovered.
-		out = "Macro signals are split right now — no single regime is in control across the big-money markets."
+		out = "Macro signals are split right now — no single regime is in control across the tradfin markets."
 	}
 
 	// Final tripwire: if a template ever drifts into banned territory, drop it

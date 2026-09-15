@@ -152,8 +152,13 @@ func TestMacroCardMixedWithRealLampsKeepsClaim(t *testing.T) {
 	if !strings.Contains(joined, "signals are split") {
 		t.Errorf("split sentence is legitimate WITH real lamps: %v", c.Facts)
 	}
-	if c.Confidence == nil || *c.Confidence != 50 {
-		t.Errorf("confidence must flow from composite, got %v", c.Confidence)
+	// The composite is a risk-appetite score, rendered as a labeled fact —
+	// never as a "Confidence" bar.
+	if c.Confidence != nil {
+		t.Errorf("composite must not render as confidence, got %v", *c.Confidence)
+	}
+	if !strings.Contains(joined, "Risk appetite score: 50/100") {
+		t.Errorf("score line must flow from composite: %v", c.Facts)
 	}
 }
 

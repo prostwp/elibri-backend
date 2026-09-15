@@ -294,25 +294,53 @@ func TestNewsRoutingAndKeyboard(t *testing.T) {
 	}
 }
 
-// ── /macro: AI read appended from mood-read ──────────────────────────────────
+// ── /macro: no AI mood read, composite as a score ────────────────────────────
 
 const macroFixture = `{"regime":"risk_on","composite":62,"tradfin_market_open":true,
   "captured_at":"2026-08-18T06:00:00Z","lamps":[],"fng":{"value":63,"label":"Greed","ok":true},"generated_idea":""}`
 
-func TestMacroCardAIRead(t *testing.T) {
+// The mood read quotes a different Fear & Greed feed than the card's own F&G
+// line and talks about news themes — it must not appear on the macro card
+// even when the endpoint answers. The composite renders as a labeled score,
+// never as "Confidence: N%".
+const macroScoreFixture = `{"regime":"risk_on","composite":72,"tradfin_market_open":true,"tradfin_ok":true,
+  "captured_at":"2026-08-18T06:00:00Z",
+  "lamps":[
+    {"key":"dxy","label":"Dollar (DXY)","value":98.85,"ok":true,"delta_pct":-0.2,"status":"tailwind"},
+    {"key":"vix","label":"VIX","value":14.1,"ok":true,"delta_pct":-1.0,"status":"tailwind"},
+    {"key":"spx","label":"S&P 500","value":7580.1,"ok":true,"delta_pct":0.4,"status":"tailwind"}],
+  "fng":{"value":63,"label":"Greed","ok":true},"generated_idea":""}`
+
+func TestMacroCardNoMoodReadAndScoreNotConfidence(t *testing.T) {
 	ag := newStubBackend(t, map[string]string{
-		"/api/v1/macro":            macroFixture,
-		"/api/v1/market/mood-read": `{"read":"The market drifts upward on light volume. Sentiment leans greedy.","source":"alphavizor-ai"}`,
+		"/api/v1/macro":            macroScoreFixture,
+		"/api/v1/market/mood-read": `{"read":"The crypto market is in a greedy posture with a 70/100 reading.","source":"alphavizor-ai"}`,
 	})
 	c, regime := ag.MacroCard(context.Background())
 	if regime != "risk_on" {
 		t.Fatalf("regime: got %q", regime)
 	}
-	if !strings.HasPrefix(c.AIHTML, "<b>AI read:</b> <i>") || !strings.Contains(c.AIHTML, "drifts upward") {
-		t.Errorf("AI read block missing/wrong: %q", c.AIHTML)
+	if c.AIHTML != "" || strings.Contains(c.RenderHTML(), "70/100") {
+		t.Errorf("mood read must not render on the macro card: %q", c.AIHTML)
 	}
-	if !strings.Contains(c.RenderHTML(), "<b>AI read:</b>") {
-		t.Errorf("rendered macro card must carry the AI read:\n%s", c.RenderHTML())
+	if c.Confidence != nil || strings.Contains(c.RenderHTML(), "Confidence:") {
+		t.Errorf("composite is a score, not a confidence:\n%s", c.RenderHTML())
+	}
+	if !strings.Contains(strings.Join(c.Facts, "|"), "Risk appetite score: 72/100 (risk-on above 65, risk-off below 35)") {
+		t.Errorf("score line missing: %v", c.Facts)
+	}
+	if c.Deviation != 44 {
+		t.Errorf("priority deviation must still flow from the composite: got %d, want 44", c.Deviation)
+	}
+}
+
+// A score needs real lamps behind it: a payload with no lamps must not print
+// "Risk appetite score" under a regime the lamps never voted for.
+func TestMacroCardNoScoreWithoutRealLamps(t *testing.T) {
+	ag := newStubBackend(t, map[string]string{"/api/v1/macro": macroFixture})
+	c, _ := ag.MacroCard(context.Background())
+	if strings.Contains(strings.Join(c.Facts, "|"), "Risk appetite score") {
+		t.Errorf("no score line without real lamps: %v", c.Facts)
 	}
 }
 
@@ -372,8 +400,8 @@ func TestWhaleCardTopThreeAndBaseline(t *testing.T) {
 	if !strings.Contains(transfers[0], "$17.00M") || !strings.Contains(transfers[0], "Binance") {
 		t.Errorf("biggest transfer first: %q", transfers[0])
 	}
-	if !strings.Contains(transfers[2], "unlabeled wallet") {
-		t.Errorf("empty exchange label → unlabeled wallet: %q", transfers[2])
+	if !strings.HasSuffix(transfers[2], " UTC") || strings.Contains(transfers[2], "outflow") {
+		t.Errorf("unlabeled transfer: time only, no direction word without an exchange: %q", transfers[2])
 	}
 	if strings.Contains(strings.Join(c.Facts, "|"), "$2.00M") {
 		t.Error("4th transfer must not render")
@@ -552,7 +580,7 @@ func TestSRCardStrengthThreshold(t *testing.T) {
 
 	found := false
 	for _, f := range c.Facts {
-		if strings.HasPrefix(f, "Method: ") && strings.Contains(f, "strength = touches + 0.5 per above-median-volume touch (strong from 7 touches)") {
+		if strings.HasPrefix(f, "Method: ") && strings.Contains(f, "strength = swing pivots + 0.5 per above-median-volume pivot (strong from 7 pivots)") {
 			found = true
 		}
 	}
@@ -670,18 +698,18 @@ func TestDayRangeLabelAndFXLine(t *testing.T) {
 		}
 	}
 	line := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "up", RSI: 58.3, DayChangePct: 0.24, HasDay: true, DayPos: 0.9, HasRange: true})
-	want := "🟢 EURUSD: 1h up · 24h +0.24% · RSI(1h) 58.3 · near day high"
+	want := "🟢 EURUSD: EMA trend up · 24h +0.24% · RSI(1h) 58.3 · near day high"
 	if line != want {
 		t.Errorf("fxLine with range: got %q, want %q", line, want)
 	}
 	// Without range data the labeled horizons stay.
 	noRange := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "up", RSI: 58.3, DayChangePct: 0.24, HasDay: true})
-	if noRange != "🟢 EURUSD: 1h up · 24h +0.24% · RSI(1h) 58.3" {
+	if noRange != "🟢 EURUSD: EMA trend up · 24h +0.24% · RSI(1h) 58.3" {
 		t.Errorf("fxLine without range regressed: %q", noRange)
 	}
 	// The spec's own sample shape (near day low, negative day).
 	sample := fxLine(fxRead{Pair: "EURUSD", OK: true, Dir: "up", RSI: 44.5, DayChangePct: -0.15, HasDay: true, DayPos: 0.1, HasRange: true})
-	if sample != "🟢 EURUSD: 1h up · 24h -0.15% · RSI(1h) 44.5 · near day low" {
+	if sample != "🟢 EURUSD: EMA trend up · 24h -0.15% · RSI(1h) 44.5 · near day low" {
 		t.Errorf("fxLine sample shape: got %q", sample)
 	}
 }

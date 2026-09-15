@@ -383,8 +383,11 @@ func buildBTCView(c *Card, m *MacroResp, regime string) {
 			c.Facts = append(c.Facts, lampValueText(l)+" → "+l.Status)
 		}
 	}
+	// Same rule as the global card: the composite is a risk-appetite score,
+	// printed as a labeled fact — never as a "Confidence" bar.
 	if m.Composite != nil {
-		c.Confidence = m.Composite
+		c.Facts = append(c.Facts, fmt.Sprintf("Risk appetite score: %d/100 (risk-on above %d, risk-off below %d)",
+			*m.Composite, macroRiskOnAbove, macroRiskOffBelow))
 		c.Deviation = clampInt(abs(*m.Composite-50)*2, 0, 100)
 	}
 	if m.FNG != nil && m.FNG.OK {
@@ -407,14 +410,20 @@ func macroViewLines(regime string, lamps []MacroLamp) []string {
 	}
 	if score := goldViewScore(lamps); score != nil {
 		sup, prs, neu := goldViewCounts(lamps)
+		// "mixed" for the middle band — the same word the gold asset view
+		// (GOLD VIEW: MIXED) and the Gold agent's backdrop line use.
 		word := "mixed"
 		if *score > goldSupportAbove {
 			word = goldSupport
 		} else if *score < goldPressureBelow {
 			word = goldPressure
 		}
-		out = append(out, fmt.Sprintf("Gold view: %s — %d lamps for gold / %d against / %d neutral",
-			word, sup, prs, neu))
+		lampWord := "lamps"
+		if sup == 1 {
+			lampWord = "lamp"
+		}
+		out = append(out, fmt.Sprintf("Gold view: %s — %d %s for gold / %d against / %d neutral",
+			word, sup, lampWord, prs, neu))
 	} else {
 		voters := 0
 		for _, l := range lamps {

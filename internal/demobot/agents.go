@@ -122,19 +122,19 @@ func insufficientCard(spec assetSpec, agent, shortName, command, how, what strin
 // howTexts back the [ℹ️ How it works] button. Telegram caps callback alerts
 // at 200 characters — keep every entry under that.
 var howTexts = map[string]string{
-	keyMacro:    "Reads 5 tradfin lamps (DXY, US 10Y, VIX, S&P 500, Gold) plus crypto Fear & Greed and blends them into a risk-on/off regime. RISK-OFF outranks every other signal in /digest.",
-	keyWhale:    "Watches large on-chain transfers touching known exchange wallets. Net inflow to exchanges = potential sell pressure; net outflow = accumulation.",
+	keyMacro:    "Reads 5 tradfin lamps (DXY, US 10Y, VIX, S&P 500, Gold) into a 0-100 risk appetite score: above 65 risk-on, below 35 risk-off. RISK-OFF outranks every other reading in the digest.",
+	keyWhale:    "Tracks large BTC transfers from the public mempool. These wallets carry no exchange labels, so the card reports transfer activity; exchange in/outflow appears only when labeled.",
 	keyFunding:  "Compares perp funding rates across majors. High positive funding = crowded longs (squeeze risk); negative = crowded shorts. Liquidation feed shows where forced exits cluster.",
-	keyMomentum: "RSI(14) + MACD histogram. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; else neutral. Default 4h crypto / 1h FX; custom scan: /momentum btc,eurusd 1d.",
-	keyTrend:    "State machine on 4h candles: ADX<20 = flat (no readable trend), 20-25 = grey zone, ADX 25+ with price and EMA50/EMA200 aligned = confirmed trend; misaligned = conflict.",
-	keySR:       "Finds swing highs/lows on 4h candles and clusters levels within 0.5%. Strength = touches + 0.5 per above-median-volume touch; held/break counts show how levels behaved when tested.",
-	keyVol:      "ATR(14) now vs its 30-bar average. Ratio 1.25+ = volatility expanding (breakout regime); 0.8- = compressed (range regime).",
-	keyRisk:     "Position size = (balance × risk%) ÷ |entry − stop|. Keeps one losing trade at a fixed fraction of the account. Works for any asset.",
-	keyFX:       "EMA50 vs EMA200 direction, RSI(14) and 24h change on 1h Yahoo Finance data for EURUSD, GBPUSD, USDJPY, XAUUSD. Weekend closures (Fri 21:00–Sun 21:00 UTC) are flagged, never hidden.",
+	keyMomentum: "RSI(14) + MACD histogram. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; else neutral. Crypto on 4h bars, FX and gold on 1h; a 1d scan is available.",
+	keyTrend:    "State machine on 4h bars (1h for FX/gold): ADX<20 flat, 20-25 grey zone, ADX 25+ with price and EMA50/200 aligned = confirmed unless swing structure disagrees; else conflict.",
+	keySR:       "Finds swing highs/lows on 4h bars (1h for FX/gold) and clusters them within 0.5%. Strength = swing pivots + 0.5 per high-volume pivot; tests show how price behaved at each level.",
+	keyVol:      "ATR(14) now vs its 30-bar average. Ratio 1.25+ = volatility expanding; 0.8- = compressed. Measures how far price moves per bar, not which way, and does not confirm a breakout.",
+	keyRisk:     "Position size = (balance × risk%) ÷ |entry − stop|. Valid when a 1.0 price move changes one unit's value by 1.0 in account currency (spot); FX lots, futures, CFDs differ.",
+	keyFX:       "EMA50 vs EMA200 trend on 1h bars, RSI(14) and 24h change from Yahoo Finance for EURUSD, GBPUSD, USDJPY and gold (COMEX GC=F futures). Weekend closures are flagged.",
 	keyDigest:   "Deterministic priority: RISK-OFF macro always tops; otherwise the strongest deviation from neutral among funding, momentum, trend. Ties break funding > momentum > trend.",
 	keyTop:      "Deterministic priority: RISK-OFF macro always tops; otherwise the strongest deviation from neutral among funding, momentum, trend. Ties break funding > momentum > trend.",
 	keyGold:     goldHow,
-	keyNews:     "Crypto themes ranked by 48h mention growth across news/Reddit. Stage: early/trending/mainstream/declining; trend score 0-100. The top narrative carries an AI-generated observation.",
+	keyNews:     "Crypto themes in CoinDesk and CoinTelegraph headlines plus Reddit posts when reachable. Score 0-100 blends mention growth, volume, sentiment, impact, source spread. From 5 mentions/24h.",
 }
 
 // ── Macro ────────────────────────────────────────────────────────────────────
@@ -169,9 +169,11 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 
 	switch regime {
 	case "risk_on":
-		c.Emoji, c.Verdict, c.Short = emojiBull, "RISK-ON — big money leaning into risk", "risk-on"
+		// "tradfin lamps", not "big money": five price indicators read a
+		// regime, they do not observe anyone's positions or flows.
+		c.Emoji, c.Verdict, c.Short = emojiBull, "RISK-ON — tradfin lamps lean into risk", "risk-on"
 	case "risk_off":
-		c.Emoji, c.Verdict, c.Short = emojiBear, "RISK-OFF — big money defensive", "risk-off"
+		c.Emoji, c.Verdict, c.Short = emojiBear, "RISK-OFF — tradfin lamps lean defensive", "risk-off"
 	case "unknown":
 		// No tradfin inputs at all — say so instead of claiming a regime read.
 		// Machine status splits the two absences templates must distinguish:
@@ -208,6 +210,13 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 		c.Facts = append(c.Facts, "Lamps: "+note)
 	} else {
 		c.Facts = append(c.Facts, fmt.Sprintf("Lamps: %d tailwind / %d headwind / %d neutral", tail, head, neut))
+		// The composite is a risk-appetite SCORE, not a confidence: it used to
+		// render as "Confidence: 88%", which reads as an accuracy claim the
+		// agent has never earned. The regime bands ride beside the number.
+		if m.Composite != nil && real > 0 {
+			c.Facts = append(c.Facts, fmt.Sprintf("Risk appetite score: %d/100 (risk-on above %d, risk-off below %d)",
+				*m.Composite, macroRiskOnAbove, macroRiskOffBelow))
+		}
 	}
 	// Signal map (B2): the same lamps read for both assets, one line each —
 	// only with at least one real lamp behind them (an asset verdict is a
@@ -228,18 +237,24 @@ func (a *Agents) MacroCard(ctx context.Context) (Card, string) {
 		c.Facts = append(c.Facts, truncate(idea, 180))
 	}
 	if m.Composite != nil {
-		c.Confidence = m.Composite
 		c.Deviation = clampInt(abs(*m.Composite-50)*2, 0, 100)
 	}
-	// ALPHAVIZOR AI mood read (backend Haiku, 10-min server cache) — appended
-	// when available, silently omitted otherwise. Never blocks the card.
-	if mood, err := a.api.MoodRead(ctx); err == nil {
-		if txt := strings.TrimSpace(mood.Read); txt != "" {
-			c.AIHTML = "<b>AI read:</b> <i>" + esc(truncateAtSentence(txt, 400)) + "</i>"
-		}
-	}
+	// No AI mood read on this card. The mood read is written from the
+	// CoinMarketCap Fear & Greed index and the narrative themes, while this
+	// card shows a different F&G feed: a live card printed "Crypto Fear &
+	// Greed: 57" directly above an AI paragraph about "a 70/100 reading", and
+	// the paragraph was about news themes, not macro. Two numbers under one
+	// name on one card is a contradiction a reader cannot resolve.
 	return c, regime
 }
+
+// macroRiskOnAbove / macroRiskOffBelow mirror regimeRiskOnAbove /
+// regimeRiskOffBelow in internal/macro/compute.go — the bands the backend
+// classifies the composite with. Printed beside the score on the card.
+const (
+	macroRiskOnAbove  = 65
+	macroRiskOffBelow = 35
+)
 
 // ── Whale flow ───────────────────────────────────────────────────────────────
 
@@ -271,16 +286,33 @@ func (a *Agents) WhaleCard(ctx context.Context) Card {
 	case btc.Direction == "inflow":
 		c.Emoji, c.Verdict, c.Short = emojiBear, "Net INFLOW to exchanges — potential sell pressure", "inflow (sell pressure)"
 	case btc.Direction == "outflow":
-		c.Emoji, c.Verdict, c.Short = emojiBull, "Net OUTFLOW from exchanges — accumulation read", "outflow (accumulation)"
+		// "potential", like the inflow branch: an exchange outflow can be
+		// custody migration or settlement, not only accumulation.
+		c.Emoji, c.Verdict, c.Short = emojiBull, "Net OUTFLOW from exchanges — potential accumulation", "outflow (potential accumulation)"
+	case btc.Partial && btc.TxCount24h == 0:
+		c.Emoji, c.Verdict, c.Short = emojiNeutral, "No large BTC transfers in 24h", "no large transfers"
+	case btc.Partial:
+		// The BTC feed (public mempool) never labels exchange wallets, so the
+		// backend's net flow is structurally $0 and its direction "neutral".
+		// That is "not measurable", not "balanced": the old verdict "Flows
+		// balanced over 24h" asserted a finding the data cannot produce.
+		c.Emoji = emojiNeutral
+		c.Verdict = fmt.Sprintf("%d large BTC transfers in 24h — exchange direction not measurable", btc.TxCount24h)
+		c.Short = fmt.Sprintf("%d large tx, direction n/a", btc.TxCount24h)
 	default:
 		c.Emoji, c.Verdict, c.Short = emojiNeutral, "Flows balanced over 24h", "balanced"
 	}
+	directional := btc != nil && (btc.Direction == "inflow" || btc.Direction == "outflow")
 	if btc != nil {
-		flowLine := fmt.Sprintf("Net flow 24h: %s (%d large tx)", usd(btc.NetFlowUSD24h), btc.TxCount24h)
-		if btc.Partial {
-			flowLine += " — partial data, labeled wallets only"
+		if btc.Partial && !directional {
+			c.Facts = append(c.Facts, "Net exchange flow: not measurable (these BTC wallets carry no exchange labels)")
+		} else {
+			flowLine := fmt.Sprintf("Net flow 24h: %s (%d large tx)", usd(btc.NetFlowUSD24h), btc.TxCount24h)
+			if btc.Partial {
+				flowLine += " — partial data, labeled wallets only"
+			}
+			c.Facts = append(c.Facts, flowLine)
 		}
-		c.Facts = append(c.Facts, flowLine)
 		// Baseline comparison — only when the payload actually carries a
 		// prior-24h figure (a zero baseline means "no snapshot to compare").
 		if btc.NetFlowPrev24h != nil && *btc.NetFlowPrev24h != 0 {
@@ -290,7 +322,7 @@ func (a *Agents) WhaleCard(ctx context.Context) Card {
 			}
 			c.Facts = append(c.Facts, base)
 		}
-		if btc.Confidence > 0 {
+		if btc.Confidence > 0 && directional {
 			conf := btc.Confidence
 			c.Confidence = &conf
 		}
@@ -312,12 +344,16 @@ func (a *Agents) WhaleCard(ctx context.Context) Card {
 		if i == 3 {
 			break
 		}
-		where := t.Exchange
-		if where == "" {
-			where = "unlabeled wallet"
+		// "seen", not a transaction time: the mempool feed carries no tx
+		// timestamp, so the backend stamps each unconfirmed tx with its poll
+		// time (whale/source_mempool.go). That is when we saw it broadcast —
+		// still more usable than "neutral · unlabeled wallet" on every line.
+		line := fmt.Sprintf("%s BTC ≈ %s · seen %s UTC",
+			trimFloat(t.AmountNative), usd(t.AmountUSD), t.Timestamp.UTC().Format("Jan 2 15:04"))
+		if t.Exchange != "" && (t.Direction == "inflow" || t.Direction == "outflow") {
+			line += " · " + t.Direction + " · " + t.Exchange
 		}
-		c.Facts = append(c.Facts, fmt.Sprintf("%s BTC ≈ %s · %s · %s",
-			trimFloat(t.AmountNative), usd(t.AmountUSD), t.Direction, where))
+		c.Facts = append(c.Facts, line)
 	}
 	return c
 }
@@ -374,7 +410,7 @@ func (a *Agents) NewsCard(ctx context.Context) Card {
 			if i == 3 {
 				break
 			}
-			c.Facts = append(c.Facts, fmt.Sprintf("%d. %s — %d mentions/24h", i+1, item.Narrative, item.MentionCount))
+			c.Facts = append(c.Facts, fmt.Sprintf("%d. %s — %s/24h", i+1, item.Narrative, mentionsWord(item.MentionCount)))
 		}
 		// No confidence, no AI idea: nothing below the threshold is a finding.
 		return c
@@ -397,7 +433,7 @@ func (a *Agents) NewsCard(ctx context.Context) Card {
 		if i == 3 {
 			break
 		}
-		line := fmt.Sprintf("%d. %s — %s · score %d · %d mentions/24h", i+1, item.Narrative, item.Stage, item.TrendScore, item.MentionCount)
+		line := fmt.Sprintf("%d. %s — %s · score %d · %s/24h", i+1, item.Narrative, item.Stage, item.TrendScore, mentionsWord(item.MentionCount))
 		if item.SentimentLabel != "" {
 			line += " · " + item.SentimentLabel
 		}
@@ -410,6 +446,15 @@ func (a *Agents) NewsCard(ctx context.Context) Card {
 		}
 	}
 	return c
+}
+
+// mentionsWord renders "1 mention" / "N mentions" — the radar's lists
+// printed "1 mentions/24h" on most live days.
+func mentionsWord(n int) string {
+	if n == 1 {
+		return "1 mention"
+	}
+	return fmt.Sprintf("%d mentions", n)
 }
 
 // ── Funding ──────────────────────────────────────────────────────────────────
@@ -607,8 +652,9 @@ type momentumRead struct {
 	verdict string
 	rsi     float64
 	hist    float64
-	source  string
-	closeAt time.Time // close time of the last closed bar used
+	source   string
+	interval string    // bar size the read was taken on ("4h", "1h")
+	closeAt  time.Time // close time of the last closed bar used
 }
 
 // momentumReadFromCandles computes one asset's snapshot from an already
@@ -623,11 +669,12 @@ func momentumReadFromCandles(spec assetSpec, candles []types.OHLCVCandle) (momen
 	}
 	return momentumRead{
 		name:    spec.Display,
-		verdict: momentumVerdict(rsi, hist),
-		rsi:     rsi,
-		hist:    hist,
-		source:  spec.Source,
-		closeAt: closeTimeOf(candles, spec.Interval),
+		verdict:  momentumVerdict(rsi, hist),
+		rsi:      rsi,
+		hist:     hist,
+		source:   spec.Source,
+		interval: spec.Interval,
+		closeAt:  closeTimeOf(candles, spec.Interval),
 	}, nil
 }
 
@@ -735,7 +782,14 @@ func (a *Agents) MomentumCard(ctx context.Context) Card {
 	for _, r := range all {
 		verdictParts = append(verdictParts, fmt.Sprintf("%s: %s", r.name, strings.ToUpper(r.verdict)))
 		// %g: gold's tiny histogram must not render as a misleading "+0.0".
-		line := fmt.Sprintf("%s: RSI(14) %.1f · MACD hist %+.3g → %s", r.name, r.rsi, r.hist, r.verdict)
+		// The overview mixes bar sizes (crypto 4h, gold 1h), so every line
+		// names its own — the scan card already did, this one did not, and
+		// "BTC: RSI 65 / GOLD: RSI 45" compared a 4h read with a 1h read.
+		name := r.name
+		if r.interval != "" {
+			name = fmt.Sprintf("%s (%s)", r.name, r.interval)
+		}
+		line := fmt.Sprintf("%s: RSI(14) %.1f · MACD hist %+.3g → %s", name, r.rsi, r.hist, r.verdict)
 		if r.source == srcYahoo && !fxOpen {
 			line += " (market closed)"
 		}
@@ -1166,6 +1220,26 @@ func invalidationFor(state string, ema50, ema200, atr float64) (float64, string)
 	return invalidationLevel(ema50, ema200, atr), "below"
 }
 
+// trendInvalidationFact words the invalidation level per state.
+//
+// Only a confirmed trend has a thesis that can break. A flat/grey/conflict
+// card used to say "Invalidation: below X the structure is broken" two lines
+// under "Flat — no trend to read", arguing with its own verdict. The level
+// itself is unchanged (same number in levels.invalidation); unconfirmed
+// states word it as a reference point.
+func trendInvalidationFact(state string, inv float64, side string) string {
+	prep := "under"
+	if side == "above" {
+		prep = "over"
+	}
+	if state == trendUp || state == trendDown {
+		return fmt.Sprintf("Invalidation: %s %s the structure is broken (1 ATR %s the EMA cluster)",
+			side, trimFloat(inv), prep)
+	}
+	return fmt.Sprintf("No confirmed trend to invalidate · reference: %s %s = 1 ATR %s the EMA cluster",
+		side, trimFloat(inv), prep)
+}
+
 // pullbackZoneFor gates the EMA20-EMA50 pullback band (B3): present ONLY in
 // confirmed-trend states — flat/grey/conflict have no trend to pull back
 // within, so offering an "entry band" there would be an invented signal. See
@@ -1390,13 +1464,7 @@ func (a *Agents) TrendCard(ctx context.Context, spec assetSpec) Card {
 	if atrSeries := atrSeriesWilder(highs, lows, closes, 14); len(atrSeries) > 0 {
 		if atr := atrSeries[len(atrSeries)-1]; atr > 0 {
 			inv, side := invalidationFor(state, ema50, ema200, atr)
-			prep := "under"
-			if side == "above" {
-				prep = "over"
-			}
-			c.Facts = append(c.Facts, fmt.Sprintf(
-				"Invalidation: %s %s the structure is broken (1 ATR %s the EMA cluster)",
-				side, trimFloat(inv), prep))
+			c.Facts = append(c.Facts, trendInvalidationFact(state, inv, side))
 			c.Levels = TrendLevels{Invalidation: inv, InvalidationSide: side, PullbackZone: zone}
 		}
 	}
@@ -1453,6 +1521,12 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 	}
 	sup, res := supportResistance(candles, srWing, srTolPct)
 	last := candles[len(candles)-1].Close
+	// Rendered lines go nearest first: S1/R1 is the level price meets first.
+	// Strength order put a support 18% away between two nearer ones (live
+	// BTC: 76407 · 64033 · 65228), which no reader can use. The JSON levels
+	// keep the documented strength order (SRLevels contract) — integrations
+	// that read supports[0] as the strongest level are not moved.
+	supNear, resNear := nearestFirst(sup, last), nearestFirst(res, last)
 	// Both sides empty is never "Key levels around …" (review fix 2). Two
 	// distinct causes, two honest states:
 	//   - ZERO swing points in the whole window (monotone/flat tape): there is
@@ -1503,23 +1577,23 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 		DataTime:   closeTimeOf(candles, spec.Interval),
 		Verdict:    fmt.Sprintf("Key levels around %s", trimFloat(last)),
 	}
-	c.Facts = append(c.Facts, "Resistance: "+srLine(res), "Support: "+srLine(sup))
+	c.Facts = append(c.Facts, "Resistance: "+srLine(resNear), "Support: "+srLine(supNear))
 	// Machine-readable twin of the two lines above: raw cluster means, not the
 	// display-rounded labels.
 	c.Levels = SRLevels{Supports: srPoints(sup), Resistances: srPoints(res)}
-	if nl := nearestLevelLine(sup, res, last); nl != "" {
+	if nl := nearestLevelLine(supNear, resNear, last); nl != "" {
 		c.Facts = append(c.Facts, nl)
 	}
 	// Strength threshold beside the numbers (batch-2 rule) + the B4 formulas,
 	// stated on the card so the numbers are auditable. Frequency wording only.
 	c.Facts = append(c.Facts, fmt.Sprintf(
-		"Method: swing clusters over %d×%s candles · strength = touches + 0.5 per above-median-volume touch (strong from %d touches)",
+		"Method: swing clusters over %d×%s candles · strength = swing pivots + 0.5 per above-median-volume pivot (strong from %d pivots)",
 		len(candles), spec.Interval, srStrongTouches))
 	c.Facts = append(c.Facts,
-		"Tests: close within 0.25×ATR of a level = test · close beyond by >0.25×ATR within 3 bars = break, else held. Counts are frequencies over this window, not probabilities")
+		"Pivots = swing highs/lows that formed at the level. Test = a close within 0.25×ATR of it; within 3 bars a close >0.25×ATR beyond = break, back out on the near side = held, still at the level = not counted. Frequencies, not probabilities")
 	short := "no clear levels"
 	if len(res) > 0 && len(sup) > 0 {
-		short = fmt.Sprintf("R %s / S %s", srLevelLabel(res[0]), srLevelLabel(sup[0]))
+		short = fmt.Sprintf("R %s / S %s", srLevelLabel(resNear[0]), srLevelLabel(supNear[0]))
 	}
 	c.Short = short
 	if spec.Source == srcYahoo {
@@ -1564,8 +1638,24 @@ func srLevelLabel(l SRLevel) string {
 	}
 }
 
+// sortSRByDistance orders one side nearest-to-price first (stable, so equal
+// distances keep strength order).
+func sortSRByDistance(levels []SRLevel, last float64) {
+	sort.SliceStable(levels, func(i, j int) bool {
+		return math.Abs(levels[i].Raw-last) < math.Abs(levels[j].Raw-last)
+	})
+}
+
+// nearestFirst returns a nearest-first COPY — the caller's strength-sorted
+// slice (the JSON levels) is left untouched.
+func nearestFirst(levels []SRLevel, last float64) []SRLevel {
+	out := append([]SRLevel(nil), levels...)
+	sortSRByDistance(out, last)
+	return out
+}
+
 // nearestLevelLine names the level closest to the last price with its
-// conventional label (S1..S3 / R1..R3 = position in the strength-sorted
+// conventional label (S1..S3 / R1..R3 = position in the nearest-first
 // list) and the percent distance: "Price 1.3% above S1 (61200)". "" when no
 // levels or no price. Supports sit below price, resistances above, so the
 // direction word is fixed per side.
@@ -1594,9 +1684,12 @@ func srLine(levels []SRLevel) string {
 	}
 	parts := make([]string, 0, len(levels))
 	for _, l := range levels {
-		word := "touches"
+		// "pivots", not "touches": the count is swing pivots at the level,
+		// a different thing from the tests below — "4 touches, held 6 of 10
+		// tests" read as a counting error.
+		word := "swing pivots"
 		if l.Touches == 1 {
-			word = "touch"
+			word = "swing pivot"
 		}
 		entry := fmt.Sprintf("%s (%d %s", srLevelLabel(l), l.Touches, word)
 		// B4: how the level actually behaved when tested — frequency counts
@@ -1678,7 +1771,9 @@ func (a *Agents) VolCard(ctx context.Context, spec assetSpec) Card {
 	}
 	switch state {
 	case volExpanding:
-		c.Verdict, c.Short = "Volatility EXPANDING — breakout conditions", fmt.Sprintf("expanding %.2f×", ratio)
+		// "ranges widening", not "breakout conditions": ATR measures bar
+		// size, it does not see a level being broken.
+		c.Verdict, c.Short = "Volatility EXPANDING — bar ranges widening", fmt.Sprintf("expanding %.2f×", ratio)
 	case volCompressed:
 		c.Verdict, c.Short = "Volatility COMPRESSED — range conditions, expansion often follows", fmt.Sprintf("compressed %.2f×", ratio)
 	default:

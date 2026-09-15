@@ -337,9 +337,9 @@ func (a *Agents) GoldCard(ctx context.Context) Card {
 		c.Facts = append(c.Facts, fmt.Sprintf(
 			"Intraday price feed is down — the daily regime reads %s, but without a live price "+
 				"the card cannot place it against the day's levels and does not state a direction",
-			strings.ToLower(trend.Verdict)))
+			lowerFirst(trend.Verdict)))
 	case !confirmed:
-		c.Facts = append(c.Facts, "Regime: "+strings.ToLower(trend.Verdict))
+		c.Facts = append(c.Facts, "Regime: "+lowerFirst(trend.Verdict))
 	}
 
 	// The day's levels and where price sits against them.
@@ -371,6 +371,11 @@ func (a *Agents) GoldCard(ctx context.Context) Card {
 	case against:
 		c.Facts = append(c.Facts, fmt.Sprintf(
 			"Macro backdrop: %s for gold — CONFLICT with the regime, both stand as read", macroState))
+	case macroState == goldNeutral:
+		// The middle band is worded "mixed" on both macro cards (GOLD VIEW:
+		// MIXED — lamps split). "neutral" here named the same reading a
+		// different way and hid that the lamps disagree.
+		c.Facts = append(c.Facts, "Macro backdrop: mixed for gold (lamps split)")
 	default:
 		c.Facts = append(c.Facts, "Macro backdrop: "+macroState+" for gold")
 	}
@@ -436,13 +441,25 @@ func (a *Agents) goldLatestPrice(ctx context.Context) (float64, time.Time, bool)
 // from the daily series.
 const goldPriceStale = 6 * time.Hour
 
-// touchCount words a touch tally: "1 touch", "4 touches". A card that prints
-// "1 touches" reads as unfinished work, and this text is the product.
+// touchCount words a level's swing-pivot tally: "1 swing pivot", "4 swing
+// pivots" — the same word the S/R card uses for the same count, so the two
+// cards never describe one number two ways. A card that prints "1 pivots"
+// reads as unfinished work, and this text is the product.
 func touchCount(n int) string {
 	if n == 1 {
-		return "1 touch"
+		return "1 swing pivot"
 	}
-	return fmt.Sprintf("%d touches", n)
+	return fmt.Sprintf("%d swing pivots", n)
+}
+
+// lowerFirst lowercases only the first rune, for embedding a verdict
+// mid-sentence. strings.ToLower on the whole verdict turned "ADX 18.8" into
+// "adx 18.8" and "UPTREND" into "uptrend" on a live gold card.
+func lowerFirst(s string) string {
+	for i, r := range s {
+		return strings.ToLower(string(r)) + s[i+len(string(r)):]
+	}
+	return s
 }
 
 // goldKeyLevels renders the nearest clustered support/resistance around the

@@ -543,8 +543,10 @@ func (a *Agents) gather(ctx context.Context) gathered {
 	run(func() {
 		if m, err := a.api.MoodRead(ctx); err == nil && strings.TrimSpace(m.Read) != "" {
 			mu.Lock()
+			// Payload-only. The visible 🧠 line was cut mid-word at 160 runes
+			// ("…fragmented and nascent acro…") and quoted a different Fear &
+			// Greed index than the Macro line of the same digest.
 			g.mood = strings.TrimSpace(m.Read)
-			g.extras = append(g.extras, "🧠 <i>"+esc(truncate(firstSentence(m.Read), 160))+"</i>")
 			mu.Unlock()
 		}
 	})
@@ -756,7 +758,7 @@ const helpText = `<b>AlphaVizor Demo Bot</b> 🛰
 Live market agents from the AlphaVizor platform:
 
 /menu — button navigation, no typing needed
-/macro — risk-on/off regime of big money
+/macro — risk-on/off regime from tradfin markets
 /whale — large on-chain BTC transfers, net flow
 /funding — perp funding pressure &amp; liquidations
 /fx — forex overview: EURUSD, GBPUSD, USDJPY, XAUUSD
