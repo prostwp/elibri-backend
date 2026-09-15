@@ -440,7 +440,7 @@ func (b *Bot) riskReply(args []string) (string, *InlineKeyboardMarkup) {
 		return b.ag.RiskCard(riskExampleValues, true, nil).RenderHTML(), kb
 	}
 	if len(args) != 4 {
-		return b.ag.RiskCard(nil, false, fmt.Errorf("expected 4 numbers, got %d", len(args))).RenderHTML(), cardKeyboard(keyRisk, false)
+		return b.ag.RiskCard(nil, false, riskArityError{Got: len(args)}).RenderHTML(), cardKeyboard(keyRisk, false)
 	}
 	vals := make([]float64, 4)
 	for i, tok := range args {

@@ -107,10 +107,14 @@ type httpEnvelope struct {
 	// Narrative is the narrative radar's machine readout (additive
 	// 2026-09-15): state, windows, threshold and where it is checked, the
 	// listed themes, sources — absent elsewhere and on the 503.
-	Narrative  *NarrativeReadout `json:"narrative,omitempty"`
-	Confidence *int              `json:"confidence"`         // 0-100, null when the source gave none; news: data quality
-	AIText     *string           `json:"ai_text"`            // plain-text AI block, null when absent
-	Sections   []string          `json:"sections,omitempty"` // digest only: the one-liners
+	Narrative *NarrativeReadout `json:"narrative,omitempty"`
+	// Risk is the risk calculator's machine readout (additive 2026-09-15):
+	// formula, inputs, raw result in abstract units, the shown numbers,
+	// applicability, calculated_at — absent elsewhere.
+	Risk       *RiskReadout `json:"risk,omitempty"`
+	Confidence *int         `json:"confidence"`         // 0-100, null when the source gave none; news: data quality
+	AIText     *string      `json:"ai_text"`            // plain-text AI block, null when absent
+	Sections   []string     `json:"sections,omitempty"` // digest only: the one-liners
 	// Digest is the digest's own machine readout (digest only, additive
 	// 2026-09-15): unified status, how the highlighted card was selected and
 	// every section card_html renders (FX and narrative included), each with
@@ -287,6 +291,7 @@ func cardEnvelope(c Card) httpEnvelope {
 		Gold:       c.Gold,
 		Whale:      c.Whale,
 		Narrative:  c.Narrative,
+		Risk:       c.Risk,
 		DataAsOf:   c.DataTime.UTC().Format(time.RFC3339),
 		Disclaimer: disclaimerText,
 		CardHTML:   c.RenderHTML(),
@@ -772,7 +777,13 @@ func (s *HTTPServer) handleRisk(w http.ResponseWriter, r *http.Request, q url.Va
 	}
 	// Same validation the card builder runs — surfaced as 400, not a 200
 	// card that says "Those numbers don't work".
-	if _, err := calcRisk(vals[0], vals[1], vals[2], vals[3]); err != nil {
+	// A result the card cannot print as finite numbers is the same honest 400
+	// (riskPrint), never a NaN that fails JSON encoding with a 500.
+	res, err := calcRisk(vals[0], vals[1], vals[2], vals[3])
+	if err == nil {
+		_, err = riskPrint(res)
+	}
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

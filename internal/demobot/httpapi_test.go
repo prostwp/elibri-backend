@@ -402,8 +402,8 @@ func TestHTTPRiskEnvelope(t *testing.T) {
 		t.Errorf("agent/semaphore: %q/%q", env.Agent, env.Semaphore)
 	}
 	// Batch-2: pure sizing math — no direction labels anywhere in the envelope.
-	if !strings.Contains(env.Verdict, "Position size:") {
-		t.Errorf("verdict must lead with the size: %q", env.Verdict)
+	if !strings.HasPrefix(env.Verdict, "Calculated, instrument model not confirmed: ") {
+		t.Errorf("verdict must lead with the status: %q", env.Verdict)
 	}
 	if strings.Contains(env.Verdict, "LONG") || strings.Contains(env.Verdict, "SHORT") {
 		t.Errorf("direction label leaked into the verdict: %q", env.Verdict)

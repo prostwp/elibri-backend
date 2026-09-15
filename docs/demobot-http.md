@@ -36,7 +36,7 @@ Telegram.
 | `GET /agents/fx` | — | Forex overview: EURUSD, GBPUSD, USDJPY and gold (COMEX GC=F futures) — price, change, place in range, per-row freshness (see [FX card](#fx-card)) |
 | `GET /agents/gold` | — | Gold Agent on COMEX GC=F futures (`asset` stays `XAUUSD`): daily regime, the day range and two conditional day scenarios, the last closed 1h price with its own stamp, invalidation in a confirmed regime, macro / S/R / volatility background, machine readout in `gold`, content `blocks` (see [gold card](#gold-card-and-content-blocks)) |
 | `GET /agents/news` | — | Narrative radar: RSS items and Reddit posts matching a theme's keywords in the last 24h (growth vs the previous 24h), the leader's activity score from 5 matched items, machine readout in `narrative`, content `blocks` (see [narrative card](#narrative-card-and-content-blocks)) |
-| `GET /agents/risk` | `?balance=&risk=&entry=&stop=` all required | Position-size calculator |
+| `GET /agents/risk` | `?balance=&risk=&entry=&stop=` all required | Risk sizing formula `(balance × risk%) ÷ \|entry − stop\|` in **abstract units**, valid under one stated condition; machine readout in `risk`, no content `blocks`, reads no market data (see [risk card](#risk-card)) |
 | `GET /agents/digest` | — | All agents in one sweep, prioritized; AI brief in `ai_text`, one-liners in `sections` |
 | `GET /agents/top` | — | The single strongest signal right now, with the AI brief + why-line |
 | `GET /showcase` | — | **Landing catalog**: every agent with `live`/`degraded` status, headline and one-liner (see [landing showcase](#landing-showcase)) |
@@ -573,7 +573,8 @@ asset whenever at least one real lamp exists.
   `UNKNOWN` verdict with `market_closed` / `no_data` reason, never a backdrop.
 
 `risk` accepts the same tolerant number formats as the Telegram command:
-`balance=10,000`, `risk=1%`, `entry=$64000` all parse.
+`balance=10,000`, `risk=1%`, `entry=$64000` all parse. A `$` in the input is
+ignored: it does not set an account currency (see [risk card](#risk-card)).
 
 ## Landing showcase
 
@@ -821,6 +822,7 @@ Every agent endpoint answers with one shape:
 | `funding` | object | **funding card only** (additive, 2026-09-15): `state`, `selected_symbol`, `coverage`, `liquidations` — see [funding card](#funding-card-and-content-blocks). Absent for every other agent and on the all-offline funding `503` |
 | `whale` | object | **whale card only** (additive, 2026-09-15): `state`, `count`, `threshold_usd`, `window`, `direction`, the listed transactions — see [whale card](#whale-card-and-content-blocks). Absent for every other agent and on the offline `503` |
 | `narrative` | object | **news card only** (additive, 2026-09-15): `state`, windows, `threshold` and where it is checked, the leader and listed themes, `sources` — see [narrative card](#narrative-card-and-content-blocks). Absent for every other agent and on the `503` |
+| `risk` | object | **risk card only** (additive, 2026-09-15): `formula`, `inputs`, `result_abstract_units`, `price_risk_account_ccy`, the shown numbers, `applicability`, `calculated_at` — see [risk card](#risk-card). Absent for every other agent |
 | `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a **rule score**, not a confidence or a strength, and ships in the verdict (`RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)`) and in `macro.rule_score`. The `?asset=gold` view has its own `gold score` and also serves `confidence: null` |
 | `ai_text` | string \| null | Plain-text AI block (mood read / idea / brief / why-line); `null` when AI is disabled or the call failed |
 | `sections` | string[] | **digest only**: plain-text one-liners of every other agent (the winner heads the envelope) |
@@ -862,7 +864,7 @@ whale top-3 window now hangs off the snapshot's `captured_at`.
 | `/agents/funding` | **no** | Point-in-time reads (rates, the cluster's position against the mark price, the liquidation feed, a 1h window from the request time). The request time is not a version of that body |
 | `/agents/momentum` without params, `?tf=` alone, `?assets=` with two or more assets | **no** | Composite: the oldest bar (`data_as_of`) can stay put while another asset, the ETH-vs-BTC read, an asset's freshness (`market closed` / `data delayed`) or a source failure/recovery changes the body |
 | `/agents/digest`, `/agents/top`, `/showcase/example` | **no** | The digest re-sweeps per request; `/top` and the example add per-request AI text that reads the whole sweep |
-| `/agents/risk` | **no** | A pure function of the query; its data time is the answering time |
+| `/agents/risk` | **no** | A pure function of the query; `data_as_of` is the **calculation time** (the card reads no market data), also served as `risk.calculated_at` |
 | `/`, `/agents` | **no** | Static text |
 | Any `4xx` / `5xx` (including `503` degraded cards) | **no** | A cached failure would keep an agent dark after its source recovers |
 
@@ -1854,6 +1856,136 @@ level**, so `why_level` is always `""`:
 | `fear_greed` | `value`, `label`, `as_of`, `fetched_at`, `age_hours` (`null` without a time), `stale`, `stale_after_hours` (36), `in_score` (always `false`); `null` without a live value |
 | `is_forecast` | Always `false` |
 
+## Risk card
+
+> ⚠️ **Risk `verdict` and `facts` changed 2026-09-15 — do not parse them.**
+> Before: `Position size: 0.0666667 units`, facts `Max loss at stop: $100.00
+> (1% of $10.0K balance)`, `Entry 64000 / stop 62500 → 1500 risk per unit`,
+> `Position notional: $4.3K`; example verdict `Example — Position size: …`;
+> Telegram errors `Could not parse that` / `Those numbers don't work`. Now the
+> verdict leads with the status (below). The numbers are machine-readable in
+> `risk`; `verdict` and `facts` are display text and may change again.
+
+Stage 1: honest words only. The formula is **unchanged**:
+`(balance × risk%) ÷ |entry − stop|`, the same numbers on the same inputs.
+The calculator gets four numbers and nothing else: no instrument, no account
+currency, no contract size, no lot step, no conversion rate. So the result is
+a number of **abstract units**, valid only if a 1.0 price move changes one
+unit's value by 1.0 in the account currency (for example BTC/USD spot on a
+USD account). It is not a position size of a real instrument.
+
+```
+⚪ Risk Calculator
+Calculated, instrument model not confirmed: 0.06666 abstract units
+• Valid only if a 1.0 price move changes one unit's value by 1.0 in the account currency
+• Fits e.g. BTC/USD spot on a USD account; the calculator does not know your instrument
+• Planned price risk: 100 (account currency), before fees and slippage
+• Basis: 1% of balance 10000; entry 64000, stop 62500
+• Check: 0.06666 (rounded down) × distance 1500 = 99.99 ≤ 100
+• Not supported: FX lots, futures with a multiplier, CFDs, account-currency conversion
+• Position sizing math only — not a trade suggestion.
+
+Analytics, not financial advice · AlphaVizor · 2026-09-15 20:11 UTC · calculation time, no market data read
+```
+
+What the card no longer claims:
+
+- **Size.** `abstract units` with the condition above, never `units` or
+  `Position size`. The example (Telegram `/risk` with no numbers, the
+  `/showcase` row) is labeled `Example (BTC/USD spot, USD account)` and adds
+  `here 1 abstract unit = 1 BTC`.
+- **Loss.** `Planned price risk: … (account currency), before fees and
+  slippage`, not `Max loss at stop: $…`: fees, slippage and price gaps are
+  not in the formula.
+- **Currency.** No `$`: the account currency is not a parameter, so amounts
+  are in `account currency`. A `$` typed in the input is only stripped.
+- **Notional.** Not shown: its meaning depends on the instrument.
+- **Limits on the card.** FX lots, futures with a multiplier, CFDs and
+  account-currency conversion are named on the card, not only in How it
+  works.
+- **Time.** The footer says `calculation time, no market data read`;
+  `data_as_of` stays in the envelope (contract) and equals
+  `risk.calculated_at`.
+
+**Print rule.** The formula is untouched; only printing rounds. Float noise
+is dropped first: a value is rounded to 12 significant digits
+(`0.0050000000000001155` prints `0.005`, so `1.1 − 1.095` gives `20000`, not
+`19990`). Then the shown size is rounded **down** to 4 significant digits
+(`0.0666666…` → `0.06666`) and money is rounded **up**: to cents from 1 to
+1e15, to 4 significant digits outside that range.
+
+- The shown size is **never above the computed one, except** by the same
+  noise cleaning: rounding "down" applies to the cleaned value, so
+  `shown_abstract_units` can exceed `result_abstract_units` (and
+  `price_risk_at_shown_units` can exceed `price_risk_account_ccy`) by at most
+  half a unit in the 12th significant digit (≤ 5e-12 relative). The reference
+  example does it: `10000 1 1.1 1.095` computes 19999.999999999538 and shows
+  `20000` (at shown size 100.0000000000023 against a budget of 100). A client
+  comparing `shown ≤ result` must allow that bound. The printed Check line
+  never exceeds the printed planned price risk. These bounds hold in the
+  normal float range (size and amounts ≥ ~2.2e-308); below it, float
+  underflow makes the raw result itself inexact and
+  `price_risk_at_shown_units` can exceed the budget by more (seen up to 5e-4
+  relative) — the Check line and the shown-size bound still hold.
+- A printed price risk is **never below the computed one, except** for a
+  value with more than 12 significant digits: there it can be below by at most
+  half a unit in its 12th significant digit (at most 5e-12 relative). From
+  about 1e9 on that is a fraction of a cent or more:
+  `balance=123456789012.345&risk=1` computes 1234567890.12345 and prints
+  `1234567890.12`. The exact value is in `risk.price_risk_account_ccy`.
+- The `Check` value never prints above the planned price risk; when float
+  noise would push it above, the shown size steps down one 4-digit step.
+- Numbers from 1e15 up and below 1e-5 print in exponent form (`1e+24`,
+  `1e-306`). A number that cannot be printed as a finite value is a `400`
+  (`numbers too large or too small to calculate`), never `NaN` or `Inf`.
+
+The raw values are in `risk`.
+
+States (Telegram shows all of them; over HTTP every not-calculated input is
+a `400` with the error text, so the `200` body is always `calculated`):
+
+| First line | When |
+|---|---|
+| `Calculated, instrument model not confirmed: N abstract units` | Four valid numbers |
+| `Not calculated: not enough parameters (2 of 4)` / `too many parameters (5, need 4)` | Telegram `/risk` with another count of numbers |
+| `Not calculated: a parameter is not a number` | A token that does not parse |
+| `Not calculated: those numbers don't work` | Balance or entry/stop not positive, risk% outside (0, 100], stop equal to entry, `NaN` / `Inf`, or a result that overflows or underflows |
+
+A third status, "instrument model not supported", needs an instrument or
+account-currency parameter to be decided; the calculator has none, so every
+result says `instrument model not confirmed` (`risk.applicability.status` is
+always `not_verified`).
+
+`risk` (additive; `200` only):
+
+| Field | Meaning |
+|---|---|
+| `status` | Always `"calculated"` |
+| `formula` | `"(balance × risk%) ÷ \|entry − stop\|"` |
+| `inputs` | `{"balance", "risk_pct", "entry", "stop"}` as parsed |
+| `price_risk_account_ccy` | balance × risk% ÷ 100, raw, in the account currency |
+| `price_distance` | \|entry − stop\|, raw |
+| `result_abstract_units` | The formula result, raw |
+| `shown_abstract_units` / `price_risk_at_shown_units` | The printed size (down to 4 significant digits after noise cleaning — can exceed `result_abstract_units` by ≤ 5e-12 relative, see "Print rule") and shown size × distance, raw |
+| `quantity_unit` | Always `"abstract_units"` |
+| `account_currency` | Always `null`: not a parameter |
+| `applicability` | `{"status": "not_verified", "condition": "a 1.0 price move changes one unit's value by 1.0 in the account currency", "fits_example": "BTC/USD spot on a USD account", "not_supported": ["fx_lots", "futures_multiplier", "cfd", "account_currency_conversion"]}` |
+| `excludes` | `["fees", "slippage", "price_gaps", "quantity_step_rounding"]` |
+| `display_rounding` | `{"size": "down_4_significant", "money": "up_to_cents"}` |
+| `reads_market_data` | Always `false` |
+| `calculated_at` | RFC3339 UTC, equal to `data_as_of` |
+| `content_line` | `"Position sizing only: 0.06666 abstract units for a planned price risk of 100"` — the one line a content writer can use |
+
+**No `blocks`.** The calculator observes no market: it has no event, no
+level of its own (entry and stop are the user's), no scenarios, nothing to
+invalidate and no regime. Filling `what_happened` / `scenarios` with sizing
+text would make it read as a market agent, so `blocks` is absent and the
+position-sizing line is `risk.content_line`.
+
+Not in the push hook (a function of user input) and never a `/showcase/example`
+subject. Every line (verdict, facts, footer, `content_line`) is at most 110
+characters.
+
 ## Push hook
 
 The demobot can push a reading to the site backend when it changes, instead
@@ -2036,7 +2168,7 @@ Errors are always `{"error": "..."}` with an honest message:
 
 | Status | When |
 |---|---|
-| `400` | Bad arguments: unknown asset, `?asset=` on a non-asset agent, a bad entry / >6 entries in `?assets=`, an unknown `?tf=`, `?assets=`/`?tf=` outside `momentum`, a **repeated parameter** (`?assets=a&assets=b` → "duplicate parameter"), an unknown macro view (`?asset=` on `macro` accepts only `btc`/`gold`), missing/non-numeric/invalid risk params |
+| `400` | Bad arguments: unknown asset, `?asset=` on a non-asset agent, a bad entry / >6 entries in `?assets=`, an unknown `?tf=`, `?assets=`/`?tf=` outside `momentum`, a **repeated parameter** (`?assets=a&assets=b` → "duplicate parameter"), an unknown macro view (`?asset=` on `macro` accepts only `btc`/`gold`), missing/non-numeric/invalid risk params (since 2026-09-15 also `NaN` / `Inf` → `every number must be finite`, and a formula that overflows or underflows → `numbers too large or too small to calculate`; both used to answer `200` with `NaN` / `+Inf`) |
 | `404` | Unknown agent name or path |
 | `405` | Non-GET method (`Allow: GET` header set) |
 | `429` | Over the 10 req/s global budget (`Retry-After: 1` header set) |
@@ -2064,8 +2196,8 @@ curl -s 'localhost:8090/agents/momentum?assets=btc,eurusd,gold&tf=1d' | jq
 # Macro lamps re-framed for gold
 curl -s 'localhost:8090/agents/macro?asset=gold' | jq
 
-# Position-size calculator
-curl -s 'localhost:8090/agents/risk?balance=10000&risk=1&entry=64000&stop=62500' | jq
+# Risk sizing formula (example inputs: BTC/USD spot, USD account)
+curl -s 'localhost:8090/agents/risk?balance=10000&risk=1&entry=64000&stop=62500' | jq '{verdict, risk}'
 
 # Full prioritized digest (AI brief in ai_text, one-liners in sections)
 curl -s localhost:8090/agents/digest | jq

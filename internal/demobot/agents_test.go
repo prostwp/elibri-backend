@@ -202,8 +202,10 @@ func TestMomentumVerdictAnalyticalLanguage(t *testing.T) {
 func TestRiskCardNoDirectionLanguage(t *testing.T) {
 	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
 	c := ag.RiskCard([]float64{10000, 1, 64000, 62500}, false, nil)
-	if !strings.HasPrefix(c.Verdict, "Position size: ") {
-		t.Errorf("verdict must lead with the size, got %q", c.Verdict)
+	// Stage 1 (2026-09-15): the verdict leads with the status and says
+	// abstract units; the exact texts are golden in risk_readable_test.go.
+	if !strings.HasPrefix(c.Verdict, "Calculated, instrument model not confirmed: ") {
+		t.Errorf("verdict must lead with the status, got %q", c.Verdict)
 	}
 	joined := c.Verdict + "|" + strings.Join(c.Facts, "|")
 	for _, banned := range []string{"LONG", "SHORT"} {
@@ -211,24 +213,24 @@ func TestRiskCardNoDirectionLanguage(t *testing.T) {
 			t.Errorf("direction label %q leaked into the risk card: %s", banned, joined)
 		}
 	}
-	var disclaimer, maxLoss bool
+	var disclaimer, priceRisk bool
 	for _, f := range c.Facts {
 		if f == "Position sizing math only — not a trade suggestion." {
 			disclaimer = true
 		}
-		if strings.HasPrefix(f, "Max loss at stop:") {
-			maxLoss = true
+		if strings.HasPrefix(f, "Planned price risk:") {
+			priceRisk = true
 		}
 	}
 	if !disclaimer {
 		t.Errorf("risk card must carry the sizing-only disclaimer: %v", c.Facts)
 	}
-	if !maxLoss {
-		t.Errorf("risk card must name the max loss: %v", c.Facts)
+	if !priceRisk {
+		t.Errorf("risk card must name the planned price risk: %v", c.Facts)
 	}
-	// The example form keeps its labeling and the disclaimer.
+	// The example form keeps its labeling and names the instrument it assumes.
 	ex := ag.RiskCard([]float64{10000, 1, 64000, 62500}, true, nil)
-	if !strings.HasPrefix(ex.Verdict, "Example — Position size: ") {
+	if !strings.HasPrefix(ex.Verdict, "Example (BTC/USD spot, USD account), calculated: ") {
 		t.Errorf("example verdict: got %q", ex.Verdict)
 	}
 }

@@ -210,7 +210,7 @@ var howTexts = map[string]string{
 	keyTrend:    "State machine on 4h bars (1h for FX/gold): ADX<20 flat, 20-25 grey zone, ADX 25+ with price and EMA50/200 aligned = confirmed unless swing structure disagrees; else conflict.",
 	keySR:       "Clusters swing highs/lows within 0.5% on closed 4h candles (1h FX/gold), 3 strongest per side. Test = a close within 0.25 ATR; reaction or break within 3 candles. 7+ pivots = established.",
 	keyVol:      "ATR(14) vs the mean of its previous 30 values, on closed candles. Ratio ≤0.80 compressed, ≥1.25 elevated: the agent's thresholds, not a market benchmark. Size of moves, not direction or breakout.",
-	keyRisk:     "Position size = (balance × risk%) ÷ |entry − stop|. Valid when a 1.0 price move changes one unit's value by 1.0 in account currency (spot); FX lots, futures, CFDs differ.",
+	keyRisk:     "Result = (balance × risk%) ÷ |entry − stop|, in abstract units. Valid only when a 1.0 price move changes one unit's value by 1.0 in account currency; FX lots, futures, CFDs differ.",
 	keyFX:       "Per instrument on closed 1h Yahoo bars: price, change over 24h (or since the close before a gap), place in that range, EMA50 vs EMA200, RSI(14). Gold = COMEX GC=F futures. No overall verdict.",
 	keyDigest:   "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",
 	keyTop:      "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",
@@ -1339,8 +1339,10 @@ func (a *Agents) VolCard(ctx context.Context, spec assetSpec) Card {
 
 // riskResult is pure position-sizing math. It deliberately carries NO
 // direction label (team review batch 2): "LONG"/"SHORT" read as a trade
-// suggestion, and the calculator's only claim is arithmetic — size, max loss,
-// notional. The math is direction-agnostic (|entry − stop|) anyway.
+// suggestion, and the calculator's only claim is arithmetic — a result in
+// abstract units and the planned price risk (risk_text.go). Notional is still
+// computed but not shown or served: its meaning depends on the instrument.
+// The math is direction-agnostic (|entry − stop|) anyway.
 type riskResult struct {
 	RiskAmount float64
 	PerUnit    float64
@@ -1349,6 +1351,12 @@ type riskResult struct {
 }
 
 func calcRisk(balance, riskPct, entry, stop float64) (riskResult, error) {
+	for _, v := range []float64{balance, riskPct, entry, stop} {
+		// NaN passes every comparison below; strconv accepts "NaN" and "Inf".
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return riskResult{}, fmt.Errorf("%s", riskErrNotFinite)
+		}
+	}
 	switch {
 	case balance <= 0:
 		return riskResult{}, fmt.Errorf("balance must be positive")
@@ -1365,6 +1373,13 @@ func calcRisk(balance, riskPct, entry, stop float64) (riskResult, error) {
 	}
 	r.Size = r.RiskAmount / r.PerUnit
 	r.Notional = r.Size * entry
+	// The formula above is unchanged; an overflow or underflow of it is not a
+	// result (it used to print "+Inf units" / "$NaN").
+	for _, v := range []float64{r.RiskAmount, r.PerUnit, r.Size} {
+		if math.IsInf(v, 0) || math.IsNaN(v) || v == 0 {
+			return riskResult{}, fmt.Errorf("%s", riskErrRange)
+		}
+	}
 	return r, nil
 }
 
@@ -1378,7 +1393,11 @@ const riskUsage = "Usage: /risk <balance> <risk%> <entry> <stop>"
 var riskExampleValues = []float64{10000, 1, 64000, 62500}
 
 // RiskCard renders the calculator. With no args it shows a worked example —
-// clearly labeled, never pretending to be live data.
+// clearly labeled, never pretending to be live data. The words live in
+// risk_text.go. Pure math, no direction word: sizing is |entry − stop|
+// arithmetic, and a LONG/SHORT label would read as a trade suggestion
+// (batch-2 language rule). DataTime is the calculation time: the card reads
+// no market data.
 func (a *Agents) RiskCard(args []float64, isExample bool, parseErr error) Card {
 	c := Card{
 		Emoji:      emojiNeutral,
@@ -1386,35 +1405,9 @@ func (a *Agents) RiskCard(args []float64, isExample bool, parseErr error) Card {
 		ShortName:  "Risk",
 		Command:    keyRisk,
 		HowItWorks: howTexts[keyRisk],
-		DataTime:   time.Now().UTC(),
+		DataTime:   a.clock(),
 	}
-	if parseErr != nil {
-		c.Verdict = "Could not parse that"
-		c.Facts = []string{parseErr.Error(), riskUsage, "Example: /risk 10000 1 100000 98000"}
-		return c
-	}
-	r, err := calcRisk(args[0], args[1], args[2], args[3])
-	if err != nil {
-		c.Verdict = "Those numbers don't work"
-		c.Facts = []string{err.Error(), riskUsage}
-		return c
-	}
-	// Pure math, no direction word: sizing is |entry − stop| arithmetic, and a
-	// LONG/SHORT label would read as a trade suggestion (batch-2 language rule).
-	c.Verdict = fmt.Sprintf("Position size: %s units", trimFloat6(r.Size))
-	if isExample {
-		c.Verdict = "Example — " + c.Verdict
-	}
-	c.Facts = append(c.Facts,
-		fmt.Sprintf("Max loss at stop: %s (%.4g%% of %s balance)", usd(r.RiskAmount), args[1], usd(args[0])),
-		fmt.Sprintf("Entry %s / stop %s → %s risk per unit", trimFloat(args[2]), trimFloat(args[3]), trimFloat(r.PerUnit)),
-		fmt.Sprintf("Position notional: %s", usd(r.Notional)),
-		"Position sizing math only — not a trade suggestion.",
-	)
-	if isExample {
-		c.Facts = append(c.Facts, riskUsage)
-	}
-	return c
+	return riskCardFrom(c, args, isExample, parseErr)
 }
 
 // ── formatting helpers ───────────────────────────────────────────────────────

@@ -409,6 +409,10 @@ type Card struct {
 	// threshold, themes, sources) — served as the envelope's "narrative"
 	// (narrative_text.go). nil elsewhere and on the offline card.
 	Narrative *NarrativeReadout
+	// Risk is the risk calculator's machine readout (formula, inputs, raw and
+	// shown results, applicability) — served as the envelope's "risk"
+	// (risk_text.go). nil elsewhere and on a card without a result.
+	Risk *RiskReadout
 	// confLabel renames the Confidence bar ("" = "Confidence: … N%"); the
 	// narrative radar sets "Data quality", printed as "… N/100" — its value
 	// is a data-quality heuristic, never a probability. Not served.

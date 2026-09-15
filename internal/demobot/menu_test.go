@@ -207,8 +207,8 @@ func TestRiskExampleCallback(t *testing.T) {
 	if stripFooter(gotText) != stripFooter(wantText) {
 		t.Fatalf("risk_example must equal /risk 10000 1 64000 62500:\ngot:\n%s\nwant:\n%s", gotText, wantText)
 	}
-	if !strings.Contains(gotText, "Position size:") {
-		t.Errorf("example must lead with pure sizing math (no direction labels), got: %s", gotText)
+	if !strings.Contains(gotText, "Calculated, instrument model not confirmed:") {
+		t.Errorf("example must lead with the status of pure sizing math (no direction labels), got: %s", gotText)
 	}
 	if strings.Contains(gotText, "LONG") || strings.Contains(gotText, "SHORT") {
 		t.Errorf("direction labels are banned from the risk card (batch-2), got: %s", gotText)
@@ -239,7 +239,7 @@ func TestRiskExampleCallback(t *testing.T) {
 		t.Fatalf("risk_example callback: got %d sends, want 1", f.count("sendMessage"))
 	}
 	sent, _ := f.request("sendMessage", 0)["text"].(string)
-	for _, want := range []string{"Position size:", "64000", "62500", "not a trade suggestion"} {
+	for _, want := range []string{"abstract units", "64000", "62500", "not a trade suggestion"} {
 		if !strings.Contains(sent, want) {
 			t.Errorf("example calculation missing %q in: %s", want, sent)
 		}
