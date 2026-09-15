@@ -494,6 +494,9 @@ Every envelope carries the pair; when `ok` is `false`, `reason` is one of:
 For `digest` / `top` the pair (and `levels`) describes the **top signal
 card** heading the envelope — with every source dead, the honest macro
 fallback yields `ok: false`, `"reason": "source_offline"` inside the 200.
+`blocks` (one agent's content sentences) ship on `/agents/top` only — the
+digest envelope never carries them, since they describe that one card, not
+the whole sweep (fixed 2026-09-15).
 
 The `503` error body carries the same pair beside the message, so single-agent
 degraded states are branchable too:
