@@ -109,9 +109,13 @@ func assetOffline(spec assetSpec, agent, shortName, command, how string) Card {
 // decorateFX applies the shared FX card furniture: source note and the
 // weekend banner as the first fact. DataTime is the caller's job — it must
 // be the close time of the last closed bar actually used (item 7).
-func decorateFX(c *Card) {
+func decorateFX(c *Card) { decorateFXAt(c, time.Now()) }
+
+// decorateFXAt is decorateFX at a given clock — the seam that lets tests
+// render the weekend banner without waiting for a weekend.
+func decorateFXAt(c *Card, now time.Time) {
 	c.SourceNote = "data: Yahoo Finance"
-	if !isForexOpen(time.Now()) {
+	if !isForexOpen(now) {
 		c.Facts = append([]string{fxClosedBanner}, c.Facts...)
 	}
 }
@@ -149,7 +153,7 @@ var howTexts = map[string]string{
 	keyFunding:  "Compares perp funding rates across majors. High positive funding = crowded longs (squeeze risk); negative = crowded shorts. Liquidation feed shows where forced exits cluster.",
 	keyMomentum: "RSI(14) + MACD histogram. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; else neutral. Crypto on 4h bars, FX and gold on 1h; a 1d scan is available.",
 	keyTrend:    "State machine on 4h bars (1h for FX/gold): ADX<20 flat, 20-25 grey zone, ADX 25+ with price and EMA50/200 aligned = confirmed unless swing structure disagrees; else conflict.",
-	keySR:       "Finds swing highs/lows on 4h bars (1h for FX/gold) and clusters them within 0.5%. Strength = swing pivots + 0.5 per high-volume pivot; tests show how price behaved at each level.",
+	keySR:       "Clusters swing highs/lows within 0.5% on closed 4h candles (1h FX/gold), 3 strongest per side. Test = a close within 0.25 ATR; reaction or break within 3 candles. 7+ pivots = established.",
 	keyVol:      "ATR(14) now vs its 30-bar average. Ratio 1.25+ = volatility expanding; 0.8- = compressed. Measures how far price moves per bar, not which way, and does not confirm a breakout.",
 	keyRisk:     "Position size = (balance × risk%) ÷ |entry − stop|. Valid when a 1.0 price move changes one unit's value by 1.0 in account currency (spot); FX lots, futures, CFDs differ.",
 	keyFX:       "EMA50 vs EMA200 trend on 1h bars, RSI(14) and 24h change from Yahoo Finance for EURUSD, GBPUSD, USDJPY and gold (COMEX GC=F futures). Weekend closures are flagged.",
@@ -1569,6 +1573,12 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 	if err != nil {
 		return assetOffline(spec, "S/R Agent", "S/R", keySR, howTexts[keySR])
 	}
+	return srCardOf(spec, candles, time.Now())
+}
+
+// srCardOf is SRCard after the fetch: every card path for a set of closed
+// candles. now only drives the FX weekend banner (decorateFXAt).
+func srCardOf(spec assetSpec, candles []types.OHLCVCandle, now time.Time) Card {
 	if len(candles) < 20 { // too few closed bars for meaningful swings
 		c := insufficientCard(spec, "S/R Agent", "S/R", keySR, howTexts[keySR], "swing detection")
 		c.DataTime = closeTimeOf(candles, spec.Interval)
@@ -1576,12 +1586,9 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 	}
 	sup, res := supportResistance(candles, srWing, srTolPct)
 	last := candles[len(candles)-1].Close
-	// Rendered lines go nearest first: S1/R1 is the level price meets first.
-	// Strength order put a support 18% away between two nearer ones (live
-	// BTC: 76407 · 64033 · 65228), which no reader can use. The JSON levels
-	// keep the documented strength order (SRLevels contract) — integrations
-	// that read supports[0] as the strongest level are not moved.
-	supNear, resNear := nearestFirst(sup, last), nearestFirst(res, last)
+	// Rendered lines go nearest first; the JSON levels keep the documented
+	// strength order (SRLevels contract), each point carrying display_rank and
+	// strength_rank so the two orders never diverge silently (sr_text.go).
 	// Both sides empty is never "Key levels around …" (review fix 2). Two
 	// distinct causes, two honest states:
 	//   - ZERO swing points in the whole window (monotone/flat tape): there is
@@ -1598,166 +1605,18 @@ func (a *Agents) SRCard(ctx context.Context, spec assetSpec) Card {
 			c.DataTime = closeTimeOf(candles, spec.Interval)
 			return c
 		}
-		c := Card{
-			Emoji:      emojiNeutral,
-			Agent:      "S/R Agent",
-			ShortName:  "S/R",
-			Asset:      spec.Display,
-			AssetKey:   spec.Key,
-			Command:    keySR,
-			HowItWorks: howTexts[keySR],
-			DataTime:   closeTimeOf(candles, spec.Interval),
-			Verdict:    "No significant levels detected in the window",
-			Short:      "no significant levels",
-			Levels:     SRLevels{Supports: srPoints(nil), Resistances: srPoints(nil)},
-		}
-		c.Facts = append(c.Facts,
-			fmt.Sprintf("Swing points exist (%d), but no cluster sits clear of the last price %s", len(sh)+len(sl), trimFloat(last)),
-			fmt.Sprintf("Method: swing clusters over %d×%s candles · strength = touches + 0.5 per above-median-volume touch (strong from %d touches)",
-				len(candles), spec.Interval, srStrongTouches),
-		)
+		c := srNoLevelsCard(spec, len(sh)+len(sl), last, len(candles), closeTimeOf(candles, spec.Interval))
 		if spec.Source == srcYahoo {
-			decorateFX(&c)
+			decorateFXAt(&c, now)
 		}
 		return c
 	}
-	c := Card{
-		Emoji:      emojiNeutral,
-		Agent:      "S/R Agent",
-		ShortName:  "S/R",
-		Asset:      spec.Display,
-		AssetKey:   spec.Key,
-		Command:    keySR,
-		HowItWorks: howTexts[keySR],
-		DataTime:   closeTimeOf(candles, spec.Interval),
-		Verdict:    fmt.Sprintf("Key levels around %s", trimFloat(last)),
-	}
-	c.Facts = append(c.Facts, "Resistance: "+srLine(resNear), "Support: "+srLine(supNear))
-	// Machine-readable twin of the two lines above: raw cluster means, not the
-	// display-rounded labels.
-	c.Levels = SRLevels{Supports: srPoints(sup), Resistances: srPoints(res)}
-	if nl := nearestLevelLine(supNear, resNear, last); nl != "" {
-		c.Facts = append(c.Facts, nl)
-	}
-	// Strength threshold beside the numbers (batch-2 rule) + the B4 formulas,
-	// stated on the card so the numbers are auditable. Frequency wording only.
-	c.Facts = append(c.Facts, fmt.Sprintf(
-		"Method: swing clusters over %d×%s candles · strength = swing pivots + 0.5 per above-median-volume pivot (strong from %d pivots)",
-		len(candles), spec.Interval, srStrongTouches))
-	c.Facts = append(c.Facts,
-		"Pivots = swing highs/lows that formed at the level. Test = a close within 0.25×ATR of it; within 3 bars a close >0.25×ATR beyond = break, back out on the near side = held, still at the level = not counted. Frequencies, not probabilities")
-	short := "no clear levels"
-	if len(res) > 0 && len(sup) > 0 {
-		short = fmt.Sprintf("R %s / S %s", srLevelLabel(resNear[0]), srLevelLabel(supNear[0]))
-	}
-	c.Short = short
+	c := srCardFrom(spec, sup, res, last, len(candles), closeTimeOf(candles, spec.Interval),
+		srVolumeComparable(candles, srWing, srTolPct))
 	if spec.Source == srcYahoo {
-		decorateFX(&c)
+		decorateFXAt(&c, now)
 	}
 	return c
-}
-
-// srPoints converts clustered levels to the machine-readable envelope form:
-// raw cluster means at full precision, never the display-rounded labels.
-// Always non-nil so an empty side serializes as [].
-func srPoints(levels []SRLevel) []SRPoint {
-	pts := make([]SRPoint, 0, len(levels))
-	for _, l := range levels {
-		p := SRPoint{
-			Level:     l.Raw,
-			Touches:   l.Touches,
-			Strength:  l.Strength,
-			Weakening: l.Weakening,
-			Breaks:    l.Breaks,
-			Holds:     l.Holds,
-		}
-		if !l.LastTouch.IsZero() {
-			p.LastTouch = l.LastTouch.Format(time.RFC3339)
-		}
-		pts = append(pts, p)
-	}
-	return pts
-}
-
-// srLevelLabel: integer levels for BTC/gold-scale prices (original card
-// contract); full pip precision for FX-scale prices where an integer would
-// destroy the level.
-func srLevelLabel(l SRLevel) string {
-	switch {
-	case l.Raw >= 100:
-		return fmt.Sprintf("%d", l.Level)
-	case l.Raw >= 10:
-		return fmt.Sprintf("%.2f", l.Raw)
-	default:
-		return fmt.Sprintf("%.4f", l.Raw)
-	}
-}
-
-// sortSRByDistance orders one side nearest-to-price first (stable, so equal
-// distances keep strength order).
-func sortSRByDistance(levels []SRLevel, last float64) {
-	sort.SliceStable(levels, func(i, j int) bool {
-		return math.Abs(levels[i].Raw-last) < math.Abs(levels[j].Raw-last)
-	})
-}
-
-// nearestFirst returns a nearest-first COPY — the caller's strength-sorted
-// slice (the JSON levels) is left untouched.
-func nearestFirst(levels []SRLevel, last float64) []SRLevel {
-	out := append([]SRLevel(nil), levels...)
-	sortSRByDistance(out, last)
-	return out
-}
-
-// nearestLevelLine names the level closest to the last price with its
-// conventional label (S1..S3 / R1..R3 = position in the nearest-first
-// list) and the percent distance: "Price 1.3% above S1 (61200)". "" when no
-// levels or no price. Supports sit below price, resistances above, so the
-// direction word is fixed per side.
-func nearestLevelLine(sup, res []SRLevel, last float64) string {
-	if last <= 0 {
-		return ""
-	}
-	best := ""
-	bestDist := math.MaxFloat64
-	consider := func(prefix, rel string, levels []SRLevel) {
-		for i, l := range levels {
-			if d := math.Abs(last - l.Raw); d < bestDist {
-				bestDist = d
-				best = fmt.Sprintf("Price %.1f%% %s %s%d (%s)", d/last*100, rel, prefix, i+1, srLevelLabel(l))
-			}
-		}
-	}
-	consider("S", "above", sup)
-	consider("R", "below", res)
-	return best
-}
-
-func srLine(levels []SRLevel) string {
-	if len(levels) == 0 {
-		return "no clustered levels in window"
-	}
-	parts := make([]string, 0, len(levels))
-	for _, l := range levels {
-		// "pivots", not "touches": the count is swing pivots at the level,
-		// a different thing from the tests below — "4 touches, held 6 of 10
-		// tests" read as a counting error.
-		word := "swing pivots"
-		if l.Touches == 1 {
-			word = "swing pivot"
-		}
-		entry := fmt.Sprintf("%s (%d %s", srLevelLabel(l), l.Touches, word)
-		// B4: how the level actually behaved when tested — frequency counts
-		// over this window, never a probability.
-		if tests := l.Breaks + l.Holds; tests > 0 {
-			entry += fmt.Sprintf(", held %d of %d tests", l.Holds, tests)
-		}
-		if l.Weakening {
-			entry += ", weakening: volume fading"
-		}
-		parts = append(parts, entry+")")
-	}
-	return strings.Join(parts, " · ")
 }
 
 // ── Volatility ───────────────────────────────────────────────────────────────

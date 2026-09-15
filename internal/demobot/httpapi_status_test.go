@@ -80,22 +80,24 @@ func TestHTTPEnvelopeTrendLevelsGolden(t *testing.T) {
 // ── S/R levels: raw precision, [] over null, no display rounding ─────────────
 
 func TestSRPointsRawPrecision(t *testing.T) {
-	pts := srPoints([]SRLevel{{Level: 63775, Raw: 63775.4167, Touches: 9}})
+	pts := srPoints([]SRLevel{{Level: 63775, Raw: 63775.4167, Touches: 9}}, srPx{0})
 	if len(pts) != 1 || pts[0].Level != 63775.4167 || pts[0].Touches != 9 {
 		t.Fatalf("srPoints must carry Raw at full precision: %+v", pts)
 	}
-	if srPoints(nil) == nil {
+	if srPoints(nil, srPx{}) == nil {
 		t.Fatal("empty side must be a non-nil empty slice, so JSON serves []")
 	}
 
 	// FX-scale envelope: the raw cluster mean survives; neither the integer
 	// Level (1) nor the %.4f display label may replace it.
+	fxSup := []SRLevel{{Level: 1, Raw: 1.15834, Touches: 5}}
+	fxView := newSRView(assetTable["eurusd"], fxSup, nil, 1.1601, 503, nil)
 	c := Card{
 		Emoji: "⚪", Agent: "S/R Agent", Asset: "EURUSD",
 		Verdict: "Key levels around 1.1601", DataTime: goldenTime,
 		Levels: SRLevels{
-			Supports:    srPoints([]SRLevel{{Level: 1, Raw: 1.15834, Touches: 5}}),
-			Resistances: srPoints(nil),
+			Supports:    fxView.points(fxSup, fxView.supOrd),
+			Resistances: fxView.points(nil, nil),
 		},
 	}
 	got, err := encodeJSON(cardEnvelope(c))
@@ -103,7 +105,9 @@ func TestSRPointsRawPrecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(got)
-	if !strings.Contains(body, `"levels":{"supports":[{"level":1.15834,"touches":5,"strength":0,"weakening":false,"breaks":0,"holds":0,"last_touch":""}],"resistances":[]}`) {
+	// label = the printed level (pip precision); ranks and class additive
+	// (2026-09-15).
+	if !strings.Contains(body, `"levels":{"supports":[{"level":1.15834,"label":"1.1583","class":"candidate","display_rank":1,"strength_rank":1,"touches":5,"strength":0,"weakening":false,"breaks":0,"holds":0,"last_touch":""}],"resistances":[]}`) {
 		t.Errorf("sr levels must serve the raw mean and [] for the empty side, got: %s", body)
 	}
 	if strings.Contains(body, `"level":1,`) || strings.Contains(body, `"level":1.1583,`) {

@@ -83,8 +83,9 @@ type httpEnvelope struct {
 	// Results is the per-asset outcome array of multi-asset momentum cards
 	// ({"asset","ok","reason"}) — absent for every other agent.
 	Results []AssetResult `json:"results,omitempty"`
-	// Blocks is the content-ready sentence set (trend only) — absent for
-	// every other agent and on degraded trend cards.
+	// Blocks is the content-ready sentence set (trend, and S/R cards that
+	// show at least one level) — absent for every other agent, on degraded
+	// cards and on the S/R "no significant levels" finding.
 	Blocks     *ContentBlocks `json:"blocks,omitempty"`
 	Confidence *int           `json:"confidence"`         // 0-100, null when the source gave none
 	AIText     *string        `json:"ai_text"`            // plain-text AI block, null when absent

@@ -31,7 +31,7 @@ Telegram.
 | `GET /agents/momentum` | `?asset=` \| `?assets=` \| `?tf=` all optional | RSI/MACD; without params the multi-asset BTC/ETH/XAUUSD card (see [momentum scan](#momentum-scan-assets--tf)) |
 | `GET /agents/trend` | `?asset=` optional (default `btc`) | Trend state machine (ADX + EMA50/EMA200), pullback zone in confirmed trends |
 | `GET /agents/trend/chart` | `?asset=` optional (default `btc`) | Chart data for the Trend Agent: the candles it reads, EMA20/50/200, pivots, zone and invalidation (see [trend chart](#trend-chart)) |
-| `GET /agents/sr` | `?asset=` optional (default `btc`) | Support/resistance swing clusters with volume-weighted strength and held-of-tests frequency |
+| `GET /agents/sr` | `?asset=` optional (default `btc`) | Support/resistance swing clusters: class, reactions/breaks counts, last touch, content `blocks` |
 | `GET /agents/vol` | `?asset=` optional (default `btc`) | ATR(14) expansion/compression check |
 | `GET /agents/fx` | — | Forex overview: EURUSD, GBPUSD, USDJPY, XAUUSD |
 | `GET /agents/news` | — | Narrative radar (48h mention window) + AI idea |
@@ -470,7 +470,7 @@ Every agent endpoint answers with one shape:
 | `facts` | string[] | The card's bullet facts, `[]` when none |
 | `levels` | object | **trend / sr / vol only**: raw-precision numeric levels — see [levels](#machine-readable-levels). Absent for other agents, on `ok: false` cards, and **on trend cards that are not a confirmed trend** (flat / grey / conflict — since 2026-09-15 there is nothing to invalidate there) |
 | `results` | array | **momentum multi-asset cards only**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Absent elsewhere |
-| `blocks` | object | **trend only** (additive): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks). Absent for every other agent and on `ok: false` trend cards |
+| `blocks` | object | **trend and sr only** (additive): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks) and [S/R card and content blocks](#sr-card-and-content-blocks). Absent for every other agent, on `ok: false` cards and on the S/R "No significant levels detected" finding; on `/agents/top` they belong to the winning card (never on the digest, below) |
 | `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a risk-appetite score, not a confidence, and ships as a fact line `Risk appetite score: N/100 (risk-on above 65, risk-off below 35)` (global card and `?asset=btc`). The `?asset=gold` view has its own line, `Gold composite: N/100 (support above 65, pressure below 35)`, and also serves `confidence: null` |
 | `ai_text` | string \| null | Plain-text AI block (mood read / idea / brief / why-line); `null` when AI is disabled or the call failed |
 | `sections` | string[] | **digest only**: plain-text one-liners of every other agent (the winner heads the envelope) |
@@ -519,6 +519,22 @@ degraded states are branchable too:
 >    its converged value. Momentum, S/R and volatility still read 249. FX and
 >    gold (Yahoo) windows are unchanged.
 
+> **What changed 2026-09-15 (S/R).** Wording and fields only — the rules
+> (swing wing 3, cluster tolerance 0.5%, top 3 by strength per side,
+> test/break counting, window) are unchanged.
+> 1. Each `sr` level gains four **additive** fields: `label`, `class`,
+>    `display_rank`, `strength_rank`. Existing fields and the array order
+>    (strength) are unchanged; `weakening` keeps its name and meaning.
+> 2. S/R envelopes now carry `blocks` (same shape as trend) whenever at
+>    least one level is shown.
+> 3. Card text: prices at instrument precision (USDJPY no longer prints
+>    154.938 as "155"); "held X of Y tests" → "X reactions / Y breaks";
+>    "S1/R1" → "nearest shown support/resistance"; each level names its
+>    class and last touch; "weakening: volume fading" → "Last 3 pivots on
+>    lower volume than first 3"; the verdict is no longer "Key levels
+>    around …" but where price is against the nearest shown level. The
+>    method paragraph moved to the how-it-works text.
+
 Three agents' readings *are* price levels; their envelopes add a `levels`
 object with the raw computed numbers — full float precision, never the
 display-rounded strings shown in `facts`:
@@ -526,7 +542,7 @@ display-rounded strings shown in `facts`:
 | Agent | `levels` shape |
 |---|---|
 | `trend` | **Confirmed trend (`up`/`down`) only** — flat, grey (incl. structure-demoted) and conflict envelopes have **no `levels` key**. Shape: `{"invalidation": 63297.4, "invalidation_side": "below", "pullback_zone": {"from": 64850.1, "to": 64210.7}}`. `invalidation` is **direction-aware**: an uptrend's sits BELOW the EMA cluster (min(EMA50,EMA200) − 1 ATR, `"below"`), a downtrend's ABOVE it (max + 1 ATR, `"above"`), checked on a **closed** candle of the agent's timeframe. `invalidation` and `invalidation_side` are present together or not at all: both are absent only on a degenerate series with no ATR, leaving `{"pullback_zone": …}`. `pullback_zone` is the EMA20-EMA50 band, always present when confirmed (`from` = EMA20, `to` = EMA50 — so `from` > `to` in an uptrend) |
-| `sr` | `{"supports": [{"level": 63775.42, "touches": 9, "strength": 11.5, "weakening": false, "breaks": 2, "holds": 6, "last_touch": "2026-08-12T08:00:00Z"}, …], "resistances": […]}` — strength-sorted raw cluster means (the three strongest per side); an empty side is `[]`, never `null`. **The card lines render the same three levels nearest-first** (S1/R1 = the level price meets first) — `levels` keeps strength order, so `supports[0]` is the strongest, not necessarily the nearest. On the card `touches` is worded "swing pivots". `strength` = touches + 0.5 per touch on above-median volume (median over NON-ZERO volumes; on a level whose touches are mostly volume-less the volume features disable and `strength` equals `touches`). `weakening` = ≥7 touches with the last 3 touches' mean volume below the first 3's (same volume gate). `breaks`/`holds` are **frequency counts** of level tests over the 249-bar window: a test = a close entering the ±0.25×ATR band (ATR frozen at the entry bar); within 3 bars a close beyond the level on the far side = **break**, a close back beyond the band on the approach side = **hold** (a hold IS the rejection); price stalling inside the band for 3 bars is **unresolved and dropped** — never counted as a hold. Frequencies, never probabilities. `last_touch` = RFC3339 UTC of the newest touch — the later of the last swing in the cluster and the last close-test of the level |
+| `sr` | `{"supports": [{"level": 76406.66375, "label": "76407", "class": "established", "display_rank": 1, "strength_rank": 1, "touches": 8, "strength": 11, "weakening": false, "breaks": 2, "holds": 1, "last_touch": "2026-09-14T00:00:00Z"}, …], "resistances": […]}` — strength-sorted raw cluster means (the three strongest per side); an empty side is `[]`, never `null`. **The card lines render the same three levels nearest-first** — `levels` keeps strength order, so `supports[0]` is the strongest, not necessarily the nearest. The order is explicit per point: `strength_rank` = 1-based position in this array, `display_rank` = 1-based position of the level's line on the card within its side (nearest to price = 1). `label` = the level exactly as the card prints it (instrument precision: BTC 0 decimals, ETH and gold 1, EURUSD/GBPUSD 4, USDJPY 2); every % on the card is computed from the printed numbers. `class` = `established` (touches ≥ 7) · `candidate` (2–6) · `single_swing` (1). On the card `touches` is worded "pivots"; `holds` are worded "reactions". `strength` = touches + 0.5 per touch on above-median volume (median over NON-ZERO volumes; on a level whose touches are mostly volume-less the volume features disable and `strength` equals `touches`). `weakening` = ≥7 touches with the last 3 touches' mean volume below the first 3's (same volume gate). `breaks`/`holds` are **frequency counts** of level tests over the 249-bar window: a test = a close entering the ±0.25×ATR band (ATR frozen at the entry bar); within 3 bars a close beyond the level on the far side = **break**, a close back beyond the band on the approach side = **hold** (a hold IS the rejection); price stalling inside the band for 3 bars is **unresolved and dropped** — never counted as a hold. Frequencies, never probabilities. `last_touch` = RFC3339 UTC of the newest touch — the later of the last swing in the cluster and the last close-test of the level |
 | `vol` | `{"expansion_ratio": 1.01}` — ATR(14) over its 30-bar average, unrounded |
 
 `sr` with **no levels at all** is never a "Key levels around …" reading: a
@@ -598,7 +614,7 @@ Grey zone · 1h — trend forming, not confirmed
   instead. RSI is not on the trend card (it is not part of the rule).
 - Distances are % of the current price; `<0.1%` when smaller.
 
-`blocks` (trend envelopes only, additive — nothing else changed):
+`blocks` on trend envelopes (additive; S/R has its own wording, next section):
 
 | Field | Meaning |
 |---|---|
@@ -610,6 +626,57 @@ Grey zone · 1h — trend forming, not confirmed
 
 `levels` is absent for every other agent and on degraded (`ok: false`)
 envelopes.
+
+## S/R card and content blocks
+
+Reads top to bottom: **where price is against the nearest shown level →
+every shown level, each side nearest first → observations → window**.
+Wording only; the rules are unchanged (see the `sr` row above).
+
+```
+⚪ S/R Agent · ETH
+Price 2515.8 — 0.6% below the nearest shown resistance 2531.0 (established, 7 pivots)
+• Resistance 2531.0 (+0.6%) · established, 7 pivots · 5 reactions / 1 break · last touch Sep 14
+• Resistance 2546.5 (+1.2%) · candidate, 3 pivots · 1 reaction / 1 break · last touch Sep 14
+• Resistance 2666.0 (+6.0%) · single swing, 1 pivot · no resolved tests · last touch Sep 11
+• Support 2436.4 (-3.2%) · candidate, 5 pivots · 5 reactions / 3 breaks · last touch Sep 11
+• Support 1892.1 (-24.8%) · established, 7 pivots · 4 reactions / 2 breaks · last touch Aug 18
+• Support 1862.4 (-26.0%) · candidate, 6 pivots · 1 reaction / 0 breaks · last touch Aug 16
+• Last 3 pivots on lower volume than first 3: 2531.0, 1892.1
+• Window: 249 closed 4h candles · test = a close within 0.25 ATR of a level, resolved within 3 candles
+```
+
+- **Nearest shown, not nearest overall.** The card shows the three strongest
+  levels per side; the verdict names the nearest of those. No `S1/R1` labels.
+- **Neutral test counts.** A test is a close entering ±0.25 ATR of the level;
+  the first close out of that band within 3 candles resolves it — back on the
+  approach side = **reaction**, past the far edge = **break**; unresolved
+  tests are dropped. The counting does not record which side price came
+  from, so the card never says "support held".
+- **Classes**: established (≥ 7 pivots) · candidate (2–6) · single swing (1).
+- **Precision per instrument** (BTC 0, ETH 1, gold 1, EURUSD/GBPUSD 4,
+  USDJPY 2 decimals). Distances are computed from the printed price and
+  level; when the two print identically the card says `at`, never a %.
+- **An empty side is said plainly**: `No clustered support below price in
+  this 504-candle 1h window`.
+- The volume flag (`weakening` in JSON) is an observation — no claim that the
+  level is weaker. The card line names a level only when all six compared
+  pivots (its first 3 and last 3) carry volume; `weakening` in JSON is served
+  exactly as the rule computes it, which needs volume on only half the pivots.
+- Every line — verdict, facts, each `blocks` field — fits ≤ 110 characters;
+  the method is the how-it-works text (≤ 200, also the catalog description).
+
+`blocks` (S/R envelopes with at least one shown level; absent on the
+"No significant levels detected" finding and on degraded cards). All fields
+are about the nearest shown level:
+
+| Field | Meaning |
+|---|---|
+| `what_happened` | `"On 4h: price 2515.8 — 0.6% below the nearest shown resistance 2531.0 (established, 7 pivots)."` |
+| `why_level` | What the level is made of: `"2531.0 = mean of 7 pivots · 5 reactions / 1 break in 6 resolved tests · last touch Sep 14"` |
+| `scenarios` | Exactly two market events, worded from the side of price the level is on now: `"If a 4h close tests 2531.0 and a close within 3 candles exits its band below, the level holds as resistance"` / `"If a 4h candle closes above 2531.0's band, the level is broken and moves below price"` (mirrored for a support below price). No counts, no targets, no probabilities, no forecast |
+| `invalidates` | What makes the level no longer this side: `"A closed 4h candle above 2531.0 puts it below price: it no longer reads as resistance"` |
+| `regime` | Local level context only (not macro, not trend): `"Levels on both sides · nearest shown: resistance, 0.6% away · 4h"`, or `"Resistance only, none below price · nearest shown 0.7% away · 1h"` |
 
 ## Errors
 

@@ -582,14 +582,23 @@ func TestSRCardStrengthThreshold(t *testing.T) {
 	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
 	c := ag.SRCard(context.Background(), btcSpec)
 
+	// 2026-09-15: the method moved off the card body into the how-it-works
+	// text (≤200 chars, also the catalog description); the card keeps one
+	// short window + closed-candle line, and each level names its class.
 	found := false
 	for _, f := range c.Facts {
-		if strings.HasPrefix(f, "Method: ") && strings.Contains(f, "strength = swing pivots + 0.5 per above-median-volume pivot (strong from 7 pivots)") {
+		if strings.HasPrefix(f, "Window: ") && strings.Contains(f, "closed 4h candles") && strings.Contains(f, "0.25 ATR") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("method line must document the strength formula + threshold: %v", c.Facts)
+		t.Errorf("window/closed-candle line missing: %v", c.Facts)
+	}
+	if !strings.Contains(c.HowItWorks, "7+ pivots = established") {
+		t.Errorf("how-it-works must state the established threshold: %q", c.HowItWorks)
+	}
+	if n := len([]rune(c.HowItWorks)); n > 200 {
+		t.Errorf("how-it-works is %d chars, over the 200-char alert cap", n)
 	}
 }
 
@@ -632,32 +641,26 @@ func TestVolRatio20(t *testing.T) {
 	}
 }
 
-// ── /sr: nearest-level distance line ─────────────────────────────────────────
+// ── /sr: nearest-shown-level headline ────────────────────────────────────────
 
-func TestNearestLevelLine(t *testing.T) {
+// The headline names the nearest SHOWN level (never "S1/R1": the card shows
+// the three strongest per side, so it is the nearest among those only).
+func TestSRHeadlineNearestShown(t *testing.T) {
 	sup := []SRLevel{{Level: 61200, Raw: 61200, Touches: 4}, {Level: 60000, Raw: 60000, Touches: 2}}
 	res := []SRLevel{{Level: 63000, Raw: 63000, Touches: 3}}
-	got := nearestLevelLine(sup, res, 62000)
-	want := "Price 1.3% above S1 (61200)"
-	if got != want {
-		t.Errorf("nearest line: got %q, want %q", got, want)
+	c := srCardFrom(btcSpec, sup, res, 62000, 249, time.Time{}, nil)
+	if want := "Price 62000 — 1.3% above the nearest shown support 61200 (candidate, 4 pivots)"; c.Verdict != want {
+		t.Errorf("verdict: got %q, want %q", c.Verdict, want)
 	}
-	// Resistance closer → below R1.
-	got = nearestLevelLine(sup, res, 62900)
-	if !strings.Contains(got, "below R1 (63000)") || !strings.Contains(got, "0.2%") {
-		t.Errorf("resistance-nearest: got %q", got)
+	c = srCardFrom(btcSpec, sup, res, 62900, 249, time.Time{}, nil)
+	if !strings.Contains(c.Verdict, "0.2% below the nearest shown resistance 63000") {
+		t.Errorf("resistance-nearest: got %q", c.Verdict)
 	}
-	// FX-scale label keeps pip precision.
-	fxSup := []SRLevel{{Level: 1, Raw: 1.1583, Touches: 3}}
-	got = nearestLevelLine(fxSup, nil, 1.1601)
-	if !strings.Contains(got, "S1 (1.1583)") {
-		t.Errorf("fx nearest: got %q", got)
-	}
-	if nearestLevelLine(nil, nil, 100) != "" {
-		t.Error("no levels → no line")
-	}
-	if nearestLevelLine(sup, res, 0) != "" {
-		t.Error("no price → no line")
+	// FX keeps pip precision.
+	fx := assetTable["eurusd"]
+	c = srCardFrom(fx, []SRLevel{{Level: 1, Raw: 1.1583, Touches: 3}}, nil, 1.1601, 503, time.Time{}, nil)
+	if !strings.Contains(c.Verdict, "support 1.1583") || !strings.Contains(c.Verdict, "Price 1.1601") {
+		t.Errorf("fx nearest: got %q", c.Verdict)
 	}
 }
 

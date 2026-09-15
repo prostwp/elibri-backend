@@ -94,7 +94,9 @@ type TrendLevels struct {
 
 // ContentBlocks are ready-made sentences for content writers, one per job,
 // so nobody has to reassemble them from the facts list. Additive: served as
-// the envelope's "blocks" on trend cards only; old consumers ignore it.
+// the envelope's "blocks" on trend cards and on S/R cards that show at least
+// one level (sr_text.go words the fields for the nearest shown level);
+// old consumers ignore it.
 //   - what_happened: the verdict and where price is
 //   - why_level: what the level the card leans on is made of
 //   - scenarios: exactly two "if → then" transitions of the state machine
@@ -119,9 +121,20 @@ type ContentBlocks struct {
 //     (test = close within 0.25×ATR; break = close beyond by >0.25×ATR
 //     within 3 bars) — frequencies, never probabilities
 //   - last_touch: RFC3339 UTC of the newest touch's bar time
+//
+// Added 2026-09-15 (additive):
+//   - label: the level exactly as the card prints it (instrument precision)
+//   - class: "established" (≥7 pivots) | "candidate" | "single_swing" (1)
+//   - strength_rank: 1-based position in this array (strength order)
+//   - display_rank: 1-based position of the level's line on the card, where
+//     each side is listed nearest-to-price first
 type SRPoint struct {
-	Level     float64 `json:"level"`
-	Touches   int     `json:"touches"`
+	Level        float64 `json:"level"`
+	Label        string  `json:"label"`
+	Class        string  `json:"class"`
+	DisplayRank  int     `json:"display_rank"`
+	StrengthRank int     `json:"strength_rank"`
+	Touches      int     `json:"touches"`
 	Strength  float64 `json:"strength"`
 	Weakening bool    `json:"weakening"`
 	Breaks    int     `json:"breaks"`

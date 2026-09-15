@@ -71,17 +71,19 @@ func TestTrendInvalidationFactPerState(t *testing.T) {
 	}
 }
 
-// S/R: nearest level first on each side.
-func TestSortSRByDistance(t *testing.T) {
+// S/R: nearest level first on each side — as an index order, so the caller's
+// strength-sorted slice (the JSON levels) is never reordered.
+func TestSRNearestOrder(t *testing.T) {
 	sup := []SRLevel{{Raw: 76407}, {Raw: 64033}, {Raw: 65228}}
-	sortSRByDistance(sup, 78982)
-	if sup[0].Raw != 76407 || sup[1].Raw != 65228 || sup[2].Raw != 64033 {
-		t.Errorf("supports nearest-first: %v", sup)
+	if o := nearestOrder(sup, 78982); o[0] != 0 || o[1] != 2 || o[2] != 1 {
+		t.Errorf("supports nearest-first: %v", o)
+	}
+	if sup[1].Raw != 64033 {
+		t.Errorf("input reordered: %v", sup)
 	}
 	res := []SRLevel{{Raw: 81376}, {Raw: 79346}, {Raw: 79950}}
-	sortSRByDistance(res, 78982)
-	if res[0].Raw != 79346 || res[1].Raw != 79950 || res[2].Raw != 81376 {
-		t.Errorf("resistances nearest-first: %v", res)
+	if o := nearestOrder(res, 78982); o[0] != 1 || o[1] != 2 || o[2] != 0 {
+		t.Errorf("resistances nearest-first: %v", o)
 	}
 }
 

@@ -452,16 +452,16 @@ func TestSRCardB4FactsAndLevels(t *testing.T) {
 	c := ag.SRCard(context.Background(), btcSpec)
 
 	joined := strings.Join(c.Facts, "|")
-	// The strength formula + the frequency wording must be documented on the
-	// card itself ("frequency", never "probability").
-	if !strings.Contains(joined, "strength = swing pivots + 0.5 per above-median-volume pivot") {
-		t.Errorf("strength formula line missing: %v", c.Facts)
+	// Test history is neutral counts (breakHoldStats keeps no approach side,
+	// so "held" would claim a support/resistance role the data does not
+	// back), and never a probability.
+	if !strings.Contains(joined, "reaction") && !strings.Contains(joined, "no resolved tests") {
+		t.Errorf("reactions/breaks wording missing: %v", c.Facts)
 	}
-	if !strings.Contains(joined, "held") || !strings.Contains(joined, "of") {
-		t.Errorf("held-of-tests wording missing: %v", c.Facts)
-	}
-	if strings.Contains(strings.ToLower(joined), "probability") {
-		t.Errorf("probability language is banned — frequency only: %v", c.Facts)
+	for _, banned := range []string{"held", "probability", "R1", "S1"} {
+		if strings.Contains(joined, banned) {
+			t.Errorf("banned wording %q on the card: %v", banned, c.Facts)
+		}
 	}
 
 	lv, ok := c.Levels.(SRLevels)
@@ -507,8 +507,14 @@ func TestSRCardWeakeningLine(t *testing.T) {
 	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
 	c := ag.SRCard(context.Background(), btcSpec)
 
-	if !strings.Contains(strings.Join(c.Facts, "|"), "weakening: volume fading") {
-		t.Errorf("weakening marker missing from the card: %v", c.Facts)
+	// The flag is stated as the observation it is — no "weakening" claim
+	// until a link to later breaks is measured (SR_план.md item 5).
+	joined := strings.Join(c.Facts, "|")
+	if !strings.Contains(joined, "Last 3 pivots on lower volume than first 3: 110") {
+		t.Errorf("volume observation missing from the card: %v", c.Facts)
+	}
+	if strings.Contains(strings.ToLower(joined), "weakening") {
+		t.Errorf("interpretive 'weakening' wording on the card: %v", c.Facts)
 	}
 	lv, ok := c.Levels.(SRLevels)
 	if !ok {
