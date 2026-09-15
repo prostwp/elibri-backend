@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -205,7 +204,7 @@ func insufficientCard(spec assetSpec, agent, shortName, command, how, what strin
 // at 200 characters — keep every entry under that.
 var howTexts = map[string]string{
 	keyMacro:    "Fixed rules score 5 tradfin lamps (DXY, US 10Y, VIX, S&P 500, Gold) into a 0-100 rule score: above 65 risk-on, below 35 risk-off. A backdrop, not a forecast. RISK-OFF tops the digest.",
-	keyWhale:    "Tracks large BTC transfers from the public mempool. These wallets carry no exchange labels, so the card reports transfer activity; exchange in/outflow appears only when labeled.",
+	keyWhale:    "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
 	keyFunding:  "Last perp funding rate of 5 Binance majors vs the agent's thresholds: +0.03% or above, -0.01% or below. Shows the coin with the largest rate ÷ its own side's threshold, plus 1h liquidations.",
 	keyMomentum: "RSI(14) + MACD histogram. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; else neutral. Crypto on 4h bars, FX and gold on 1h; a 1d scan is available.",
 	keyTrend:    "State machine on 4h bars (1h for FX/gold): ADX<20 flat, 20-25 grey zone, ADX 25+ with price and EMA50/200 aligned = confirmed unless swing structure disagrees; else conflict.",
@@ -281,117 +280,15 @@ func macroCardFrom(m *MacroResp) (Card, string) {
 
 // ── Whale flow ───────────────────────────────────────────────────────────────
 
+// WhaleCard reads the backend's BTC count and its newest records; every word
+// on the card is in whale_text.go (stage 1, 2026-09-15). The request limit
+// (whaleFeedLimit, 10) is the data selection and is unchanged.
 func (a *Agents) WhaleCard(ctx context.Context) Card {
-	w, err := a.api.WhaleFlow(ctx, 10)
+	w, err := a.api.WhaleFlow(ctx, whaleFeedLimit)
 	if err != nil {
 		return offlineCard("Whale Flow Agent", "Whale", "BTC", keyWhale, howTexts[keyWhale])
 	}
-	c := Card{
-		Agent:      "Whale Flow Agent",
-		ShortName:  "Whale",
-		Asset:      "BTC",
-		Command:    keyWhale,
-		HowItWorks: howTexts[keyWhale],
-		DataTime:   parseWhen(w.CapturedAt),
-	}
-	// No validator, ever: the transfers come from the backend's live table
-	// (the newest `limit` rows), not from the snapshot captured_at names — a
-	// new transfer pushes an old one out of the list under the same
-	// captured_at. The top-3 window is the snapshot's 24h, like the backend's
-	// own counters, and a transfer stamped after captured_at is not shown:
-	// the body must not carry data newer than its data_as_of. Without a
-	// parseable captured_at the window is the 24h up to the card's clock,
-	// with the same upper bound: nothing stamped after it is shown.
-	c.noValidator = true
-	windowEnd, capErr := time.Parse(time.RFC3339, w.CapturedAt)
-	if capErr != nil {
-		windowEnd = a.clock()
-	}
-
-	var btc *WhaleFlow
-	for i := range w.Flows {
-		if w.Flows[i].Asset == "BTC" {
-			btc = &w.Flows[i]
-			break
-		}
-	}
-	switch {
-	case btc == nil:
-		c.Emoji, c.Verdict, c.Short = emojiNeutral, "No BTC flow snapshot yet", "no data"
-		c.Status = statusNoData // upstream alive, nothing to read yet
-	case btc.Direction == "inflow":
-		c.Emoji, c.Verdict, c.Short = emojiBear, "Net INFLOW to exchanges — potential sell pressure", "inflow (sell pressure)"
-	case btc.Direction == "outflow":
-		// "potential", like the inflow branch: an exchange outflow can be
-		// custody migration or settlement, not only accumulation.
-		c.Emoji, c.Verdict, c.Short = emojiBull, "Net OUTFLOW from exchanges — potential accumulation", "outflow (potential accumulation)"
-	case btc.Partial && btc.TxCount24h == 0:
-		c.Emoji, c.Verdict, c.Short = emojiNeutral, "No large BTC transfers in 24h", "no large transfers"
-	case btc.Partial:
-		// The BTC feed (public mempool) never labels exchange wallets, so the
-		// backend's net flow is structurally $0 and its direction "neutral".
-		// That is "not measurable", not "balanced": the old verdict "Flows
-		// balanced over 24h" asserted a finding the data cannot produce.
-		c.Emoji = emojiNeutral
-		c.Verdict = fmt.Sprintf("%d large BTC transfers in 24h — exchange direction not measurable", btc.TxCount24h)
-		c.Short = fmt.Sprintf("%d large tx, direction n/a", btc.TxCount24h)
-	default:
-		c.Emoji, c.Verdict, c.Short = emojiNeutral, "Flows balanced over 24h", "balanced"
-	}
-	directional := btc != nil && (btc.Direction == "inflow" || btc.Direction == "outflow")
-	if btc != nil {
-		if btc.Partial && !directional {
-			c.Facts = append(c.Facts, "Net exchange flow: not measurable (these BTC wallets carry no exchange labels)")
-		} else {
-			flowLine := fmt.Sprintf("Net flow 24h: %s (%d large tx)", usd(btc.NetFlowUSD24h), btc.TxCount24h)
-			if btc.Partial {
-				flowLine += " — partial data, labeled wallets only"
-			}
-			c.Facts = append(c.Facts, flowLine)
-		}
-		// Baseline comparison — only when the payload actually carries a
-		// prior-24h figure (a zero baseline means "no snapshot to compare").
-		if btc.NetFlowPrev24h != nil && *btc.NetFlowPrev24h != 0 {
-			base := fmt.Sprintf("Prior 24h net flow: %s", usd(*btc.NetFlowPrev24h))
-			if btc.FlowPct != nil {
-				base += fmt.Sprintf(" → %+.0f%% change", *btc.FlowPct)
-			}
-			c.Facts = append(c.Facts, base)
-		}
-		if btc.Confidence > 0 && directional {
-			conf := btc.Confidence
-			c.Confidence = &conf
-		}
-	}
-
-	// Top-3 BTC transfers of the snapshot's last 24h by USD size.
-	cutoff := windowEnd.Add(-24 * time.Hour)
-	var recent []WhaleTransfer
-	for _, t := range w.Transfers {
-		if t.Chain == "BTC" && t.Timestamp.After(cutoff) && !t.Timestamp.After(windowEnd) {
-			recent = append(recent, t)
-		}
-	}
-	sort.Slice(recent, func(i, j int) bool { return recent[i].AmountUSD > recent[j].AmountUSD })
-	if len(recent) == 0 {
-		c.Facts = append(c.Facts, "No large BTC transfers in the last 24h")
-	}
-	for i, t := range recent {
-		if i == 3 {
-			break
-		}
-		// "seen", not a transaction time: the mempool feed carries no tx
-		// timestamp, so the backend stamps each unconfirmed tx with its poll
-		// time (whale/source_mempool.go). That is when we saw it broadcast —
-		// still more usable than "neutral · unlabeled wallet" on every line.
-		line := fmt.Sprintf("%s BTC ≈ %s · seen %s UTC",
-			trimFloat(t.AmountNative), usd(t.AmountUSD), t.Timestamp.UTC().Format("Jan 2 15:04"))
-		if t.Exchange != "" && (t.Direction == "inflow" || t.Direction == "outflow") {
-			line += " · " + t.Direction + " · " + t.Exchange
-		}
-		c.Facts = append(c.Facts, line)
-	}
-	return c
+	return whaleCardFrom(w, a.clock())
 }
 
 // ── Narrative Radar (/news) ──────────────────────────────────────────────────

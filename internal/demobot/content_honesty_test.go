@@ -24,14 +24,14 @@ func TestWhaleCardUnlabeledFeedIsNotBalanced(t *testing.T) {
 	if strings.Contains(c.Verdict, "balanced") {
 		t.Errorf("unlabeled feed must not claim balance: %q", c.Verdict)
 	}
-	if c.Verdict != "48 large BTC transfers in 24h — exchange direction not measurable" {
+	if c.Verdict != "48 BTC transactions ≥ $100K seen by the monitor in 24h — exchange direction not measurable" {
 		t.Errorf("verdict: %q", c.Verdict)
 	}
 	joined := strings.Join(c.Facts, "|")
 	if strings.Contains(joined, "$0.00") || strings.Contains(joined, "neutral") || strings.Contains(joined, "unlabeled wallet") {
 		t.Errorf("no fake $0 net flow, no meaningless direction words: %v", c.Facts)
 	}
-	if !strings.Contains(joined, "Net exchange flow: not measurable") {
+	if !strings.Contains(joined, "Exchange direction: not measurable") {
 		t.Errorf("the absence must be stated: %v", c.Facts)
 	}
 	if c.Confidence != nil {
@@ -47,7 +47,7 @@ func TestWhaleCardUnlabeledFeedNoTransfers(t *testing.T) {
 	  "flows":[{"asset":"BTC","net_flow_usd_24h":0,"direction":"neutral","tx_count_24h":0,"partial":true}],
 	  "transfers":[]}`
 	ag := newStubBackend(t, map[string]string{"/api/v1/whale-flow": fixture})
-	if c := ag.WhaleCard(context.Background()); c.Verdict != "No large BTC transfers in 24h" {
+	if c := ag.WhaleCard(context.Background()); c.Verdict != "The monitor registered no BTC transaction ≥ $100K in 24h" {
 		t.Errorf("verdict: %q", c.Verdict)
 	}
 }

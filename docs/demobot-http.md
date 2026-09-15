@@ -26,7 +26,7 @@ Telegram.
 | `GET /` | — | Tiny index pointing at `/agents` |
 | `GET /agents` | — | The agent list: name, description, supported assets, example URLs |
 | `GET /agents/macro` | `?asset=btc\|gold` optional | Risk-on/off regime read from 5 tradfin lamps; with `asset` the lamps re-framed for that asset (see [macro asset views](#macro-asset-views)) |
-| `GET /agents/whale` | — | Large on-chain BTC transfers, net flow |
+| `GET /agents/whale` | — | BTC transactions ≥ $100K seen by the backend's mempool.space monitor in 24h, the largest among the latest records received, machine readout in `whale`, content `blocks`; exchange direction not measurable (see [whale card](#whale-card-and-content-blocks)) |
 | `GET /agents/funding` | — | Last perp funding rate of 5 Binance majors against the agent's thresholds, the coin named in `asset`, 1h liquidations, machine readout in `funding` and `results`, content `blocks` (see [funding card](#funding-card-and-content-blocks)) |
 | `GET /agents/momentum` | `?asset=` \| `?assets=` \| `?tf=` all optional | RSI/MACD; without params the multi-asset BTC/ETH/XAUUSD card (see [momentum scan](#momentum-scan-assets--tf)) |
 | `GET /agents/trend` | `?asset=` optional (default `btc`) | Trend state machine (ADX + EMA50/EMA200), pullback zone in confirmed trends |
@@ -695,6 +695,14 @@ reads it: **detected → explained → data → conclusion**.
   are not met (`"For a trader this is an unconfirmed trend on GOLD · COMEX
   GC=F; failing: ADX."`) — never "nothing leans", since an unconfirmed trend
   card usually shows a clear EMA lean.
+- A **whale** story (2026-09-15) concludes with an activity count, never a
+  direction: `This is an activity count, not a forecast: the monitor saw 66
+  BTC transactions ≥ $100K in 24h in a small sample (the 10 newest mempool
+  entries per poll); it sees neither exchange direction nor price, so it says
+  nothing about where price goes.` With a zero count: `… the monitor
+  registered no BTC transaction ≥ $100K in 24h; each poll sees only the 10
+  newest mempool entries, so that does not mean none happened.` (The generic
+  sentence called it "a neutral reading … nothing leans either way".)
 - **`503`** when *every* agent is degraded: the standard
   `{"error": …, "ok": false, "reason": …}` body. A story is the one thing
   this API will not fake.
@@ -808,9 +816,10 @@ Every agent endpoint answers with one shape:
 | `facts` | string[] | The card's bullet facts, `[]` when none |
 | `levels` | object | **trend / sr / vol only**: raw-precision numeric levels — see [levels](#machine-readable-levels). Absent for other agents, on `ok: false` cards, and **on trend cards that are not a confirmed trend** (flat / grey / conflict — since 2026-09-15 there is nothing to invalidate there) |
 | `results` | array | **momentum and fx**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Since 2026-09-15 also on the single-asset momentum card (one entry), and every `ok` entry carries the read itself (`rsi`, `macd_histogram`, `verdict`, `state`, `why`, `timeframe`, `data_as_of`, `freshness`, `blocks`) — see [momentum card](#momentum-card-and-content-blocks). On `/agents/fx` (since 2026-09-15) one entry per instrument with `price`, `change_pct`, `change_window`, `change_from`, `rsi`, `ema_relation`, `range_position_pct`, `timeframe`, `data_as_of`, `freshness` — see [FX card](#fx-card). On `/agents/funding` (since 2026-09-15) one entry per major with `symbol`, `rate`, `side_threshold`, `crossed`, `ratio_to_threshold`, `selected` — see [funding card](#funding-card-and-content-blocks). Absent elsewhere |
-| `blocks` | object | **trend, sr, vol, funding, the global macro card and the single-asset momentum card** (additive; funding since 2026-09-15, see [funding card](#funding-card-and-content-blocks)): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks), [volatility card](#volatility-card-and-content-blocks), [macro card and content blocks](#macro-card-and-content-blocks) and [momentum card](#momentum-card-and-content-blocks) (multi-asset momentum cards carry them per asset, in `results[].blocks`). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they belong to the winning card (never on the digest, below) |
+| `blocks` | object | **trend, sr, vol, funding, whale, the global macro card and the single-asset momentum card** (additive; funding and whale since 2026-09-15, see [funding card](#funding-card-and-content-blocks) and [whale card](#whale-card-and-content-blocks) — whale adds a `source` field and serves `scenarios` / `invalidates` as `null`): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks), [volatility card](#volatility-card-and-content-blocks), [macro card and content blocks](#macro-card-and-content-blocks) and [momentum card](#momentum-card-and-content-blocks) (multi-asset momentum cards carry them per asset, in `results[].blocks`). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they belong to the winning card (never on the digest, below) |
 | `macro` | object | **macro cards only** (additive, 2026-09-15): the numbers behind the card — rule score, bands, per-lamp rule / weight / contribution / source / `as_of`, freshness, Fear & Greed age. See [macro card](#macro-card-and-content-blocks). Absent for every other agent and on macro cards without a reading (`UNKNOWN`, offline) |
 | `funding` | object | **funding card only** (additive, 2026-09-15): `state`, `selected_symbol`, `coverage`, `liquidations` — see [funding card](#funding-card-and-content-blocks). Absent for every other agent and on the all-offline funding `503` |
+| `whale` | object | **whale card only** (additive, 2026-09-15): `state`, `count`, `threshold_usd`, `window`, `direction`, the listed transactions — see [whale card](#whale-card-and-content-blocks). Absent for every other agent and on the offline `503` |
 | `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a **rule score**, not a confidence or a strength, and ships in the verdict (`RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)`) and in `macro.rule_score`. The `?asset=gold` view has its own `gold score` and also serves `confidence: null` |
 | `ai_text` | string \| null | Plain-text AI block (mood read / idea / brief / why-line); `null` when AI is disabled or the call failed |
 | `sections` | string[] | **digest only**: plain-text one-liners of every other agent (the winner heads the envelope) |
@@ -844,7 +853,7 @@ whale top-3 window now hangs off the snapshot's `captured_at`.
 | `/agents/trend/chart` for `btc`, `eth` | yes, when the window is complete | `data_as_of`: the chart reads the closed bars only |
 | `/agents/trend`, `/agents/sr`, `/agents/vol`, `/agents/momentum?asset=` for `eurusd`, `gbpusd`, `usdjpy`, `xauusd` (Yahoo, aliases included), `?assets=` with one Yahoo asset, and `/agents/trend/chart` for those assets | **no** | No stamp versions a Yahoo body. Yahoo can publish a bar late and can revise the OHLC of a bar it already served under the same timestamp, so the bar close stays put while the numbers change. On the cards, the market-state wording (the `⏸ Forex market closed` banner, `market closed` on a momentum asset line) follows the clock of the fixed-UTC week (closes Friday 21:00, opens Sunday 21:00 UTC), not the bars |
 | `/agents/news` | **no** | The AI idea is generated and cached by the backend per narrative and hour, and a failed generation is not cached, so an idea can appear or change under the same `captured_at` |
-| `/agents/whale` | **no** | The transfer list comes from the backend's live table (the newest rows), not from the snapshot `captured_at` names: a new transfer pushes an old one out under the same `captured_at`. The top-3 shows transfers of the 24h up to `captured_at`, none stamped after it (with no parseable `captured_at`: the 24h up to the request time) |
+| `/agents/whale` | **no** | The transfer list comes from the backend's live table (the newest rows), not from the snapshot `captured_at` names: a new transfer pushes an old one out under the same `captured_at`. The list shows the largest BTC records among the newest 10 received that fall in the 24h up to `captured_at`, none stamped after it (with no parseable `captured_at`: the 24h up to the request time). The body carries no age and no request-time wording |
 | `/agents/macro`, `?asset=btc`, `?asset=gold` | **no** | The backend's `captured_at` is its request time at one-second resolution, so two different payloads can share it; no lamp stamp versions the body either (a lamp value moves during its session under the same `as_of`) |
 | `/showcase` | yes | The sweep time (`generated_at`): the body is fixed for the life of the memoized sweep (up to 60 s) |
 | `/agents/gold` | **no** | Daily bars, the hourly price, the macro payload, and two clock rules: the price's `stale` flag (older than 6h at answer time) and the weekend banner. The body is not a function of any one stamp, so a `Last-Modified` from any part would let a client keep a `304` after another part changed. `data_as_of` stays the daily close; each part's own stamp is in `gold` (`daily_as_of`, `price_as_of`, `macro_as_of`) |
@@ -1476,6 +1485,139 @@ also follows the clock (the stale flag, the weekend banner).
 | `invalidates` | Confirmed regime only, as on the card: `"A closed 1d candle below 4040.00 invalidates the daily uptrend reading (1 ATR under the EMA cluster)"`; `null` otherwise |
 | `regime` | The local 1d regime only (not macro): `"Local gold regime: confirmed uptrend · 1d · ADX 31.4"` |
 | `limitations` | `"COMEX GC=F futures, not spot XAUUSD; describes the period, not a forecast of the day"` |
+
+## Whale card and content blocks
+
+> ⚠️ **Whale `verdict` format changed 2026-09-15 — do not parse it.**
+> Before: `66 large BTC transfers in 24h — exchange direction not measurable`,
+> `No large BTC transfers in 24h`, `No BTC flow snapshot yet`; digest lines
+> `66 large tx, direction n/a` / `no large transfers`; facts `Net exchange
+> flow: not measurable (…)`, `No large BTC transfers in the last 24h`,
+> `2465 BTC ≈ $187.02M · seen Sep 15 15:00 UTC`. Now: `66 BTC transactions ≥
+> $100K seen by the monitor in 24h — exchange direction not measurable`,
+> `The monitor registered no BTC transaction ≥ $100K in 24h`, `No BTC count
+> from the monitor yet`; digest lines `66 tx ≥ $100K seen, direction n/a` /
+> `none ≥ $100K registered`. The count and state are machine-readable in
+> `whale.count` / `whale.state`. `verdict`, `facts` and the digest line are
+> display text and may change again.
+
+Stage 1: honest words and states only. The rules are **unchanged**: the
+backend polls the mempool.space recent-transactions list
+(`/api/mempool/recent`) every 10 minutes (the whale worker's interval in the
+backend config), about 144 polls a day. One call returns only the **10
+newest** mempool entries (a live call on 2026-09-15 returned 10), so the
+monitor sees a small sample of the network. It keeps BTC transactions whose total outputs are
+worth at least **$100K** at the Binance BTCUSDT price when detected, and counts
+them over the **24h** to its snapshot (`tx_count_24h`). The card asks for the
+**newest 10 records** of that table (every chain) and lists the 3 largest BTC
+ones inside the 24h up to `captured_at`. Semaphore, digest tie rules and
+caching (no `Last-Modified`) are untouched.
+
+What the card no longer claims:
+
+- **Count.** "Transactions ≥ $100K seen by the monitor", not "large BTC
+  transfers": it is what periodic polls of a bounded recent list caught, not
+  every such transaction on the network. A zero reads `the monitor registered
+  none`, never "no transfers".
+- **Time.** Every time is when the monitor **first detected** the transaction
+  (the backend stamps the poll time), not the block time.
+- **Size.** `Outputs total 55.60 BTC` — the transaction's total outputs,
+  change to the sender included, not an amount that changed hands.
+- **List.** `Largest BTC among the latest 10 monitor records received, not a
+  24h top`: the backend has no 24h-by-size query, so a bigger transaction
+  earlier in the day may be missing from the list while it is in the count.
+  When the count is above zero but none of those records is a BTC transaction
+  of the window: `None of the latest 10 monitor records received is a BTC
+  transaction of this 24h window`.
+- **Sample.** `Each 10-minute poll sees only the 10 newest mempool.space
+  entries; most transactions ≥ $100K are never seen`. The count is the
+  number of transactions ≥ $100K among those entries over 24h, not network
+  activity.
+- **Gaps.** `Missed polls or a missing BTC price lower this count unmarked:
+  poll coverage is not served`. A poll that ran while the Binance price was
+  unavailable prices every entry at $0, so none passes the $100K floor
+  (`internal/whale/source_mempool.go`). The backend serves no poll statistics: its
+  `captured_at` is the worker tick, written even when the mempool poll failed,
+  so neither a coverage share nor a last successful poll can be shown
+  (`whale.coverage` and `whale.last_successful_poll` are always `null`).
+- **Direction.** The mempool feed carries no exchange labels, so the exchange
+  direction is `not measurable` (`whale.direction`). No flow, trading or
+  forecast words appear on any path.
+
+```
+⚪ Whale Flow Agent · BTC
+66 BTC transactions ≥ $100K seen by the monitor in 24h — exchange direction not measurable
+• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected
+• Exchange direction: not measurable (these BTC wallets carry no exchange labels)
+• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen
+• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served
+• Largest BTC among the latest 10 monitor records received, not a 24h top · outputs include change
+• Outputs total 2465 BTC ≈ $187.02M · detected by the monitor at Sep 15 15:00 UTC, not the block time
+• Outputs total 55.60 BTC ≈ $4.38M · detected by the monitor at Sep 15 14:50 UTC, not the block time
+• Outputs total 50.36 BTC ≈ $3.93M · detected by the monitor at Sep 15 14:40 UTC, not the block time
+```
+
+States (the source being unavailable is the standard `503` `source_offline`
+with no `whale` object):
+
+| `whale.state` | Card | `ok` / `reason` |
+|---|---|---|
+| `activity_observed` | count above zero, as above | `true` / `null` |
+| `no_observations` | `The monitor registered no BTC transaction ≥ $100K in 24h` + the method lines | `true` / `null` — a reading of the monitor, not of the network |
+| `no_snapshot` | `No BTC count from the monitor yet` + the method lines, no transaction list (there is no count to sit beside, and no window end) | `false` / `no_data` |
+
+A labeled source would carry a direction (`net_to_exchanges` 🔴,
+`net_from_exchanges` 🟢, `no_net_direction` ⚪); the mempool feed never does.
+Those branches are unreachable today (the worker marks every BTC snapshot
+partial), and every source wording on the card — the footer, `blocks.source`,
+`whale.source`, the sample and threshold lines — names mempool.space and
+Binance: a labeled BTC source needs its own wording before those branches
+can ship.
+Those cards read `Net to labeled exchange wallets over 24h · N BTC
+transactions ≥ $100K seen by the monitor` with the net flow line; the
+semaphore rule is the old one. `no_net_direction` reads `No net labeled
+exchange direction over 24h · …`: the backend's neutral covers both a net
+inside its neutral band and no labeled flows at all, so the card claims no
+balance.
+
+`whale` (additive; absent on the `503`):
+
+| Field | Meaning |
+|---|---|
+| `state` | `activity_observed` \| `no_observations` \| `no_snapshot` |
+| `count` | `tx_count_24h` of the BTC snapshot; `null` on `no_snapshot` |
+| `threshold_usd` | `100000` — per transaction, total outputs at the spot when detected |
+| `window` / `window_end` | `"24h"` / the backend's `captured_at` (RFC3339; `null` when missing). The backend serves one `captured_at` for the whole answer — the **newest** snapshot time across every asset, not the BTC snapshot's own (the BTC flow carries none); all assets are written on the same worker tick, so they normally coincide |
+| `source` | `"mempool.space"` |
+| `direction` | `not_measurable` \| `net_to_exchanges` \| `net_from_exchanges` \| `no_net_direction`; `null` on `no_snapshot` |
+| `time_kind` / `amount_kind` | Always `"first_detected_by_monitor"` / `"total_outputs_incl_change"` |
+| `coverage` / `last_successful_poll` | Always `null`: not served by the backend |
+| `top` | `{"selection": "largest_btc_among_latest_records", "records_requested": 10, "records_received", "transactions": [{"tx_hash", "amount_btc", "amount_usd", "detected_at"}]}` — the listed ones, largest first, `[]` when none |
+
+`data_as_of` is that `captured_at` — the worker tick, not the last
+successful poll.
+
+Known backend edge: the records come from `ORDER BY transferred_at DESC
+LIMIT 10` with no second sort key, and every transaction of one poll shares
+its time. When the 10th and 11th records share a time, Postgres may return
+either, so the listed transactions can differ between two answers with
+unchanged data (the fix belongs in the backend).
+
+`blocks` (whenever the backend served a BTC snapshot). The agent sees neither
+price nor exchange direction, so it has no scenarios, nothing to invalidate
+and no regime:
+
+| Field | Meaning |
+|---|---|
+| `what_happened` | `"The monitor detected 66 BTC transactions ≥ $100K in the 24h to Sep 15 15:00 UTC"`; zero: `"The monitor registered no BTC transaction ≥ $100K in the 24h to …"` |
+| `why_level` | `"No price level: $100K is the monitor's size threshold per transaction, not a market level"` |
+| `scenarios` / `invalidates` | Always `null` |
+| `regime` | Always `""` |
+| `limitations` | `"A sample: the 10 newest mempool entries per 10-min poll; outputs include change; no exchange labels"` |
+| `source` | `"mempool.space recent-transactions feed, polled by the AlphaVizor backend; USD at Binance BTCUSDT"` — whale only (additive) |
+
+Every line (verdict, facts, digest line, each `blocks` field) is at most 110
+characters. The AI payload drops the detection times.
 
 ## Macro card and content blocks
 

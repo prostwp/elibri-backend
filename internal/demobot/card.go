@@ -132,6 +132,9 @@ type ContentBlocks struct {
 	Context      string   `json:"context,omitempty"`
 	StateChanges string   `json:"state_changes_when,omitempty"`
 	Limitations  string   `json:"limitations,omitempty"`
+	// Source: whale only (additive, 2026-09-15) — where the observation
+	// comes from; absent on every other agent.
+	Source string `json:"source,omitempty"`
 }
 
 // SRPoint is one clustered level at raw precision (SRLevel.Raw — the cluster
@@ -398,6 +401,10 @@ type Card struct {
 	// Gold is the gold card's machine readout (per-part stamps, price, day
 	// range, macro basis) — served as the envelope's "gold". nil elsewhere.
 	Gold *GoldReadout
+	// Whale is the whale card's machine readout (state, count, threshold,
+	// window, the listed transactions) — served as the envelope's "whale"
+	// (whale_text.go). nil elsewhere and on the offline card.
+	Whale *WhaleReadout
 	// noValidator marks a card whose body is NOT a function of one stamped
 	// snapshot — composites of several sources or series, or text built from
 	// the request clock (gold, fx, funding, the composite momentum card, a

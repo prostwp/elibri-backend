@@ -504,6 +504,9 @@ func conclusionFor(c Card) string {
 	if c.Command == keyFunding && c.Funding != nil && c.Funding.SelectedSymbol != nil {
 		return fundingConclusion(c) // a classification, never a direction
 	}
+	if c.Command == keyWhale {
+		return whaleConclusion(c) // an activity count, never a direction
+	}
 	subject := c.Asset
 	if subject == "" {
 		subject = "the broader market"

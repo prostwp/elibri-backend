@@ -99,10 +99,14 @@ type httpEnvelope struct {
 	// Gold is the gold card's machine readout (additive 2026-09-15): per-part
 	// stamps daily_as_of / price_as_of / macro_as_of, the 1h price and its
 	// freshness, the day range, the macro lamp counts — absent elsewhere.
-	Gold       *GoldReadout `json:"gold,omitempty"`
-	Confidence *int         `json:"confidence"`         // 0-100, null when the source gave none
-	AIText     *string      `json:"ai_text"`            // plain-text AI block, null when absent
-	Sections   []string     `json:"sections,omitempty"` // digest only: the one-liners
+	Gold *GoldReadout `json:"gold,omitempty"`
+	// Whale is the whale card's machine readout (additive 2026-09-15): state,
+	// count, threshold, window, the listed transactions — absent elsewhere
+	// and on the offline 503.
+	Whale      *WhaleReadout `json:"whale,omitempty"`
+	Confidence *int          `json:"confidence"`         // 0-100, null when the source gave none
+	AIText     *string       `json:"ai_text"`            // plain-text AI block, null when absent
+	Sections   []string      `json:"sections,omitempty"` // digest only: the one-liners
 	// Digest is the digest's own machine readout (digest only, additive
 	// 2026-09-15): unified status, how the highlighted card was selected and
 	// every section card_html renders (FX and narrative included), each with
@@ -277,6 +281,7 @@ func cardEnvelope(c Card) httpEnvelope {
 		Macro:      c.Macro,
 		Funding:    c.Funding,
 		Gold:       c.Gold,
+		Whale:      c.Whale,
 		DataAsOf:   c.DataTime.UTC().Format(time.RFC3339),
 		Disclaimer: disclaimerText,
 		CardHTML:   c.RenderHTML(),

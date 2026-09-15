@@ -417,8 +417,9 @@ func TestWhaleCardTopThreeAndBaseline(t *testing.T) {
 	if !strings.Contains(transfers[0], "$17.00M") || !strings.Contains(transfers[0], "Binance") {
 		t.Errorf("biggest transfer first: %q", transfers[0])
 	}
-	if !strings.HasSuffix(transfers[2], " UTC") || strings.Contains(transfers[2], "outflow") {
-		t.Errorf("unlabeled transfer: time only, no direction word without an exchange: %q", transfers[2])
+	if !strings.HasSuffix(transfers[2], " UTC, not the block time") || strings.Contains(transfers[2], "outflow") ||
+		strings.Contains(transfers[2], " · from ") || strings.Contains(transfers[2], " · to ") {
+		t.Errorf("unlabeled transfer: detection time only, no direction word without an exchange: %q", transfers[2])
 	}
 	if strings.Contains(strings.Join(c.Facts, "|"), "$2.00M") {
 		t.Error("4th transfer must not render")

@@ -442,6 +442,9 @@ func aiPayload(g gathered) string {
 		if k == keyFunding {
 			facts = fundingAIFacts(facts)
 		}
+		if k == keyWhale {
+			facts = whaleAIFacts(facts)
+		}
 		// The model gets the card's own state word: volatility's machine
 		// "expanding" beside an "ELEVATED" verdict invites "volatility is
 		// expanding", a dynamic the formula never measured. stateConfirms
