@@ -405,6 +405,14 @@ type Card struct {
 	// window, the listed transactions) — served as the envelope's "whale"
 	// (whale_text.go). nil elsewhere and on the offline card.
 	Whale *WhaleReadout
+	// Narrative is the narrative radar's machine readout (state, window,
+	// threshold, themes, sources) — served as the envelope's "narrative"
+	// (narrative_text.go). nil elsewhere and on the offline card.
+	Narrative *NarrativeReadout
+	// confLabel renames the Confidence bar ("" = "Confidence: … N%"); the
+	// narrative radar sets "Data quality", printed as "… N/100" — its value
+	// is a data-quality heuristic, never a probability. Not served.
+	confLabel string
 	// noValidator marks a card whose body is NOT a function of one stamped
 	// snapshot — composites of several sources or series, or text built from
 	// the request clock (gold, fx, funding, the composite momentum card, a
@@ -491,11 +499,17 @@ func (c Card) renderBody() string {
 	}
 	if c.Confidence != nil {
 		v := clampInt(*c.Confidence, 0, 100)
-		b.WriteString("Confidence: ")
+		label, unit := "Confidence", "%"
+		if c.confLabel != "" {
+			label, unit = c.confLabel, "/100"
+		}
+		b.WriteString(label)
+		b.WriteString(": ")
 		b.WriteString(confidenceBar(v))
 		b.WriteString(" ")
 		b.WriteString(strconv.Itoa(v))
-		b.WriteString("%\n")
+		b.WriteString(unit)
+		b.WriteString("\n")
 	}
 	if c.AIHTML != "" {
 		b.WriteString(c.AIHTML)

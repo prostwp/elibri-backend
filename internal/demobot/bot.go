@@ -251,7 +251,7 @@ var botCommands = []BotCommand{
 	{Command: "menu", Description: "Button navigation"},
 	{Command: "digest", Description: "All agents, prioritized"},
 	{Command: "top", Description: "Top signal right now"},
-	{Command: "news", Description: "Narrative radar + AI idea"},
+	{Command: "news", Description: "Narrative radar: news themes, 24h"},
 	{Command: "fx", Description: "Forex overview"},
 	{Command: "macro", Description: "Risk-on/off regime"},
 	{Command: "whale", Description: "BTC transactions ≥ $100K seen by the monitor"},
@@ -536,14 +536,14 @@ func (a *Agents) gather(ctx context.Context) gathered {
 		if n, err := a.api.Narratives(ctx); err == nil && len(n.Narratives) > 0 {
 			top := pickTopNarrative(n.Narratives)
 			// Radar silence threshold (see newsMinMentions): a theme with a
-			// handful of mentions must not surface as a scored finding in the
-			// digest either — no extra line, no AI-payload narrative.
+			// handful of matched items must not surface as a scored finding in
+			// the digest either — no extra line, no AI-payload narrative.
+			// Wording: narrative_text.go.
 			if top.MentionCount >= newsMinMentions {
 				mu.Lock()
 				g.topNarr = &top
 				g.narrAt = parseWhen(n.CapturedAt)
-				g.extras = append(g.extras, fmt.Sprintf("📖 <b>Narrative</b>: %s (%s, score %d)",
-					esc(top.Narrative), esc(top.Stage), top.TrendScore))
+				g.extras = append(g.extras, narrativeDigestLine(top))
 				mu.Unlock()
 			}
 		}
@@ -873,7 +873,7 @@ Live market agents from the AlphaVizor platform:
 /whale — BTC transactions ≥ $100K seen by the monitor, no direction
 /funding — last perp funding rate vs thresholds &amp; 1h liquidations
 /fx — forex overview: EURUSD, GBPUSD, USDJPY, XAUUSD
-/news — trending crypto narratives (48h) with an AI idea
+/news — crypto news themes: matched RSS items and Reddit posts in 24h, no price direction
 /momentum — RSI/MACD reads for BTC, ETH &amp; gold
 /trend — trend state machine (default BTC 4h)
 /sr — key support/resistance levels

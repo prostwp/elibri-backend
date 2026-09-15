@@ -231,6 +231,14 @@ type NarrativeSnapshot struct {
 	SentimentLabel string `json:"sentiment_label"`
 	MentionCount   int    `json:"mention_count_24h"`
 	Confidence     int    `json:"confidence"`
+	// Previous-24h count, growth and the per-source breakdown of the 24h
+	// matches (additive reads, 2026-09-15). Pointers: a payload without them
+	// must not print a zero it was not given. is_new_theme is not read: the
+	// backend does not store it and always serves false (narrative_text.go
+	// computes it from the counts).
+	MentionCountPrev24h *int           `json:"mention_count_prev_24h"`
+	GrowthPct           *float64       `json:"growth_pct"`
+	SourcesBreakdown    map[string]int `json:"sources_breakdown"`
 	// GeneratedIdea is the Haiku-written analytical paragraph the API
 	// attaches to the TOP narrative only (omitempty on the wire).
 	GeneratedIdea string `json:"generated_idea"`

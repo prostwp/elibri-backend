@@ -457,6 +457,9 @@ func strongestFact(c Card) string {
 		if f == fxClosedBanner || (c.Command == keyFX && (fxUnreadLine(f) || f == fxGoldHeader)) {
 			continue
 		}
+		if c.Command == keyNews && narrativeHeaderLine(f) { // a list header, not a reading
+			continue
+		}
 		if strings.TrimSpace(f) != "" {
 			return endSentence(f)
 		}
@@ -480,12 +483,19 @@ func exampleFacts(c Card) []string {
 		if c.Command == keyFX && fxUnreadLine(f) { // a dead row is not a data point
 			continue
 		}
+		if c.Command == keyNews && narrativeHeaderLine(f) { // a list header is not a data point
+			continue
+		}
 		if strings.TrimSpace(f) != "" {
 			out = append(out, f)
 		}
 	}
 	if len(out) < 3 && c.Confidence != nil {
-		out = append(out, fmt.Sprintf("Confidence: %d%%", clampInt(*c.Confidence, 0, 100)))
+		if c.confLabel != "" { // narrative: data quality, never a probability
+			out = append(out, fmt.Sprintf("%s: %d/100", c.confLabel, clampInt(*c.Confidence, 0, 100)))
+		} else {
+			out = append(out, fmt.Sprintf("Confidence: %d%%", clampInt(*c.Confidence, 0, 100)))
+		}
 	}
 	if len(out) < 3 && c.SourceNote != "" {
 		out = append(out, "Source: "+c.SourceNote)
@@ -506,6 +516,9 @@ func conclusionFor(c Card) string {
 	}
 	if c.Command == keyWhale {
 		return whaleConclusion(c) // an activity count, never a direction
+	}
+	if c.Command == keyNews {
+		return narrativeConclusion(c) // news activity, never a direction
 	}
 	subject := c.Asset
 	if subject == "" {

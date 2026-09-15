@@ -309,12 +309,12 @@ func TestHTTPStatusNewsBelowThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 	if env.OK {
-		t.Error("warming-up radar must serve ok=false")
+		t.Error("below-threshold radar must serve ok=false")
 	}
 	if env.Reason == nil || *env.Reason != "below_threshold" {
 		t.Errorf("reason: %v, want below_threshold", env.Reason)
 	}
-	if !strings.Contains(env.Verdict, "warming up") {
+	if !strings.HasPrefix(env.Verdict, "Below threshold:") {
 		t.Errorf("verdict must still word the state: %q", env.Verdict)
 	}
 	// At the threshold the scored card returns and the status clears.

@@ -35,7 +35,7 @@ Telegram.
 | `GET /agents/vol` | `?asset=` optional (default `btc`) | ATR(14) against its 30-bar baseline: compressed / normal / elevated, machine readout in `levels`, content `blocks` (see [volatility card](#volatility-card-and-content-blocks)) |
 | `GET /agents/fx` | — | Forex overview: EURUSD, GBPUSD, USDJPY and gold (COMEX GC=F futures) — price, change, place in range, per-row freshness (see [FX card](#fx-card)) |
 | `GET /agents/gold` | — | Gold Agent on COMEX GC=F futures (`asset` stays `XAUUSD`): daily regime, the day range and two conditional day scenarios, the last closed 1h price with its own stamp, invalidation in a confirmed regime, macro / S/R / volatility background, machine readout in `gold`, content `blocks` (see [gold card](#gold-card-and-content-blocks)) |
-| `GET /agents/news` | — | Narrative radar (48h mention window) + AI idea |
+| `GET /agents/news` | — | Narrative radar: RSS items and Reddit posts matching a theme's keywords in the last 24h (growth vs the previous 24h), the leader's activity score from 5 matched items, machine readout in `narrative`, content `blocks` (see [narrative card](#narrative-card-and-content-blocks)) |
 | `GET /agents/risk` | `?balance=&risk=&entry=&stop=` all required | Position-size calculator |
 | `GET /agents/digest` | — | All agents in one sweep, prioritized; AI brief in `ai_text`, one-liners in `sections` |
 | `GET /agents/top` | — | The single strongest signal right now, with the AI brief + why-line |
@@ -820,6 +820,7 @@ Every agent endpoint answers with one shape:
 | `macro` | object | **macro cards only** (additive, 2026-09-15): the numbers behind the card — rule score, bands, per-lamp rule / weight / contribution / source / `as_of`, freshness, Fear & Greed age. See [macro card](#macro-card-and-content-blocks). Absent for every other agent and on macro cards without a reading (`UNKNOWN`, offline) |
 | `funding` | object | **funding card only** (additive, 2026-09-15): `state`, `selected_symbol`, `coverage`, `liquidations` — see [funding card](#funding-card-and-content-blocks). Absent for every other agent and on the all-offline funding `503` |
 | `whale` | object | **whale card only** (additive, 2026-09-15): `state`, `count`, `threshold_usd`, `window`, `direction`, the listed transactions — see [whale card](#whale-card-and-content-blocks). Absent for every other agent and on the offline `503` |
+| `narrative` | object | **news card only** (additive, 2026-09-15): `state`, windows, `threshold` and where it is checked, the leader and listed themes, `sources` — see [narrative card](#narrative-card-and-content-blocks). Absent for every other agent and on the `503` |
 | `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a **rule score**, not a confidence or a strength, and ships in the verdict (`RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)`) and in `macro.rule_score`. The `?asset=gold` view has its own `gold score` and also serves `confidence: null` |
 | `ai_text` | string \| null | Plain-text AI block (mood read / idea / brief / why-line); `null` when AI is disabled or the call failed |
 | `sections` | string[] | **digest only**: plain-text one-liners of every other agent (the winner heads the envelope) |
@@ -893,7 +894,7 @@ Every envelope carries the pair; when `ok` is `false`, `reason` is one of:
 | `market_closed` | macro | Regime `UNKNOWN` outside the clock-based tradfin week (Sun 22:00 → Fri 21:00 UTC) — no lamps to read. The window has no holiday calendar, so the card words it `scheduled tradfin weekend`, never "market closed"; the enum value is kept for compatibility |
 | `source_offline` | any agent | The source behind the headline reading is unreachable. Usually a `503`; also a `200` on the funding card when rates are dead but the liquidation feed is alive (liq facts still render) |
 | `insufficient_history` | momentum, trend, sr, vol | Source alive, but too few **closed** bars for the indicator set (always a `503`). For `trend` also when an indicator or the derived level comes out non-finite (NaN/Inf, e.g. overflowing prices) — such input degrades instead of producing a reading |
-| `below_threshold` | news | Narrative radar warming up: the top theme is under 5 mentions/24h (`200`, themes listed without scores), or there are no snapshots yet (`503`) |
+| `below_threshold` | news | Narrative radar below its threshold: the leader by activity score has under 5 matched items in 24h, or no theme has any (`200`, themes listed without scores; `narrative.state` tells the two apart), or there are no snapshots yet (`503`). The radar's start time is not served, so no state claims "warming up" |
 | `no_data` | macro, whale | Upstream alive but nothing to read: macro unknown **inside** the open tradfin window; whale feed with no BTC snapshot yet |
 
 For `digest` / `top` the pair (and `levels`) describes the **top signal
@@ -1485,6 +1486,154 @@ also follows the clock (the stale flag, the weekend banner).
 | `invalidates` | Confirmed regime only, as on the card: `"A closed 1d candle below 4040.00 invalidates the daily uptrend reading (1 ATR under the EMA cluster)"`; `null` otherwise |
 | `regime` | The local 1d regime only (not macro): `"Local gold regime: confirmed uptrend · 1d · ADX 31.4"` |
 | `limitations` | `"COMEX GC=F futures, not spot XAUUSD; describes the period, not a forecast of the day"` |
+
+## Narrative card and content blocks
+
+> ⚠️ **Narrative `verdict` format changed 2026-09-15 — do not parse it.**
+> Before: `Radar warming up — top theme 'restaking' has only 1 mention in 24h;
+> not enough to score`, `Top narrative: rwa — trending, trend score 72/100`,
+> `No narrative snapshots yet — radar warming up`; facts `1. zk — 3
+> mentions/24h`, `1. rwa — trending · score 72 · 8 mentions/24h · bull`;
+> footer `48h mention window`; short `warming up` / `rwa (trending)`; digest
+> line `📖 Narrative: rwa (trending, score 72)`; AI block `AI idea:`; bar
+> `Confidence: ■■■□□ 61%`. Now:
+> `Below threshold: Perpetual DEXs leads by activity score with 1 matched item
+> in 24h; 5 needed to score` (a long name gets `Below threshold: <name> leads
+> with 1 matched item/24h; 5 needed`), `Leading theme: Real-world assets (RWA) · activity
+> score 72/100 · 8 matched items in 24h`, `Below threshold: no theme has a
+> matched item in the last 24h; 5 needed to score`, `No radar snapshots from
+> the backend yet — nothing to read`; footer `matched items: last 24h · growth
+> vs previous 24h`; short `below threshold` / `no matched items` / `Real-world
+> assets (RWA) · activity 72/100`; digest line `📖 Narrative: Real-world assets
+> (RWA) (activity score 72, 8 matched items/24h)`; AI block `AI comment:`; bar
+> `Data quality: ■■■□□ 61/100`; the semaphore rule is unchanged. State and
+> numbers are machine-readable in `narrative`; `verdict`, `facts` and the
+> digest line are display text and may change again.
+
+Stage 1: honest words and states only. The rules are **unchanged**: the
+backend matches CoinDesk and CoinTelegraph RSS items plus Reddit posts (when
+reachable) against a keyword list per theme, counts matched items over the
+**last 24h** and over the 24h before it, scores each theme 0-100 and serves
+the themes sorted by that score. The card checks the threshold — **5 matched
+items in 24h** — on the **leader by score only**; a lower-scored theme with
+more items does not change the state (the rule is reviewed in stage 3). The
+leader pick, the score formula and the dictionary are untouched; caching is
+unchanged (no `Last-Modified`), and the body is a function of the backend
+answer only (no request-clock wording).
+
+What the card no longer claims:
+
+- **Window.** The shown counts are the last 24h; the previous 24h only feed
+  the growth. The old footer said `48h mention window`.
+- **Mentions.** A `matched item` is a CoinDesk/CoinTelegraph RSS item whose
+  headline or summary, or a Reddit post whose title or author line, contains a
+  theme keyword (the backend matches `title + summary`; a Reddit summary is
+  the `u/<author> · N score · M comments` line, so an author name can match).
+  The dictionary's precision has not been measured, and
+  one item can match several themes. Tone is the keyword sentiment of the
+  item's text: RSS headline and description, Reddit title and body.
+- **Trend score.** It is the `activity score`: growth, volume, positive tone,
+  LLM-graded impact and source count. Negative tone adds nothing, so it is not
+  a trend strength. The backend's stage label (`early`, `trending`, …) is shown
+  as a label of its count-and-growth rule.
+- **Confidence.** `Data quality` (items, sources with matches, tone
+  agreement), `/100`, never a probability. The envelope's `confidence` still
+  carries the same backend value for this agent.
+- **Ranking below the threshold.** Themes are listed without numbers, scores,
+  stages or tone, and the order is named: by activity score, not by count.
+- **Warming up.** Gone: the backend serves no start time, so the card cannot
+  know it is in its first hours.
+- **Sources.** The backend logs per-source fetch errors (Reddit often answers
+  `403` to server IPs) and serves none of them, so the card says `Source status
+  (which feeds answered this cycle) is not served by the backend`; the leader's
+  matched items per source are served and shown. Low counts, missing sources
+  and a quiet news day cannot be told apart from these data.
+- **Direction.** The semaphore rule is unchanged: on a scored card the
+  leader's `sentiment_label` colors it (`bull` 🟢 / `bullish`, `bear` 🔴 /
+  `bearish`, otherwise ⚪); below the threshold and with no snapshots it is ⚪.
+  The color is the tone of the leader's matched items, not a price
+  direction, and the card says so in words: `Tone of the leader's matched
+  items (keyword sentiment of their text), not a price direction: positive`. No price,
+  forecast or trading words appear; `/showcase/example` concludes a colored
+  narrative card with news activity, never a direction.
+- **AI text.** Only on a scored card, and only the leader's own paragraph
+  (`AI comment:`); another theme's text is never borrowed.
+
+```
+⚪ Narrative Radar
+Below threshold: Restaking and liquid staking (LST/LRT) leads with 1 matched item/24h; 5 needed
+• Order: by activity score, not by count · scores are not shown below the threshold
+• Restaking and liquid staking (LST/LRT) — 1 matched item · previous 24h: 0
+• Modular blockchains — 1 matched item · previous 24h: 0
+• Stablecoins and regulation — 3 matched items · previous 24h: 2
+• Leader's matched items by source: CoinTelegraph 1
+• Source status (which feeds answered this cycle) is not served by the backend
+• Matched item: a theme keyword in an RSS headline/summary or a Reddit title/author line; precision unmeasured
+```
+
+When the leader is below the threshold while a lower-scored theme is at or
+above it, one more line says so (`Threshold is checked on the leader only: <name> has 6
+matched items but a lower activity score`, shortened for a long name to
+`Checked on the leader only: Bitcoin ETFs and ETF issuers has 6 matched items,
+lower activity score`) and
+`narrative.eligible_not_leader` lists the ids; the state stays
+`below_threshold`.
+
+States (the backend being unreachable is the standard `503`
+`source_offline` with no `narrative` object):
+
+| `narrative.state` | Card | `ok` / `reason` |
+|---|---|---|
+| `scored` | `Leading theme: … · activity score N/100 · M matched items in 24h`, the top 3 numbered with scores, stage label, the tone line, sources, data quality bar, AI comment when the backend sent one; semaphore by the leader's tone (🟢 / 🔴 / ⚪, unchanged rule) | `true` / `null` |
+| `below_threshold` | as above: names and matched items only | `false` / `below_threshold` (`200`) |
+| `no_matched_items` | `Below threshold: no theme has a matched item in the last 24h; 5 needed to score` | `false` / `below_threshold` (`200`) |
+| `no_snapshots` | `No radar snapshots from the backend yet — nothing to read` | `false` / `below_threshold` (`503`, so no `narrative` object on the wire) |
+
+Theme names: every id of the backend dictionary has one (`rwa` → `Real-world
+assets (RWA)`, `btc-etf` → `Bitcoin ETFs and ETF issuers` — BlackRock, Grayscale and Fidelity
+bitcoin items match too, `zk` → `Zero-knowledge (ZK) networks` — Aleo and Mina
+are not rollups, `stablecoins-regulation` →
+`Stablecoins and regulation` — its keywords match any USDT/USDC/Tether/Circle
+item, not only regulation, …); an id without a name shows as the id. A test
+fails when the dictionary gains a theme without a name.
+
+`narrative` (additive; absent on the `503`):
+
+| Field | Meaning |
+|---|---|
+| `state` | `scored` \| `below_threshold` \| `no_matched_items` \| `no_snapshots` |
+| `window` / `growth_vs` | Always `"24h"` (the shown counts) / `"previous_24h"` (growth only) |
+| `window_end` | The backend's `captured_at` (RFC3339); `null` when missing. The backend serves one `captured_at` for the whole answer: the **newest** snapshot time across the served themes (the handler's maximum), not each theme's own. The worker writes every theme on the same tick, so they normally coincide; a theme whose snapshot failed on that tick keeps an older one |
+| `count_kind` | Always `"matched_items"` |
+| `threshold` / `threshold_checked_on` | `5` / always `"leader_by_activity_score"` |
+| `order` | Always `"activity_score_desc"` (the backend's order, ties by id) |
+| `leader` | The first theme served, same shape as a `themes` entry; `null` on `no_snapshots` |
+| `themes` | The listed themes (up to 3), served order: `{"id", "name", "matched_24h", "matched_prev_24h", "growth_pct", "new_theme", "activity_score", "data_quality", "stage", "tone", "sources_with_matches"}`. `growth_pct` is `null` when the previous 24h had 0 (the backend's `999` marker) or is missing; `new_theme` is computed by the demobot as `matched_prev_24h == 0 && matched_24h > 0` (the backend's own predicate: it does not store `is_new_theme` and always serves `false`), `null` when the previous count is missing; `activity_score`, `data_quality`, `stage` and `tone` (`positive` \| `neutral` \| `negative`, keyword sentiment of the items' text) are `null` unless `scored`; `sources_with_matches` is the backend's per-source count of the 24h matches, `null` when not served |
+| `eligible_not_leader` | Below the threshold: ids of lower-ranked themes at 5+ matched items; `[]` otherwise |
+| `themes_served` | Number of themes in the backend answer |
+| `sources` | `{"expected": ["coindesk", "cointelegraph", "reddit"], "status": null, "coverage": null}` — per-cycle status and coverage are not served by the backend |
+
+`blocks` (whenever the backend served themes). No price level, no price
+scenarios; the two scenarios are the radar's own state changes:
+
+| Field | Meaning |
+|---|---|
+| `what_happened` | `"Perpetual DEXs leads by activity score with 1 matched item in the 24h to Sep 15 22:00 UTC"` (a longer name drops `by activity score`, then the window end); `"Restaking and liquid staking (LST/LRT) leads with 1 matched item in the 24h to Sep 15 22:00 UTC"`; scored: `"Real-world assets (RWA): 8 matched items in the 24h to Sep 15 22:00 UTC, 3 in the previous 24h"`; none: `"No theme had a matched item in the 24h to …"` |
+| `why_level` | Below: `"No price level: 5 matched items in 24h is the radar's threshold, checked on the leader only"`; scored: `"No price level: activity score 72/100 blends item growth, volume, tone, impact and source count"` |
+| `scenarios` | Below: `"If the leading theme by activity score reaches 5 matched items in 24h, the radar scores it"`, `"If the leader stays under 5 matched items in 24h, the radar stays below threshold"`; scored: `"If the leading theme keeps 5+ matched items in 24h and the top score, the radar keeps scoring it"`, `"If it drops under 5 matched items in 24h, the radar goes below threshold and hides scores"` |
+| `invalidates` | Scored only: `"Under 5 matched items in 24h, or another theme taking a higher activity score"`; `null` otherwise |
+| `regime` | The local news regime: `"Local news regime: quiet, no theme scored; no price direction"` / `"Local news regime: one theme scored, Real-world assets (RWA); no price direction"` |
+| `limitations` | `"Keyword matches, precision not measured; source status not served; tone is not direction"` |
+| `source` | `"CoinDesk and CoinTelegraph RSS plus Reddit when reachable, read by the AlphaVizor backend"` |
+
+Every line (verdict, facts, digest line, each `blocks` field) is at most 110
+characters. The digest's 📖 line and the AI payload appear only when the digest's own
+pick has 5+ matched items, as before. That pick (`pickTopNarrative`) is the
+highest activity score with ties broken by more matched items, then id; the
+card takes the backend's order (score, ties by id). On a score tie the
+digest line can name a different theme than the card's leader, and each
+applies the threshold to its own pick (rule unchanged). `/showcase/example` concludes a narrative card with news
+activity, never a direction.
 
 ## Whale card and content blocks
 

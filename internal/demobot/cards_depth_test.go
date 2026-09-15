@@ -94,39 +94,39 @@ func TestNewsCardTop3AndIdea(t *testing.T) {
 	if c.Emoji != emojiBull {
 		t.Errorf("bull top narrative → 🟢, got %q", c.Emoji)
 	}
-	if !strings.Contains(c.Verdict, "ai-agents") || !strings.Contains(c.Verdict, "trending") || !strings.Contains(c.Verdict, "84") {
-		t.Errorf("verdict must carry name/stage/score, got %q", c.Verdict)
+	if !strings.Contains(c.Verdict, "ai-agents") || !strings.Contains(c.Verdict, "activity score 84/100") {
+		t.Errorf("verdict must carry name and activity score, got %q", c.Verdict)
 	}
 	var ranked []string
 	for _, f := range c.Facts {
-		if strings.Contains(f, "mentions/24h") {
+		if strings.Contains(f, " matched items") && strings.Contains(f, "activity score") {
 			ranked = append(ranked, f)
 		}
 	}
 	if len(ranked) != 3 {
 		t.Fatalf("want exactly 3 ranked narrative facts, got %d: %v", len(ranked), c.Facts)
 	}
-	if !strings.Contains(ranked[0], "1. ai-agents") || !strings.Contains(ranked[0], "412 mentions/24h") {
+	if !strings.Contains(ranked[0], "1. ai-agents") || !strings.Contains(ranked[0], "412 matched items") {
 		t.Errorf("first line wrong: %q", ranked[0])
 	}
-	if !strings.Contains(ranked[2], "3. btc-etf") {
+	if !strings.Contains(ranked[2], "3. Bitcoin ETFs and ETF issuers") {
 		t.Errorf("third line wrong: %q", ranked[2])
 	}
 	if strings.Contains(strings.Join(c.Facts, "|"), "fourth-item") {
 		t.Error("4th narrative must not render")
 	}
-	if !strings.HasPrefix(c.AIHTML, "<b>AI idea:</b> <i>") || !strings.Contains(c.AIHTML, "elevated volatility") {
-		t.Errorf("AI idea block missing/wrong: %q", c.AIHTML)
+	if !strings.HasPrefix(c.AIHTML, "<b>AI comment:</b> <i>") || !strings.Contains(c.AIHTML, "elevated volatility") {
+		t.Errorf("AI comment block missing/wrong: %q", c.AIHTML)
 	}
 	if c.Confidence == nil || *c.Confidence != 71 {
-		t.Errorf("top confidence must flow through, got %v", c.Confidence)
+		t.Errorf("top data quality must flow through, got %v", c.Confidence)
 	}
-	if !strings.Contains(c.SourceNote, "48h") {
-		t.Errorf("footer must note the 48h window, got %q", c.SourceNote)
+	if !strings.Contains(c.SourceNote, "last 24h") || strings.Contains(c.SourceNote, "48h") {
+		t.Errorf("footer must name the 24h count window, got %q", c.SourceNote)
 	}
 	rendered := c.RenderHTML()
-	if !strings.Contains(rendered, "<b>AI idea:</b>") {
-		t.Errorf("rendered card must include the AI idea block:\n%s", rendered)
+	if !strings.Contains(rendered, "<b>AI comment:</b>") {
+		t.Errorf("rendered card must include the AI comment block:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "2026-08-18 06:00 UTC") {
 		t.Errorf("footer must use captured_at:\n%s", rendered)
@@ -149,9 +149,10 @@ func TestNewsCardEscapesFeedText(t *testing.T) {
 	}
 }
 
-// Batch-2 silence threshold: below newsMinMentions 24h mentions on the TOP
-// narrative, scores are noise and must not present as findings — the card
-// says "warming up" and lists themes as name + mentions only.
+// Batch-2 silence threshold: below newsMinMentions 24h matched items on the
+// leader, scores are noise and must not present as findings — the card says
+// "below threshold" (never "warming up": the radar's start time is not
+// served) and lists themes as name + matched items only, unnumbered.
 func TestNewsCardBelowMentionThreshold(t *testing.T) {
 	fixture := `{"captured_at":"2026-08-18T06:00:00Z","narratives":[
 	  {"narrative":"zk","trend_score":72,"stage":"early","sentiment_label":"bull","mention_count_24h":3,"confidence":61,
@@ -166,15 +167,19 @@ func TestNewsCardBelowMentionThreshold(t *testing.T) {
 	if c.Emoji != emojiNeutral {
 		t.Errorf("emoji: got %q, want neutral (no finding to color)", c.Emoji)
 	}
-	wantVerdict := "Radar warming up — top theme 'zk' has only 3 mentions in 24h; not enough to score"
+	wantVerdict := "Below threshold: Zero-knowledge (ZK) networks leads by activity score with 3 matched items in 24h; 5 needed to score"
+	if len([]rune(wantVerdict)) > narrativeFactMaxRunes {
+		wantVerdict = "Below threshold: Zero-knowledge (ZK) networks leads with 3 matched items/24h; 5 needed"
+	}
 	if c.Verdict != wantVerdict {
 		t.Errorf("verdict:\ngot:  %q\nwant: %q", c.Verdict, wantVerdict)
 	}
-	if c.Short != "warming up" {
+	if c.Short != "below threshold" {
 		t.Errorf("short: got %q", c.Short)
 	}
-	// Facts: name + mentions ONLY — no scores, no stages.
-	wantFacts := []string{"1. zk — 3 mentions/24h", "2. rwa — 2 mentions/24h"}
+	// Facts: name + matched items ONLY — no scores, no stages, no numbers.
+	wantFacts := []string{narrativeLineOrderBelow, "Zero-knowledge (ZK) networks — 3 matched items",
+		"Real-world assets (RWA) — 2 matched items", narrativeLineSources, narrativeLineMatch}
 	if len(c.Facts) != len(wantFacts) {
 		t.Fatalf("facts: got %v, want %v", c.Facts, wantFacts)
 	}
@@ -183,10 +188,10 @@ func TestNewsCardBelowMentionThreshold(t *testing.T) {
 			t.Errorf("fact[%d]: got %q, want %q", i, c.Facts[i], want)
 		}
 	}
-	joined := strings.Join(c.Facts, "|")
-	for _, banned := range []string{"score", "trending", "early"} {
+	joined := strings.Join(c.Facts[1:3], "|")
+	for _, banned := range []string{"score", "trending", "early", "1.", "2."} {
 		if strings.Contains(joined, banned) {
-			t.Errorf("score emphasis %q leaked into warming facts: %v", banned, c.Facts)
+			t.Errorf("score emphasis %q leaked into below-threshold facts: %v", banned, c.Facts)
 		}
 	}
 	// No confidence bar, no AI idea: nothing below the threshold is a finding.
@@ -196,18 +201,18 @@ func TestNewsCardBelowMentionThreshold(t *testing.T) {
 	if c.AIHTML != "" {
 		t.Errorf("AI idea must not render on thin data, got %q", c.AIHTML)
 	}
-	// Singular wording at exactly one mention.
+	// Singular wording at exactly one matched item.
 	one := `{"captured_at":"2026-08-18T06:00:00Z","narratives":[
 	  {"narrative":"zk","trend_score":9,"stage":"early","sentiment_label":"neutral","mention_count_24h":1,"confidence":5}]}`
 	ag2 := newStubBackend(t, map[string]string{"/api/v1/narratives": one})
-	if v := ag2.NewsCard(context.Background()).Verdict; !strings.Contains(v, "only 1 mention in 24h") {
-		t.Errorf("singular mention wording: got %q", v)
+	if v := ag2.NewsCard(context.Background()).Verdict; !strings.Contains(v, "1 matched item") || strings.Contains(v, "1 matched items") {
+		t.Errorf("singular wording: got %q", v)
 	}
 	// At the threshold (5) the scored card returns.
 	at := `{"captured_at":"2026-08-18T06:00:00Z","narratives":[
 	  {"narrative":"zk","trend_score":72,"stage":"early","sentiment_label":"bull","mention_count_24h":5,"confidence":61}]}`
 	ag3 := newStubBackend(t, map[string]string{"/api/v1/narratives": at})
-	if v := ag3.NewsCard(context.Background()).Verdict; !strings.Contains(v, "trend score 72/100") {
+	if v := ag3.NewsCard(context.Background()).Verdict; !strings.Contains(v, "activity score 72/100") {
 		t.Errorf("at-threshold card must score again: %q", v)
 	}
 }
@@ -250,8 +255,8 @@ func TestDigestNarrativeExtraBelowThreshold(t *testing.T) {
 func TestNewsCardEmptyAndOffline(t *testing.T) {
 	ag := newStubBackend(t, map[string]string{"/api/v1/narratives": `{"captured_at":"","narratives":[]}`})
 	c := ag.NewsCard(context.Background())
-	if !c.Offline || !strings.Contains(c.Verdict, "warming up") {
-		t.Errorf("empty store must be an honest warming-up card, got %+v", c)
+	if !c.Offline || !strings.Contains(c.Verdict, "No radar snapshots") {
+		t.Errorf("empty store must be an honest no-snapshots card, got %+v", c)
 	}
 	if c.AIHTML != "" {
 		t.Error("no idea block without narratives")

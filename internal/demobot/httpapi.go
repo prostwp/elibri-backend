@@ -103,10 +103,14 @@ type httpEnvelope struct {
 	// Whale is the whale card's machine readout (additive 2026-09-15): state,
 	// count, threshold, window, the listed transactions — absent elsewhere
 	// and on the offline 503.
-	Whale      *WhaleReadout `json:"whale,omitempty"`
-	Confidence *int          `json:"confidence"`         // 0-100, null when the source gave none
-	AIText     *string       `json:"ai_text"`            // plain-text AI block, null when absent
-	Sections   []string      `json:"sections,omitempty"` // digest only: the one-liners
+	Whale *WhaleReadout `json:"whale,omitempty"`
+	// Narrative is the narrative radar's machine readout (additive
+	// 2026-09-15): state, windows, threshold and where it is checked, the
+	// listed themes, sources — absent elsewhere and on the 503.
+	Narrative  *NarrativeReadout `json:"narrative,omitempty"`
+	Confidence *int              `json:"confidence"`         // 0-100, null when the source gave none; news: data quality
+	AIText     *string           `json:"ai_text"`            // plain-text AI block, null when absent
+	Sections   []string          `json:"sections,omitempty"` // digest only: the one-liners
 	// Digest is the digest's own machine readout (digest only, additive
 	// 2026-09-15): unified status, how the highlighted card was selected and
 	// every section card_html renders (FX and narrative included), each with
@@ -282,6 +286,7 @@ func cardEnvelope(c Card) httpEnvelope {
 		Funding:    c.Funding,
 		Gold:       c.Gold,
 		Whale:      c.Whale,
+		Narrative:  c.Narrative,
 		DataAsOf:   c.DataTime.UTC().Format(time.RFC3339),
 		Disclaimer: disclaimerText,
 		CardHTML:   c.RenderHTML(),

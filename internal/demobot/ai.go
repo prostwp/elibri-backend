@@ -482,8 +482,7 @@ func aiPayload(g gathered) string {
 		Mood      string               `json:"market_mood,omitempty"`
 	}{Regime: g.regime, Agents: agents, FX: fxLines, Mood: g.mood}
 	if g.topNarr != nil {
-		payload.Narrative = fmt.Sprintf("%s (stage %s, trend score %d, %d mentions/24h)",
-			g.topNarr.Narrative, g.topNarr.Stage, g.topNarr.TrendScore, g.topNarr.MentionCount)
+		payload.Narrative = narrativeAILine(*g.topNarr)
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {

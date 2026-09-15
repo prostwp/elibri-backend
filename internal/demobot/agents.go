@@ -215,7 +215,7 @@ var howTexts = map[string]string{
 	keyDigest:   "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",
 	keyTop:      "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",
 	keyGold:     goldHow,
-	keyNews:     "Crypto themes in CoinDesk and CoinTelegraph headlines plus Reddit posts when reachable. Score 0-100 blends mention growth, volume, sentiment, impact, source spread. From 5 mentions/24h.",
+	keyNews:     "Counts CoinDesk/CoinTelegraph RSS items and Reddit posts (if reachable) with a theme keyword in headline, RSS summary or Reddit author: 24h vs prior 24h. Score 0-100; leader needs 5.",
 }
 
 // ── Macro ────────────────────────────────────────────────────────────────────
@@ -293,105 +293,16 @@ func (a *Agents) WhaleCard(ctx context.Context) Card {
 
 // ── Narrative Radar (/news) ──────────────────────────────────────────────────
 
-// newsMinMentions is the radar's silence threshold: below this many 24h
-// mentions for the TOP narrative there is too little signal to score at all —
-// a trend score computed off a handful of posts is noise dressed as a
-// finding. Under the threshold the card says "warming up" and lists themes as
-// name + mention count only (no scores, no stages, no confidence, no AI
-// idea). HTTP /agents/news mirrors this automatically via the shared card.
-const newsMinMentions = 5
-
-// NewsCard renders the top-3 crypto narratives from the backend radar (48h
-// mention window) plus the backend's AI-generated idea for the leading one.
-// The server sorts by trend_score DESC and attaches generated_idea to the
-// top narrative only.
+// NewsCard reads the backend radar; every word the card says, the threshold
+// (newsMinMentions) and the machine readout are in narrative_text.go (stage 1,
+// 2026-09-15). The server sorts by its score and attaches generated_idea to
+// the top narrative only.
 func (a *Agents) NewsCard(ctx context.Context) Card {
 	n, err := a.api.Narratives(ctx)
 	if err != nil {
 		return offlineCard("Narrative Radar", "Narrative", "", keyNews, howTexts[keyNews])
 	}
-	c := Card{
-		Agent:      "Narrative Radar",
-		ShortName:  "Narrative",
-		Command:    keyNews,
-		HowItWorks: howTexts[keyNews],
-		DataTime:   parseWhen(n.CapturedAt),
-		SourceNote: "48h mention window",
-		// The AI idea is generated and cached by the backend per narrative
-		// and hour, failures uncached — it can appear or change under the
-		// same captured_at. No validator.
-		noValidator: true,
-	}
-	if len(n.Narratives) == 0 {
-		c.Emoji = emojiNeutral
-		c.Verdict = "No narrative snapshots yet — radar warming up"
-		c.Short = "no data"
-		c.Offline = true // "not enough data" is not a signal
-		c.Status = statusBelowThreshold
-		return c
-	}
-	top := n.Narratives[0]
-	// Silence threshold: a thin mention base cannot back a scored finding.
-	// Present names + mention counts only, and say why there is no verdict.
-	if top.MentionCount < newsMinMentions {
-		c.Emoji = emojiNeutral
-		c.Status = statusBelowThreshold
-		mentions := "mentions"
-		if top.MentionCount == 1 {
-			mentions = "mention"
-		}
-		c.Verdict = fmt.Sprintf("Radar warming up — top theme '%s' has only %d %s in 24h; not enough to score",
-			top.Narrative, top.MentionCount, mentions)
-		c.Short = "warming up"
-		for i, item := range n.Narratives {
-			if i == 3 {
-				break
-			}
-			c.Facts = append(c.Facts, fmt.Sprintf("%d. %s — %s/24h", i+1, item.Narrative, mentionsWord(item.MentionCount)))
-		}
-		// No confidence, no AI idea: nothing below the threshold is a finding.
-		return c
-	}
-	switch top.SentimentLabel {
-	case "bull":
-		c.Emoji = emojiBull
-	case "bear":
-		c.Emoji = emojiBear
-	default:
-		c.Emoji = emojiNeutral
-	}
-	c.Verdict = fmt.Sprintf("Top narrative: %s — %s, trend score %d/100", top.Narrative, top.Stage, top.TrendScore)
-	c.Short = fmt.Sprintf("%s (%s)", top.Narrative, top.Stage)
-	if top.Confidence > 0 {
-		conf := top.Confidence
-		c.Confidence = &conf
-	}
-	for i, item := range n.Narratives {
-		if i == 3 {
-			break
-		}
-		line := fmt.Sprintf("%d. %s — %s · score %d · %s/24h", i+1, item.Narrative, item.Stage, item.TrendScore, mentionsWord(item.MentionCount))
-		if item.SentimentLabel != "" {
-			line += " · " + item.SentimentLabel
-		}
-		c.Facts = append(c.Facts, line)
-	}
-	for _, item := range n.Narratives {
-		if idea := strings.TrimSpace(item.GeneratedIdea); idea != "" {
-			c.AIHTML = "<b>AI idea:</b> <i>" + esc(truncateAtSentence(idea, 500)) + "</i>"
-			break
-		}
-	}
-	return c
-}
-
-// mentionsWord renders "1 mention" / "N mentions" — the radar's lists
-// printed "1 mentions/24h" on most live days.
-func mentionsWord(n int) string {
-	if n == 1 {
-		return "1 mention"
-	}
-	return fmt.Sprintf("%d mentions", n)
+	return newsCardFrom(n)
 }
 
 // ── Funding ──────────────────────────────────────────────────────────────────

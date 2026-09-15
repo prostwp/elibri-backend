@@ -87,9 +87,9 @@ func TestSRNearestOrder(t *testing.T) {
 	}
 }
 
-func TestMentionsWord(t *testing.T) {
-	if mentionsWord(1) != "1 mention" || mentionsWord(2) != "2 mentions" || mentionsWord(0) != "0 mentions" {
-		t.Errorf("pluralization: %q %q %q", mentionsWord(1), mentionsWord(2), mentionsWord(0))
+func TestMatchedItemsWord(t *testing.T) {
+	if matchedItems(1) != "1 matched item" || matchedItems(2) != "2 matched items" || matchedItems(0) != "0 matched items" {
+		t.Errorf("pluralization: %q %q %q", matchedItems(1), matchedItems(2), matchedItems(0))
 	}
 }
 
