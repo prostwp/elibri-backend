@@ -548,9 +548,17 @@ func (a *Agents) FundingCard(ctx context.Context) Card {
 	}
 
 	if ratesErr == nil {
+		// Walk fundingSymbols, not the map: on equal |rates| the first symbol
+		// in that order wins, so the card (and its semaphore, when equal
+		// |rates| of opposite sign sit past the thresholds) is the same on
+		// every request. Ranging over the map picked a random symbol.
 		widestSym, widest := "", 0.0
-		for sym, r := range rates {
-			if math.Abs(r) > math.Abs(widest) || widestSym == "" {
+		for _, sym := range fundingSymbols {
+			r, ok := rates[sym]
+			if !ok {
+				continue
+			}
+			if widestSym == "" || math.Abs(r) > math.Abs(widest) {
 				widestSym, widest = sym, r
 			}
 		}

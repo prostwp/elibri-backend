@@ -18,6 +18,13 @@
 //	DEMOBOT_HTTP_ADDR       listen address of the read-only HTTP JSON API
 //	                        that runs alongside long polling (default
 //	                        127.0.0.1:8090) — see docs/demobot-http.md.
+//	DEMOBOT_HOOK_URL        POST target of the push hook for the site
+//	                        backend; empty = hook off (no goroutine, no
+//	                        requests); must be an http(s) URL, else the
+//	                        hook is not started. DEMOBOT_HOOK_INTERVAL:
+//	                        sweep period, default 60s, minimum 30s.
+//	                        DEMOBOT_HOOK_DIGEST_INTERVAL: digest/top period,
+//	                        default 5m, never below the sweep period.
 package main
 
 import (
@@ -89,6 +96,10 @@ func main() {
 	if err := httpSrv.Start(); err != nil {
 		log.Fatalf("[demobot] HTTP API cannot bind %s: %v — is another demobot instance running? Set DEMOBOT_HTTP_ADDR to move it.", httpAddr, err)
 	}
+
+	// Push hook for the site backend — off unless DEMOBOT_HOOK_URL is set
+	// (docs/demobot-http.md "Push hook"). Stops with ctx.
+	demobot.StartPushHookFromEnv(ctx, httpSrv)
 
 	var runErr error
 	if *httpOnly {

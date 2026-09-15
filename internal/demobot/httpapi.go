@@ -328,6 +328,9 @@ type HTTPServer struct {
 	srv *http.Server
 	lim *tokenBucket
 	ln  net.Listener
+	// mux is the route table WITHOUT wrap() (no rate limit, no CORS): the push
+	// hook (hook.go) calls it in-process so its events carry exactly the GET body.
+	mux http.Handler
 	// sc memoizes the whole landing-showcase sweep (60s, singleflight) so a
 	// landing page render never fires twelve uncached upstream calls — see
 	// showcase.go.
@@ -354,6 +357,7 @@ func NewHTTPServer(addr string, ag *Agents) *HTTPServer {
 	// and the one ready-to-render "what you get" story.
 	mux.HandleFunc("/showcase", s.handleShowcase)
 	mux.HandleFunc("/showcase/example", s.handleShowcaseExample)
+	s.mux = mux
 	s.srv = &http.Server{
 		Addr:              addr,
 		Handler:           s.wrap(mux),

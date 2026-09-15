@@ -1048,6 +1048,141 @@ level**, so `why_level` is always `""`:
 | `fear_greed` | `value`, `label`, `as_of`, `fetched_at`, `age_hours` (`null` without a time), `stale`, `stale_after_hours` (36), `in_score` (always `false`); `null` without a live value |
 | `is_forecast` | Always `false` |
 
+## Push hook
+
+The demobot can push a reading to the site backend when it changes, instead
+of the site polling with a TTL. GET addresses stay as they are (reconciliation,
+risk, the stand). Code: `internal/demobot/hook.go`.
+
+### Configuration
+
+| Variable | Meaning |
+|---|---|
+| `DEMOBOT_HOOK_URL` | POST target, e.g. `http://127.0.0.1:8082/internal/agents/events`. **Empty = hook off**: no goroutine, no requests. Must parse as an `http` / `https` URL with a host; anything else is logged and the hook is not started |
+| `DEMOBOT_HOOK_INTERVAL` | Sweep period, Go duration (`90s`) or seconds (`90`). Default `60s`, minimum `30s` (lower values are raised to it, unreadable ones fall back to the default; both are logged) |
+| `DEMOBOT_HOOK_DIGEST_INTERVAL` | Period of the `digest`, `top` and `news` addresses (same formats). Default `5m`, never below the sweep period (raised to it, logged). Each of their runs reaches LLM-backed sources — see [load](#load-per-sweep) |
+
+### What is swept
+
+Every interval the hook reads these addresses **in-process, one after
+another**, through the same route table GET uses (past the rate limiter), so an
+event's `data` is exactly the GET body:
+
+| Agent | Addresses |
+|---|---|
+| `trend`, `sr`, `vol` | `?asset=` for each of `btc`, `eth`, `eurusd`, `gbpusd`, `usdjpy`, `xauusd` (no bare address — it is BTC) |
+| `momentum` | the composite without parameters, plus `?asset=` for each of the six assets. No `?tf=` / `?assets=` variants in v1 |
+| `macro` | the global card, `?asset=btc`, `?asset=gold` |
+| `fx`, `whale`, `funding`, `gold` | the one address |
+| `digest`, `top`, `news` | the one address, on `DEMOBOT_HOOK_DIGEST_INTERVAL` (default every 5 minutes), not every sweep |
+
+Not swept: `risk` (a function of user input), `/agents/trend/chart`,
+`/showcase`, `/showcase/example`. A `200` and a degraded `503` are both sent;
+anything else is a bug in the address list and is logged, not sent.
+
+### Event
+
+`POST`, `Content-Type: application/json`:
+
+```json
+{
+  "event_id": "trend:BTC:-:2026-09-15T08:00:00Z:a1b2c3d4",
+  "agent": "trend",
+  "asset": "BTC",
+  "params": {},
+  "data_as_of": "2026-09-15T08:00:00Z",
+  "sent_at": "2026-09-15T08:00:09Z",
+  "state_changed": {"from": "neutral", "to": "bullish"},
+  "data": { "...": "the GET /agents/trend?asset=btc body, as a JSON object" }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `event_id` | `agent:asset:params:data_as_of:hash8` — `hash8` is the first 8 hex of the change hash (below); an empty segment is `-`; `params` is `k=v` pairs sorted by key, joined by `,` (e.g. `tf=1d`) |
+| `agent` | Agent key as in `/agents/{agent}` |
+| `asset` | Upper-case asset of the address (`BTC`, `XAUUSD`, `GOLD` for the macro gold view); `""` for a global read (fx, whale, funding, news, gold, digest, top, macro, the momentum composite) |
+| `params` | Extra query parameters; `{}` in v1 |
+| `data_as_of` | The body's `data_as_of`; `null` for a `503` body (it has none) |
+| `sent_at` | RFC3339 UTC send time |
+| `state_changed` | `{from, to}` when the state differs from the **last delivered** event of this address, else `null`. State = the `semaphore` (`bullish` \| `bearish` \| `neutral`) when `ok` is true, `"unavailable"` when `ok` is false (the `503` body included). Number changes inside the same state give `null`. The first event of an address after a start is always `null`: the process has no baseline it saw delivered |
+| `data` | The GET body, byte for byte (a JSON object, never a string) |
+
+### What counts as a change
+
+An address is sent when the sha256 of its **normalized** body differs from the
+last one sent for it. Normalization masks only what follows the request clock
+or the response build, derived from the card builders:
+
+| Where | Masked | Why |
+|---|---|---|
+| `funding` | `data_as_of` and the `card_html` footer stamp, always | the card is stamped with the request time (`as of request time`) |
+| `macro`, `whale`, `news`, `digest`, `top` | `data_as_of` and the footer stamp when they fall inside the call | fallbacks to the request time: macro `UNKNOWN` card (backend `captured_at`), whale without a snapshot, news without `captured_at`, all-offline digest, a funding or offline winner on `top` |
+| any `macro` object (macro cards; digest/top with a macro winner) | `freshness.captured_at`, `fear_greed.age_hours` | the backend's response time and the age counted to it |
+| `digest` | `digest.generated_at`; `selection.highlight_data_as_of`, `selection.candidates[].data_as_of`, `sections[].data_as_of` when inside the call | the sweep clock; the funding entries are request-time stamps |
+| any text | the age in the stale Fear & Greed fact (`(52h ago)`) and in gold's `⚠ 7h old` | counted to the request time |
+
+Everything else is data and counts as a change, including values that move
+with time by design: the funding 1-hour liquidation window, the weekend
+banners, digest candidates turning `stale`, a new bar close on candle agents,
+and AI texts (`ai_text` on digest/top, the backend's AI idea on news) when
+they are regenerated.
+
+**Known edge: one duplicate, never a loss.** For macro, whale, news, digest
+and top a stamp is masked when it falls inside the call window. A real data
+time can land there too — a bar that closes in the first second of the call
+(a trend or momentum section of digest/top). That sweep hashes the body with
+the stamp masked, the next one with it, so the same `data` goes out a second
+time under a new `event_id`. No change is ever missed.
+
+### Sending and answers
+
+One attempt per event, 5 s timeout, **no retries: an `event_id` is never
+POSTed twice**. Every attempt counts as sent, whatever the answer; the next
+POST for an address needs a body that differs from the last one **sent**
+(attempted). `state_changed` is still measured from the last **delivered**
+body. The site reconciles by GET after its restart and periodically. The
+last sent hash and the last delivered state live in process memory only, so
+after a demobot restart every address is sent again (the site answers
+duplicates with 200/409).
+
+| Answer | Meaning for the hook |
+|---|---|
+| `200`, `201`, `409` | Delivered: becomes the `state_changed` baseline |
+| `400`, `413`, `415`, `422` | Our body was refused: logged with the first 300 bytes of the answer; **not** a new baseline; no pause (the next change is a different body) |
+| Timeout after connecting, `401`, `408`, `5xx`, anything else | Not delivered: logged with the answer head. **That address** pauses — its next change goes out no sooner than 2, 4, 8 … sweeps later (at most 10 minutes), so a failing endpoint is not hammered with every new body. The rest of the sweep continues: one hung address never holds the others back |
+| Connection failure (refused, no route, DNS) | The endpoint is down: the sweep stops at once and **whole sweeps** pause the same way (2, 4, 8 … intervals, at most 10 minutes); the first delivery resets it. Addresses not tried in that sweep go out when it resumes |
+
+The sweep's starting address moves one step every sweep, so no address is
+always the last one tried.
+
+Logs: one line per POST with the address, `event_id`, answer code and
+duration in ms — never the `data`.
+
+### Load per sweep
+
+Counted from the builders (candle caches live 60 s, so with a 60 s interval
+each candle series is fetched about once per sweep):
+
+| Source | Requests per sweep |
+|---|---|
+| Binance spot klines | 2 (BTCUSDT 4h, ETHUSDT 4h — trend's 1000 bars come from the same fetch) |
+| Yahoo chart | 7 (EURUSD, GBPUSD, USDJPY, XAUUSD=X → 404 → GC=F fallback: 2, GC=F 1d, GC=F 1h) |
+| Binance futures premiumIndex | 5 per funding read, no cache: 15 on sweeps with digest and top, 5 without them |
+| Backend (`localhost:8080`) | 20 on sweeps with digest, top and news (macro 6, whale 3, narratives 3, liquidations 3, momentum RS 3, mood 2); 7 without them |
+
+**LLM calls a sweep can cause.** Three LLM paths, two of them in the backend,
+so they apply even with the demobot's own AI off:
+
+| Path | Reached by | Model calls |
+|---|---|---|
+| Backend `/api/v1/market/mood-read` (Claude Haiku) | digest and top (their sweep reads it), i.e. twice per digest interval | Cached 10 minutes, shared with every other caller: at most one call per 10 minutes when generation works. A **failed** generation is not cached, so while it keeps failing every digest/top run asks again (2 per digest interval — 576/day at 5m) |
+| Backend `/api/v1/narratives` AI idea | news, digest and top, each once per digest interval | For the top narrative only, cached per narrative and snapshot hour: at most one call per hour per new top narrative when generation works. A failed generation is not cached, so while it keeps failing every one of those reads asks again: 3 per digest interval (864/day at 5m) |
+| Demobot AI (`ANTHROPIC_API_KEY` on the demobot) | digest and top, per digest interval | Memo keyed by the sweep's data, 5 minutes. The data (funding rates, the 1-hour liquidation sums) changes almost every run, so expect a miss on most runs: up to 3 calls per run (digest brief, top brief when its sweep differs, top why-line) — **up to 864/day at 5m**, 288/day at 15m. 0 when the demobot AI is off |
+
+`DEMOBOT_HOOK_DIGEST_INTERVAL` is the knob for all three rows: no address
+swept every `DEMOBOT_HOOK_INTERVAL` reaches an LLM.
+
 ## Errors
 
 Errors are always `{"error": "..."}` with an honest message:
