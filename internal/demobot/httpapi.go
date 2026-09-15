@@ -85,9 +85,9 @@ type httpEnvelope struct {
 	// AssetResult) — absent for every other agent.
 	Results []AssetResult `json:"results,omitempty"`
 	// Blocks is the content-ready sentence set (trend, S/R cards that show at
-	// least one level, the global macro card, the single-asset momentum card)
-	// — absent for every other agent, on degraded cards and on the S/R "no
-	// significant levels" finding.
+	// least one level, the global macro card, the single-asset momentum card,
+	// vol, funding, gold) — absent for every other agent, on degraded cards and
+	// on the S/R "no significant levels" finding.
 	Blocks *ContentBlocks `json:"blocks,omitempty"`
 	// Macro is the macro cards' machine readout (rule score, bands, per-lamp
 	// contributions, freshness, Fear & Greed age) — absent for every other
@@ -95,10 +95,14 @@ type httpEnvelope struct {
 	Macro *MacroReadout `json:"macro,omitempty"`
 	// Funding is the funding card's machine readout (additive 2026-09-15) —
 	// absent for every other agent and on the all-offline funding card.
-	Funding    *FundingReadout `json:"funding,omitempty"`
-	Confidence *int            `json:"confidence"`         // 0-100, null when the source gave none
-	AIText     *string         `json:"ai_text"`            // plain-text AI block, null when absent
-	Sections   []string        `json:"sections,omitempty"` // digest only: the one-liners
+	Funding *FundingReadout `json:"funding,omitempty"`
+	// Gold is the gold card's machine readout (additive 2026-09-15): per-part
+	// stamps daily_as_of / price_as_of / macro_as_of, the 1h price and its
+	// freshness, the day range, the macro lamp counts — absent elsewhere.
+	Gold       *GoldReadout `json:"gold,omitempty"`
+	Confidence *int         `json:"confidence"`         // 0-100, null when the source gave none
+	AIText     *string      `json:"ai_text"`            // plain-text AI block, null when absent
+	Sections   []string     `json:"sections,omitempty"` // digest only: the one-liners
 	// Digest is the digest's own machine readout (digest only, additive
 	// 2026-09-15): unified status, how the highlighted card was selected and
 	// every section card_html renders (FX and narrative included), each with
@@ -272,6 +276,7 @@ func cardEnvelope(c Card) httpEnvelope {
 		Blocks:     c.Blocks,
 		Macro:      c.Macro,
 		Funding:    c.Funding,
+		Gold:       c.Gold,
 		DataAsOf:   c.DataTime.UTC().Format(time.RFC3339),
 		Disclaimer: disclaimerText,
 		CardHTML:   c.RenderHTML(),

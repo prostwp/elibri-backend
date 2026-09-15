@@ -117,6 +117,12 @@ type TrendLevels struct {
 // explains the indicator thresholds, invalidates is what ends a CONFIRMED
 // reading, regime is the asset's LOCAL momentum state. Top-level on the
 // single-asset card, per asset in results[].blocks on multi-asset cards.
+//
+// Gold (gold_text.go, 2026-09-15): what_happened is a SNAPSHOT and says so
+// ("Snapshot, not an event: …") — the agent keeps no previous state; scenarios
+// are the two day-range closes ([] when the range is undefined); invalidates
+// only for a confirmed regime; regime is the local 1d regime; limitations
+// names the instrument.
 type ContentBlocks struct {
 	WhatHappened string   `json:"what_happened"`
 	WhyLevel     string   `json:"why_level"`
@@ -302,6 +308,38 @@ type FundingClusterOut struct {
 	BandVsMark *string `json:"band_vs_mark"`
 }
 
+// GoldReadout is the envelope's "gold" object (gold cards only, additive
+// 2026-09-15; docs/demobot-http.md "Gold card"). Each part of the composite
+// carries its own stamp: data_as_of stays the daily close.
+type GoldReadout struct {
+	Regime         string          `json:"regime"`          // trend state on 1d: flat | grey | up | down | conflict
+	Confirmed      bool            `json:"confirmed"`       // a direction is stated: regime up/down AND a 1h price
+	DailyAsOf      string          `json:"daily_as_of"`     // close of the last closed 1d bar (= data_as_of)
+	PriceAsOf      *string         `json:"price_as_of"`     // close of the last closed 1h bar
+	PriceFreshness *string         `json:"price_freshness"` // on_time | stale (older than 6h at answer time)
+	Price          *float64        `json:"price"`           // that 1h close, raw
+	PricePosition  *string         `json:"price_position"`  // above | inside | below the day range; null without a range
+	DayRange       *GoldDayRange   `json:"day_range"`       // null when undefined (deeper than the inside-day cap)
+	MacroAsOf      *string         `json:"macro_as_of"`     // oldest as_of of the voting macro lamps
+	MacroBackdrop  *string         `json:"macro_backdrop"`  // support | pressure | neutral; null without a read
+	MacroLamps     *GoldMacroLamps `json:"macro_lamps"`     // voting lamps by contribution for gold
+}
+
+// GoldDayRange is the range the scenarios classify against.
+type GoldDayRange struct {
+	High            float64 `json:"high"`
+	Low             float64 `json:"low"`
+	CandleDate      string  `json:"candle_date"`       // YYYY-MM-DD of the 1d candle it came from
+	InsideDaysAfter int     `json:"inside_days_after"` // inside days walked back (0 = the last closed day)
+}
+
+// GoldMacroLamps counts the voting lamps of the gold macro model.
+type GoldMacroLamps struct {
+	For     int `json:"for"`
+	Neutral int `json:"neutral"`
+	Against int `json:"against"`
+}
+
 // Card is one agent's reply. RenderHTML produces the exact Telegram
 // HTML-parse-mode body (golden-tested in card_test.go).
 type Card struct {
@@ -357,6 +395,9 @@ type Card struct {
 	// Funding is the funding card's machine readout (state, coin, coverage,
 	// liquidations) — served as the envelope's "funding". nil elsewhere.
 	Funding *FundingReadout
+	// Gold is the gold card's machine readout (per-part stamps, price, day
+	// range, macro basis) — served as the envelope's "gold". nil elsewhere.
+	Gold *GoldReadout
 	// noValidator marks a card whose body is NOT a function of one stamped
 	// snapshot — composites of several sources or series, or text built from
 	// the request clock (gold, fx, funding, the composite momentum card, a

@@ -180,9 +180,10 @@ func hookEventID(t hookTarget, dataAsOf, hash string) string {
 var (
 	// Macro F&G fact when stale: "… stale, last update Sep 14 (52h ago) …" —
 	// the age is counted to the backend's captured_at, i.e. the request time.
+	// The gold card no longer prints a running price age (stage 1,
+	// 2026-09-15): "stale (over 6h old)" is a fixed threshold, so nothing of
+	// gold's is masked here.
 	hookFNGAgoRe = regexp.MustCompile(`(stale, last update [^()]*\()(?:\d+h|\d+d|>999d)( ago\))`)
-	// Gold "Price now …" fact: "⚠ 7h old" — time.Since(the hourly close).
-	hookGoldAgeRe = regexp.MustCompile(`⚠ \d+h old`)
 )
 
 // hookRequestStampAgents may carry a request-time stamp where a data time
@@ -230,7 +231,7 @@ func (n hookNormalizer) maskIfRequestTime(m map[string]any, key string) {
 //   - digest: digest.generated_at (sweep clock); highlight_data_as_of,
 //     candidates[].data_as_of and sections[].data_as_of inside the window
 //     (the funding entries always are);
-//   - any string: the stale-F&G "(Nh ago)" age and the gold "⚠ Nh old" age.
+//   - any string: the stale-F&G "(Nh ago)" age.
 func hookNormalize(agent string, body []byte, start, end time.Time) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber() // numbers stay byte-exact through the round trip
@@ -299,8 +300,7 @@ func asAnySlice(v any) []any {
 func hookMaskStrings(v any) any {
 	switch x := v.(type) {
 	case string:
-		x = hookFNGAgoRe.ReplaceAllString(x, "${1}"+hookMasked+"${2}")
-		return hookGoldAgeRe.ReplaceAllString(x, "⚠ "+hookMasked+"h old")
+		return hookFNGAgoRe.ReplaceAllString(x, "${1}"+hookMasked+"${2}")
 	case map[string]any:
 		for k, e := range x {
 			x[k] = hookMaskStrings(e)

@@ -106,10 +106,13 @@ func TestLowerFirst(t *testing.T) {
 	}
 }
 
-// Gold and S/R name the same count the same way.
-func TestTouchCountSameWordAsSR(t *testing.T) {
-	if touchCount(1) != "1 swing pivot" || touchCount(4) != "4 swing pivots" {
-		t.Errorf("touchCount: %q %q", touchCount(1), touchCount(4))
+// Gold and S/R name the same level the same way: class and pivot count.
+func TestGoldLevelsUseSRClassWords(t *testing.T) {
+	sup, res := SRLevel{Raw: 4329.2, Touches: 1}, SRLevel{Raw: 4364.5, Touches: 7}
+	got := goldKeyLevelsLine(&sup, &res)
+	want := "Nearest levels: support 4329.20 (" + classPivots(sup) + ") · resistance 4364.50 (" + classPivots(res) + ")"
+	if got != want || !strings.Contains(got, "single swing, 1 pivot") || !strings.Contains(got, "established, 7 pivots") {
+		t.Errorf("gold key levels: %q, want %q", got, want)
 	}
 }
 

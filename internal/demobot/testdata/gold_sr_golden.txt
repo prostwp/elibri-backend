@@ -10,11 +10,12 @@ verdict: Daily regime: not confirmed — no direction claimed
 short: regime unconfirmed
 state: flat
 fact: Regime: flat · 1d — no trend to read (ADX under 20)
-fact: Day range <date>: 4379.90 – 4391.90
-fact: Price now 4371.30 — below the range (<date> UTC)
-fact: Price is already below 4379.90 intraday — the down day counts only on a CLOSE below it; a close above 4391.90 turns it up
-fact: Macro: no gold read right now
-fact: Nearest levels: support 4330.30 (5 swing pivots) · resistance 4423.90 (9 swing pivots)
+fact: Last closed 1h price 4371.30 at <date> UTC — below the day range
+fact: Day range 4379.90 – 4391.90: high/low of the closed 1d candle of <date>
+fact: A daily close above 4391.90 classifies the day as an upside break
+fact: A daily close below 4379.90 classifies the day as a downside break; the last 1h close is already below it
+fact: Macro backdrop: no gold read available
+fact: Nearest levels: support 4330.30 (candidate, 5 pivots) · resistance 4423.90 (established, 9 pivots)
 fact: Volatility: normal · 1d · ATR 0.997× its 30-bar baseline
 levels: <nil>
 == price 4520
@@ -22,11 +23,12 @@ verdict: Daily regime: not confirmed — no direction claimed
 short: regime unconfirmed
 state: flat
 fact: Regime: flat · 1d — no trend to read (ADX under 20)
-fact: Day range <date>: 4379.90 – 4391.90
-fact: Price now 4520.00 — above the range (<date> UTC)
-fact: Price is already above 4391.90 intraday — the up day counts only on a CLOSE above it; a close below 4379.90 turns it down
-fact: Macro: no gold read right now
-fact: Nearest levels: support 4380.70 (9 swing pivots), nothing clustered above
+fact: Last closed 1h price 4520.00 at <date> UTC — above the day range
+fact: Day range 4379.90 – 4391.90: high/low of the closed 1d candle of <date>
+fact: A daily close above 4391.90 classifies the day as an upside break; the last 1h close is already above it
+fact: A daily close below 4379.90 classifies the day as a downside break
+fact: Macro backdrop: no gold read available
+fact: Nearest levels: support 4380.70 (established, 9 pivots), nothing clustered above
 fact: Volatility: normal · 1d · ATR 0.997× its 30-bar baseline
 levels: <nil>
 == price 4200
@@ -34,10 +36,11 @@ verdict: Daily regime: not confirmed — no direction claimed
 short: regime unconfirmed
 state: flat
 fact: Regime: flat · 1d — no trend to read (ADX under 20)
-fact: Day range <date>: 4379.90 – 4391.90
-fact: Price now 4200.00 — below the range (<date> UTC)
-fact: Price is already below 4379.90 intraday — the down day counts only on a CLOSE below it; a close above 4391.90 turns it up
-fact: Macro: no gold read right now
-fact: Nearest levels: resistance 4423.90 (9 swing pivots), nothing clustered below
+fact: Last closed 1h price 4200.00 at <date> UTC — below the day range
+fact: Day range 4379.90 – 4391.90: high/low of the closed 1d candle of <date>
+fact: A daily close above 4391.90 classifies the day as an upside break
+fact: A daily close below 4379.90 classifies the day as a downside break; the last 1h close is already below it
+fact: Macro backdrop: no gold read available
+fact: Nearest levels: resistance 4423.90 (established, 9 pivots), nothing clustered below
 fact: Volatility: normal · 1d · ATR 0.997× its 30-bar baseline
 levels: <nil>

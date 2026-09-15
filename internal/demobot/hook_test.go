@@ -1213,7 +1213,6 @@ func TestHookNormalizeMasks(t *testing.T) {
 	for in, want := range map[string]string{
 		"Crypto Fear & Greed 69 (Greed): stale, last update Sep 13 (52h ago) · not in the rule score": "(* ago)",
 		"Crypto Fear & Greed 69 (Greed): stale, last update Sep 1 (14d ago) · not in the rule score":  "(* ago)",
-		"Price now 4,343.70 — inside the range (08:00 UTC) ⚠ 7h old — the feed has not updated":       "⚠ *h old",
 	} {
 		if got := hookMaskStrings(in).(string); !strings.Contains(got, want) {
 			t.Errorf("mask %q → %q, want %s", in, got, want)

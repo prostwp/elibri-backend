@@ -34,6 +34,7 @@ Telegram.
 | `GET /agents/sr` | `?asset=` optional (default `btc`) | Support/resistance swing clusters: class, reactions/breaks counts, last touch, content `blocks` |
 | `GET /agents/vol` | `?asset=` optional (default `btc`) | ATR(14) against its 30-bar baseline: compressed / normal / elevated, machine readout in `levels`, content `blocks` (see [volatility card](#volatility-card-and-content-blocks)) |
 | `GET /agents/fx` | — | Forex overview: EURUSD, GBPUSD, USDJPY and gold (COMEX GC=F futures) — price, change, place in range, per-row freshness (see [FX card](#fx-card)) |
+| `GET /agents/gold` | — | Gold Agent on COMEX GC=F futures (`asset` stays `XAUUSD`): daily regime, the day range and two conditional day scenarios, the last closed 1h price with its own stamp, invalidation in a confirmed regime, macro / S/R / volatility background, machine readout in `gold`, content `blocks` (see [gold card](#gold-card-and-content-blocks)) |
 | `GET /agents/news` | — | Narrative radar (48h mention window) + AI idea |
 | `GET /agents/risk` | `?balance=&risk=&entry=&stop=` all required | Position-size calculator |
 | `GET /agents/digest` | — | All agents in one sweep, prioritized; AI brief in `ai_text`, one-liners in `sections` |
@@ -846,7 +847,7 @@ whale top-3 window now hangs off the snapshot's `captured_at`.
 | `/agents/whale` | **no** | The transfer list comes from the backend's live table (the newest rows), not from the snapshot `captured_at` names: a new transfer pushes an old one out under the same `captured_at`. The top-3 shows transfers of the 24h up to `captured_at`, none stamped after it (with no parseable `captured_at`: the 24h up to the request time) |
 | `/agents/macro`, `?asset=btc`, `?asset=gold` | **no** | The backend's `captured_at` is its request time at one-second resolution, so two different payloads can share it; no lamp stamp versions the body either (a lamp value moves during its session under the same `as_of`) |
 | `/showcase` | yes | The sweep time (`generated_at`): the body is fixed for the life of the memoized sweep (up to 60 s) |
-| `/agents/gold` | **no** | Daily bars, the hourly price and its age, the macro payload and the weekend clock. The daily close versions none of the rest |
+| `/agents/gold` | **no** | Daily bars, the hourly price, the macro payload, and two clock rules: the price's `stale` flag (older than 6h at answer time) and the weekend banner. The body is not a function of any one stamp, so a `Last-Modified` from any part would let a client keep a `304` after another part changed. `data_as_of` stays the daily close; each part's own stamp is in `gold` (`daily_as_of`, `price_as_of`, `macro_as_of`) |
 | `/agents/fx` | **no** | Four series plus clock-driven wording (the banner, `data delayed`, gold's `no bar in the last 3h`): a pair can update, drop out or recover while the oldest close (`data_as_of`) stays put |
 | `/agents/funding` | **no** | Point-in-time reads (rates, the cluster's position against the mark price, the liquidation feed, a 1h window from the request time). The request time is not a version of that body |
 | `/agents/momentum` without params, `?tf=` alone, `?assets=` with two or more assets | **no** | Composite: the oldest bar (`data_as_of`) can stay put while another asset, the ETH-vs-BTC read, an asset's freshness (`market closed` / `data delayed`) or a source failure/recovery changes the body |
@@ -1359,6 +1360,123 @@ Raw precision.
 | `regime` | The **local perp funding** regime, not a market regime: `"Local perp funding regime · 5/5 Binance majors · none past a threshold · SOLUSDT 0.62× its threshold"` |
 | `limitations` | `"One funding rate per symbol: it does not measure open interest, leverage or positions on other venues"` |
 
+## Gold card and content blocks
+
+> ⚠️ **Gold wording changed 2026-09-15 — do not parse `facts`.** The
+> `verdict` values are unchanged except the no-price one: `Live price
+> unavailable — no direction claimed` → `Intraday price unavailable — no
+> direction claimed` (it reaches HTTP only inside the `503` `error` text).
+> Gone from `facts`: `Price now …`, `Day turns up/down …`, `Price is already
+> above/below X intraday …`, `Invalidation: above X — below this the regime
+> above is broken` (it said "below" for a downtrend too), `(1 swing pivot)`,
+> `(lamps split)`, `Macro: no gold read right now`, `⚠ Nh old`. Use `gold`,
+> `levels` and `blocks` for machine reads.
+
+Stage 1: presentation, honesty and contract only. The rules are
+**unchanged**: the regime is the Trend Agent's state machine on daily GC=F
+bars (EMA/ADX, windows and thresholds as before); the day range is the
+high/low of the last closed daily candle, or of the enclosing candle when
+later days sat inside it (up to 3 nested inside days, otherwise undefined);
+the nearest S/R levels come from the same swing-pivot clusterizer with no
+minimum strength; the invalidation level is the trend card's own (min/max of
+EMA50 and EMA200 ∓/± 1 ATR(14)); the macro backdrop is the gold lamp model of
+`/agents/macro?asset=gold`; volatility is the ATR agent on daily bars.
+
+Reads top to bottom: **regime and where the last closed 1h price sits → the
+day range and where it comes from → two conditional day scenarios → what
+invalidates a confirmed regime → background (macro, S/R, volatility)**; the
+source is the footer.
+
+```
+🟢 Gold Agent · GOLD · COMEX GC=F
+Daily regime: confirmed UPTREND
+• Last closed 1h price 4354.90 at 2026-09-15 03:00 UTC — inside the day range
+• Day range 4293.00 – 4396.80: high/low of the closed 1d candle of 2026-09-14
+• A daily close above 4396.80 classifies the day as an upside break
+• A daily close below 4293.00 classifies the day as a downside break
+• A closed 1d candle below 4040.00 invalidates the daily uptrend reading (1 ATR under the EMA cluster)
+• Macro backdrop: mixed for gold — weighted gold score 50/100 (lamps: 1 for, 1 neutral, 2 against)
+• Nearest levels: support 4329.20 (single swing, 1 pivot) · resistance 4364.50 (candidate, 2 pivots)
+• Volatility: normal · 1d · ATR 1.086× its 30-bar baseline
+```
+
+(Example values.) An unconfirmed regime has no invalidation line and leads
+with its reason: `Regime: grey zone · 1d — trend forming, not confirmed`.
+
+- **The price is the last closed 1h bar**, printed with its full date and
+  close time — never "now". Older than 6 hours at answer time it reads
+  `— stale (over 6h old), inside the day range`. The service has no COMEX
+  calendar: on a weekend the `⏸ Weekend — COMEX gold futures are closed…`
+  banner leads (the fixed Friday 21:00 → Sunday 21:00 UTC window, as before)
+  and the price is simply stale by age; holidays and the daily break are not
+  modelled.
+- **Scenarios classify the day, they do not forecast it.** `A daily close
+  above H classifies the day as an upside break` / `A daily close below L
+  classifies the day as a downside break`. When the last 1h close is already
+  beyond an edge, that side adds `; the last 1h close is already above it`
+  (below, mirrored): the side is taken intraday, the daily close is not in.
+  Touching an edge is still inside.
+- **Invalidation only in a confirmed regime** (and with a 1h price), with its
+  direction: an uptrend is invalidated by a closed 1d candle **below** the
+  level, a downtrend by one **above** it. The level is the EMA cluster ± 1 ATR,
+  not swing structure, printed at tick precision (two decimals, like every
+  compared price). When the last 1h close is already beyond the level the line
+  ends `; last 1h close already below it` (above, mirrored; at the
+  level is not beyond) instead of the `(1 ATR under the EMA cluster)` note —
+  both do not fit in 110 characters. Unconfirmed: no line,
+  `blocks.invalidates` is `null`, no `levels` object.
+- **S/R levels carry the S/R card's class**: `single swing` (1 pivot),
+  `candidate` (2–6), `established` (7+). No minimum strength is applied yet, so
+  a single-swing level can be the nearest one; the class says so.
+- **Macro with its basis**: the word (`support` / `pressure` / `mixed`) is
+  the gold model's **weighted** score band (DXY 40, US 10Y 25, VIX 25, S&P 500
+  10; bands unchanged), so the line prints that score — `weighted gold score
+  40/100`, the same number as `macro.rule_score` on `/agents/macro?asset=gold`
+  — and the voting lamps only as its composition (`lamps: 1 for, 0 neutral,
+  3 against`; the gold lamp itself never votes). With only DXY for gold the
+  score is 40 and the word is `mixed` although 3 of 4 lamps are against.
+  Against a confirmed regime a separate line follows: `Macro backdrop
+  conflicts with the daily uptrend reading; both stand as read`. No read:
+  `Macro backdrop: no gold read available`.
+- **No intraday price** → `503 source_offline` (`Intraday price unavailable —
+  no direction claimed`): the regime is reported without a direction and the
+  day range still ships in the Telegram card.
+- Every line — verdict, facts, each `blocks` field — fits ≤ 110 characters.
+  `asset` stays `XAUUSD`; the human label is `GOLD · COMEX GC=F`.
+
+`gold` (additive; gold envelopes only):
+
+| Field | Meaning |
+|---|---|
+| `regime` | Trend state on 1d: `flat` \| `grey` \| `up` \| `down` \| `conflict` |
+| `confirmed` | `true` when a direction is stated: regime `up`/`down` **and** a 1h price |
+| `daily_as_of` | Close of the last closed 1d bar — same as `data_as_of` |
+| `price_as_of` | Close time of the last closed 1h bar (`null` without one) |
+| `price_freshness` | `on_time` \| `stale` (older than 6h at answer time); `null` without a price |
+| `price` | That 1h close, raw |
+| `price_position` | `above` \| `inside` \| `below` the day range; `null` when the range is undefined |
+| `day_range` | `{high, low, candle_date: "YYYY-MM-DD", inside_days_after}` — the candle the range came from and how many inside days follow it; `null` when undefined |
+| `macro_as_of` | Oldest `as_of` among the voting macro lamps — the stalest input of the read; `null` without a read |
+| `macro_backdrop` | `support` \| `pressure` \| `neutral` (the card words `neutral` as "mixed"); `null` without a read |
+| `macro_lamps` | `{for, neutral, against}` — voting lamps by contribution; `null` without a read |
+
+**`data_as_of` decision.** It stays the daily close — the part the verdict,
+the regime and the day range come from — and is not the freshness of the
+whole card. Each part has its own stamp in `gold`. There is no
+`Last-Modified` (see [caching](#caching-last-modified-and-304)): the body
+also follows the clock (the stale flag, the weekend banner).
+
+`blocks` (gold envelopes with a 1h price):
+
+| Field | Meaning |
+|---|---|
+| `what_happened` | A **snapshot, not an event** — the agent keeps no previous state, so it cannot say what changed, and the sentence says so: `"Snapshot, not an event: 1d regime confirmed uptrend; last 1h close 4354.90 inside the day range"` (`(stale)` appended when stale) |
+| `why_level` | What the levels are made of: `"Day range = high/low of the closed 1d candle of 2026-09-14; S/R = swing-pivot cluster means"` |
+| `scenarios` | The two day-range closes, exactly as on the card; `[]` when the range is undefined |
+| `invalidates` | Confirmed regime only, as on the card: `"A closed 1d candle below 4040.00 invalidates the daily uptrend reading (1 ATR under the EMA cluster)"`; `null` otherwise |
+| `regime` | The local 1d regime only (not macro): `"Local gold regime: confirmed uptrend · 1d · ADX 31.4"` |
+| `limitations` | `"COMEX GC=F futures, not spot XAUUSD; describes the period, not a forecast of the day"` |
+
 ## Macro card and content blocks
 
 The global card (`/agents/macro`, 2026-09-15) says what five tradfin prices
@@ -1558,7 +1676,7 @@ or the response build, derived from the card builders:
 | `macro`, `whale`, `news`, `digest`, `top` | `data_as_of` and the footer stamp when they fall inside the call | fallbacks to the request time: macro `UNKNOWN` card (backend `captured_at`), whale without a snapshot, news without `captured_at`, all-offline digest, a funding or offline winner on `top` |
 | any `macro` object (macro cards; digest/top with a macro winner) | `freshness.captured_at`, `fear_greed.age_hours` | the backend's response time and the age counted to it |
 | `digest` | `digest.generated_at`; `selection.highlight_data_as_of`, `selection.candidates[].data_as_of`, `sections[].data_as_of` when inside the call | the sweep clock; the funding entries are request-time stamps |
-| any text | the age in the stale Fear & Greed fact (`(52h ago)`) and in gold's `⚠ 7h old` | counted to the request time |
+| any text | the age in the stale Fear & Greed fact (`(52h ago)`) | counted to the request time. Gold prints no running age since 2026-09-15: its `stale (over 6h old)` is a fixed threshold, so a gold event fires when the flag flips, never on the hour |
 
 Everything else is data and counts as a change, including values that move
 with time by design: the funding 1-hour liquidation window, the weekend

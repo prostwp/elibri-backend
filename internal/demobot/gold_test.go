@@ -261,7 +261,7 @@ func TestGoldCardConfirmedRegimeDescribesTheRegime(t *testing.T) {
 		}
 	}
 	joined := strings.Join(c.Facts, "|")
-	for _, want := range []string{"Day range", "Price now", "Day turns up on a close above"} {
+	for _, want := range []string{"Day range", "Last closed 1h price", "classifies the day as an upside break"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing fact %q in %v", want, c.Facts)
 		}
@@ -273,29 +273,29 @@ func TestGoldCardConfirmedRegimeDescribesTheRegime(t *testing.T) {
 	}
 	// The macro backend is unreachable in this test — the card must SAY so,
 	// not quietly drop the line.
-	if !strings.Contains(joined, "Macro: no gold read right now") {
+	if !strings.Contains(joined, "Macro backdrop: no gold read available") {
 		t.Errorf("an absent macro read must be stated: %v", c.Facts)
 	}
 }
 
-// A trigger that ignores where price already is contradicts the line above it.
-// Found on the first live render: "Price now 4652 — above the range" followed
-// by "Day turns up on a close above 4615" reads as though nothing happened.
-// The level still needs a CLOSE, so the card must say both halves.
+// A scenario that ignores where price already is contradicts the line above
+// it. Found on the first live render: price above the range followed by a
+// plain "close above" condition reads as though nothing happened. The level
+// still needs a daily CLOSE, so the card must say both halves.
 func TestGoldCardTriggerAcknowledgesPriceAlreadyBeyondTheRange(t *testing.T) {
 	stubGoldYahoo(t, 260, risingDay, 5200) // well above the 5103–5113 range
 	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
 	c := ag.GoldCard(context.Background())
 
 	joined := strings.Join(c.Facts, "|")
-	if !strings.Contains(joined, "already above") {
-		t.Errorf("trigger must acknowledge price is already beyond the level: %v", c.Facts)
+	if !strings.Contains(joined, "the last 1h close is already above it") {
+		t.Errorf("scenario must acknowledge price is already beyond the level: %v", c.Facts)
 	}
-	if !strings.Contains(joined, "CLOSE above") {
-		t.Errorf("trigger must still require a close, not an intraday touch: %v", c.Facts)
+	if !strings.Contains(joined, "A daily close above") {
+		t.Errorf("scenario must still require a daily close, not an intraday touch: %v", c.Facts)
 	}
-	if strings.Contains(joined, "Day turns up on a close above") {
-		t.Errorf("the position-blind wording must not appear once price is beyond: %v", c.Facts)
+	if strings.Contains(joined, "already below") {
+		t.Errorf("the other side must stay plain: %v", c.Facts)
 	}
 }
 
@@ -316,7 +316,7 @@ func TestGoldCardUnconfirmedRegimeGivesNoDirection(t *testing.T) {
 		t.Errorf("emoji = %q, want neutral when no direction is claimed", c.Emoji)
 	}
 	// Silence is about DIRECTION only — the levels still ship.
-	if !strings.Contains(strings.Join(c.Facts, "|"), "Day turns up on a close above") {
+	if !strings.Contains(strings.Join(c.Facts, "|"), "classifies the day as an upside break") {
 		t.Errorf("levels must survive an unconfirmed regime: %v", c.Facts)
 	}
 }
@@ -418,14 +418,14 @@ func TestGoldCardNoPriceClaimsNoDirection(t *testing.T) {
 		t.Errorf("a bare regime claim under a no-direction header reads as self-contradiction: %v", c.Facts)
 	}
 	// The levels still ship: they come from the daily series, which is alive.
-	if !strings.Contains(joined, "Day turns up on a close above") {
+	if !strings.Contains(joined, "classifies the day as an upside break") {
 		t.Errorf("day levels must survive a dead intraday feed: %v", c.Facts)
 	}
 }
 
 // Б3: display precision must be sufficient wherever the card asserts an
 // inequality. trimFloat rounds ≥1000 to a whole number, which made the card
-// print "Price now 4615 — above the range" against a level also shown as 4615.
+// print "4615 — above the range" against a level also shown as 4615.
 func TestGoldComparedPricesArePrintedPreciselyEnough(t *testing.T) {
 	d := goldDayLevels{High: 4614.6, Low: 4600.2, Defined: true}
 	const px = 4614.8
@@ -433,7 +433,7 @@ func TestGoldComparedPricesArePrintedPreciselyEnough(t *testing.T) {
 	if got := d.positionOf(px); got != dayAbove {
 		t.Fatalf("precondition: positionOf(%v) = %q, want above", px, got)
 	}
-	line := d.triggerLine(px, true)
+	line := strings.Join(d.scenarios(px, true), " | ")
 	if strings.Contains(line, "4615") {
 		t.Errorf("trigger rounds the level into the price it is compared against: %q", line)
 	}
