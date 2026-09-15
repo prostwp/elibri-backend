@@ -435,11 +435,15 @@ func aiPayload(g gathered) string {
 		if !ok {
 			continue
 		}
+		facts := c.Facts
+		if k == keyMomentum {
+			facts = momentumAIFacts(facts)
+		}
 		agents[k] = agentRead{
 			AuthoritativeVerdict: c.Verdict,
 			State:                c.State,
 			ConfirmationWithheld: !stateConfirms(c),
-			Facts:                c.Facts,
+			Facts:                facts,
 			Offline:              c.Offline,
 		}
 	}

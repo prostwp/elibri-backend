@@ -526,10 +526,12 @@ func TestMomentumCardRSAndVolume(t *testing.T) {
 	})
 	c := ag.MomentumCard(context.Background())
 	joined := strings.Join(c.Facts, "|")
-	if !strings.Contains(joined, "ETH vs BTC relative strength: 7d -2.4% · 30d +5.1%") {
+	// 2026-09-15: both lines are labelled context, outside the reading; the
+	// RS line says it is a return gap, not ETH's own move.
+	if !strings.Contains(joined, "Context, not part of the reading: ETH return minus BTC return incl. today, 7d -2.4 pp · 30d +5.1 pp") {
 		t.Errorf("RS 7d/30d line missing: %v", c.Facts)
 	}
-	if !strings.Contains(joined, "BTC 4h volume: 1.50× its 20-bar average") {
+	if !strings.Contains(joined, "Context, not part of the reading: BTC 4h volume 1.50× its 20-bar average") {
 		t.Errorf("volume line missing: %v", c.Facts)
 	}
 	// Batch-2 language + thresholds: analytical verdict words only, and one
@@ -537,13 +539,14 @@ func TestMomentumCardRSAndVolume(t *testing.T) {
 	if strings.Contains(c.Verdict, "BUY") || strings.Contains(c.Verdict, "SELL") {
 		t.Errorf("advice-words leaked into the momentum verdict: %q", c.Verdict)
 	}
-	if !strings.Contains(c.Verdict, "BULLISH") {
-		t.Errorf("uptrending stub must read BULLISH: %q", c.Verdict)
+	// The header is a counter (gold is dead here), coloured by it.
+	if c.Verdict != "2 bullish (BTC, ETH) · 0 bearish · 0 not confirmed · 1 unavailable · 4h" || c.Emoji != emojiBull {
+		t.Errorf("uptrending stub must count two bullish reads: %q %q", c.Verdict, c.Emoji)
 	}
-	if !strings.Contains(joined, "→ bullish") {
+	if !strings.Contains(joined, "BTC · 4h: bullish — RSI and MACD agree") {
 		t.Errorf("per-asset lines must use analytical words: %v", c.Facts)
 	}
-	if !strings.Contains(joined, "Rule: RSI 55+/45- with matching MACD sign") {
+	if !strings.Contains(joined, momentumRuleLine) {
 		t.Errorf("driving-threshold rule line missing: %v", c.Facts)
 	}
 }
@@ -628,7 +631,7 @@ func TestMomentumAssetCardVolume(t *testing.T) {
 	})
 	ag := NewAgents(NewBackendClient("http://127.0.0.1:1"))
 	c := ag.MomentumAssetCard(context.Background(), btcSpec)
-	if !strings.Contains(strings.Join(c.Facts, "|"), "Volume: 0.50× its 20-bar average (4h)") {
+	if !strings.Contains(strings.Join(c.Facts, "|"), "Context, not part of the reading: volume 0.50× its 20-bar average (4h)") {
 		t.Errorf("asset card volume line missing: %v", c.Facts)
 	}
 }

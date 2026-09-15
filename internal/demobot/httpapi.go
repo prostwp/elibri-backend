@@ -80,12 +80,14 @@ type httpEnvelope struct {
 	// agents: trend {"invalidation"}, sr {"supports","resistances"}, vol
 	// {"expansion_ratio"} — raw precision floats. Absent for other agents.
 	Levels any `json:"levels,omitempty"`
-	// Results is the per-asset outcome array of multi-asset momentum cards
-	// ({"asset","ok","reason"}) — absent for every other agent.
+	// Results is the per-asset outcome array of momentum cards
+	// ({"asset","ok","reason"}, plus the read itself on ok entries — see
+	// AssetResult) — absent for every other agent.
 	Results []AssetResult `json:"results,omitempty"`
-	// Blocks is the content-ready sentence set (trend, and S/R cards that
-	// show at least one level) — absent for every other agent, on degraded
-	// cards and on the S/R "no significant levels" finding.
+	// Blocks is the content-ready sentence set (trend, S/R cards that show at
+	// least one level, the global macro card, the single-asset momentum card)
+	// — absent for every other agent, on degraded cards and on the S/R "no
+	// significant levels" finding.
 	Blocks *ContentBlocks `json:"blocks,omitempty"`
 	// Macro is the macro cards' machine readout (rule score, bands, per-lamp
 	// contributions, freshness, Fear & Greed age) — absent for every other
@@ -135,7 +137,7 @@ type DigestSelection struct {
 type DigestCandidate struct {
 	Agent         string  `json:"agent"`
 	Eligible      bool    `json:"eligible"`
-	Excluded      *string `json:"excluded"`  // degraded | stale | no_data_time; null when eligible
+	Excluded      *string `json:"excluded"`  // degraded | no_ranked_read | stale | no_data_time; null when eligible
 	Confirmed     bool    `json:"confirmed"` // the agent's own rule committed to a finding
 	Score         int     `json:"score"`     // 0..100, comparable only within one tier
 	DataAsOf      *string `json:"data_as_of"`
@@ -766,12 +768,13 @@ const digestAgentName = "AlphaVizor Digest"
 // the card header, because the digest envelope's own "asset" stays empty (the
 // sweep covers many markets) and without it "Confirmed UPTREND" said nothing
 // about WHICH market. Market-wide winners (funding, macro) carry no asset and
-// keep the bare form; a multi-asset momentum card already names every asset
-// in its verdict ("BTC: BEARISH · ETH: NEUTRAL · …"), so repeating the joined
-// label would only double it.
+// keep the bare form. Every card with an asset names it — since 2026-09-15
+// the multi-asset momentum card too ("Momentum Agent · BTC/ETH/XAUUSD"): its
+// verdict became a counter ("1 bullish (ETH) · 0 bearish · …") and no longer
+// names each market.
 func digestHeadline(top Card) string {
 	who := top.Agent
-	if top.Asset != "" && len(top.Results) == 0 {
+	if top.Asset != "" {
 		who += " · " + top.Asset
 	}
 	return "Top signal: " + who + " — " + top.Verdict

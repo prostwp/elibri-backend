@@ -85,7 +85,7 @@ func fakeGathered() gathered {
 			keyMacro:    {ShortName: "Macro", Agent: "Macro Agent", Command: keyMacro, Verdict: "RISK-ON — big money leaning into risk", Facts: []string{"Lamps: 3 tailwind / 1 headwind / 1 neutral", "Crypto Fear & Greed: 63 — Greed"}, Confidence: &comp},
 			keyWhale:    {ShortName: "Whale", Agent: "Whale Flow Agent", Command: keyWhale, Verdict: "Net OUTFLOW from exchanges — accumulation read", Facts: []string{"Net flow 24h: -$18.40M (37 large tx)"}},
 			keyFunding:  {ShortName: "Funding", Agent: "Funding Agent", Command: keyFunding, Verdict: "Funding balanced — no crowd to punish", Facts: []string{"Widest skew: SOLUSDT +0.0100%/8h (longs pay shorts)"}},
-			keyMomentum: {ShortName: "Momentum", Agent: "Momentum Agent", Command: keyMomentum, Verdict: "BTC: BULLISH · ETH: NEUTRAL", Facts: []string{"BTC: RSI(14) 62.0 · MACD hist +120 → bullish"}},
+			keyMomentum: {ShortName: "Momentum", Agent: "Momentum Agent", Command: keyMomentum, Verdict: "1 bullish (BTC) · 0 bearish · 1 not confirmed · 4h", Facts: []string{"BTC · 4h: bullish — RSI and MACD agree", "BTC: RSI 62.0 ≥ 55 ✓ · MACD histogram above 0 ✓ · last bar Aug 18 04:00 UTC"}},
 			keyTrend:    {ShortName: "Trend", Agent: "Trend Agent", Command: keyTrend, Verdict: "Confirmed UPTREND", Facts: []string{"ADX(14): 31.2 · RSI(14): 62.0"}},
 			keySR:       {ShortName: "S/R", Agent: "S/R Agent", Command: keySR, Verdict: "Key levels around 118000", Facts: []string{"Resistance: 119000 (3 touches)", "Support: 117000 (4 touches)"}},
 			keyVol:      {ShortName: "Volatility", Agent: "Volatility Agent", Command: keyVol, Verdict: "Volatility NORMAL — no expansion signal"},

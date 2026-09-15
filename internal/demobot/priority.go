@@ -86,6 +86,10 @@ const (
 	excludedDegraded   = "degraded"     // the agent produced no reading (status != ok)
 	excludedStale      = "stale"        // older than topMaxAge for its source
 	excludedNoDataTime = "no_data_time" // a live card without a data time: age unknown, never trusted
+	// excludedNoRankedRead: a momentum card whose BTC/ETH produced no reading.
+	// Gold/FX reads on it are shown but never ranked, so without a crypto read
+	// the card has nothing to compete with (and no ranked bar to judge).
+	excludedNoRankedRead = "no_ranked_read"
 )
 
 // Selection rules served in digest.selection.rule.
@@ -143,6 +147,10 @@ func rankCandidate(key string, c Card, now time.Time) topCandidate {
 	switch {
 	case c.effectiveStatus() != statusOK:
 		cand.Excluded = excludedDegraded
+	case key == keyMomentum && c.noRankedRead:
+		// Only BTC/ETH rank; a card that reads just gold/FX would otherwise
+		// fall back to the gold bar's DataTime and compete (review 2026-09-15).
+		cand.Excluded = excludedNoRankedRead
 	case cand.AsOf.IsZero():
 		cand.Excluded = excludedNoDataTime
 	case now.Sub(cand.AsOf) > cand.MaxAge:
@@ -279,10 +287,26 @@ func topSelection(g gathered) (string, Card) {
 // signalOrder, for the selection line.
 var signalNames = map[string]string{keyFunding: "Funding", keyMomentum: "Momentum", keyTrend: "Trend"}
 
+// signalScope is what each priority agent's RANKED reading covers in the
+// digest sweep (gather): momentum ranks its BTC/ETH reads only — gold and FX
+// on the same card are shown, never ranked — and trend reads BTC. Funding is
+// market-wide. Named on the selection line (2026-09-15) so "no confirmed
+// reading" cannot be read against a card that counts a confirmed gold read.
+var signalScope = map[string]string{keyMomentum: "BTC/ETH", keyTrend: "BTC"}
+
+// scopedSignalName is the reader-facing name with its ranked scope:
+// "Momentum (BTC/ETH)".
+func scopedSignalName(key string) string {
+	if s := signalScope[key]; s != "" {
+		return signalNames[key] + " (" + s + ")"
+	}
+	return signalNames[key]
+}
+
 func allSignalNames() string {
 	names := make([]string, 0, len(signalOrder))
 	for _, k := range signalOrder {
-		names = append(names, signalNames[k])
+		names = append(names, scopedSignalName(k))
 	}
 	return strings.Join(names, ", ")
 }
@@ -290,6 +314,7 @@ func allSignalNames() string {
 // selectionLine is the one line (≤110 chars) saying how the highlighted card
 // was chosen. It explains the RULE, never the market: no "because the market
 // is about to…", and it states that the three scales are not comparable.
+// Every list names what each agent's ranked reading covers (signalScope).
 func selectionLine(p topPick) string {
 	all := allSignalNames()
 	switch p.Rule {
@@ -299,15 +324,15 @@ func selectionLine(p topPick) string {
 		var eligible []string
 		for _, c := range p.Candidates {
 			if c.Eligible {
-				eligible = append(eligible, signalNames[c.Key])
+				eligible = append(eligible, scopedSignalName(c.Key))
 			}
 		}
 		if len(eligible) < 2 {
-			return signalNames[p.Winner] + " is the only fresh live reading among " + all + "; selected by the digest rule"
+			return signalNames[p.Winner] + " is the only fresh live reading among " + all + "; selected by rule"
 		}
-		return "Selected among " + strings.Join(eligible, ", ") + " by the digest rule; their scales are not calibrated to each other"
+		return "Selected among " + strings.Join(eligible, ", ") + " by the digest rule; scales not calibrated"
 	case ruleUnconfirmed:
-		return "No confirmed reading among " + all + "; this one is shown by the digest's fallback order"
+		return "No confirmed reading among " + all + "; shown by the digest's fallback order"
 	default:
 		return "No fresh live reading among " + all + "; the macro card is shown instead"
 	}

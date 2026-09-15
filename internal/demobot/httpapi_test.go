@@ -532,11 +532,16 @@ func TestDigestHeadlineNamesWinnerAsset(t *testing.T) {
 	}{
 		{Card{Agent: "Trend Agent", Asset: "BTC", Verdict: "Confirmed UPTREND"},
 			"Top signal: Trend Agent · BTC — Confirmed UPTREND"},
-		// Multi-asset momentum names each asset in its verdict already.
+		// Multi-asset momentum: its verdict is a counter (2026-09-15), so the
+		// headline names the assets like every other card with an asset.
 		{Card{Agent: "Momentum Agent", Asset: "BTC/ETH/XAUUSD",
-			Verdict: "BTC: BEARISH · ETH: NEUTRAL",
+			Verdict: "0 bullish · 1 bearish (BTC) · 2 not confirmed",
 			Results: []AssetResult{{Asset: "BTC", OK: true}, {Asset: "ETH", OK: true}}},
-			"Top signal: Momentum Agent — BTC: BEARISH · ETH: NEUTRAL"},
+			"Top signal: Momentum Agent · BTC/ETH/XAUUSD — 0 bullish · 1 bearish (BTC) · 2 not confirmed"},
+		// Single-asset momentum names its asset; the verdict carries the tf.
+		{Card{Agent: "Momentum Agent", Asset: "EURUSD", Verdict: "NOT CONFIRMED · 1h — conflict: RSI down, MACD up",
+			Results: []AssetResult{{Asset: "EURUSD", OK: true}}},
+			"Top signal: Momentum Agent · EURUSD — NOT CONFIRMED · 1h — conflict: RSI down, MACD up"},
 		// Market-wide winners have no asset: no dangling separator.
 		{Card{Agent: "Funding Agent", Verdict: "Funding balanced"},
 			"Top signal: Funding Agent — Funding balanced"},
@@ -555,7 +560,7 @@ func TestDegradedFundingNeverTopsDigest(t *testing.T) {
 	at := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 	g := gathered{at: at, cards: map[string]Card{
 		keyFunding:  {Agent: "Funding Agent", Verdict: "Funding rates unavailable — liquidations only", Status: statusSourceOffline, DataTime: at},
-		keyMomentum: {Agent: "Momentum Agent", Verdict: "BTC: NEUTRAL", DataTime: at.Add(-time.Hour)},
+		keyMomentum: {Agent: "Momentum Agent", Verdict: "0 bullish · 0 bearish · 3 not confirmed", DataTime: at.Add(-time.Hour)},
 		keyTrend:    {Agent: "Trend Agent", Asset: "BTC", Verdict: "Flat — no readable trend", DataTime: at.Add(-time.Hour)},
 	}}
 	for _, c := range g.selection().Candidates {

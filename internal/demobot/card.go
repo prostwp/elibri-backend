@@ -106,6 +106,10 @@ type TrendLevels struct {
 //     Fear & Greed beside the regime; absent on every other agent
 //
 // Macro has no price level, so its why_level is always "" (macro_text.go).
+// Momentum (momentum_text.go, 2026-09-15) has none either: its why_level
+// explains the indicator thresholds, invalidates is what ends a CONFIRMED
+// reading, regime is the asset's LOCAL momentum state. Top-level on the
+// single-asset card, per asset in results[].blocks on multi-asset cards.
 type ContentBlocks struct {
 	WhatHappened string   `json:"what_happened"`
 	WhyLevel     string   `json:"why_level"`
@@ -160,15 +164,31 @@ type VolLevels struct {
 	ExpansionRatio float64 `json:"expansion_ratio"`
 }
 
-// AssetResult is one asset's machine-readable outcome inside a multi-asset
-// momentum card (review fix 3): a mixed scan is no longer distinguishable
-// from a full one only by reading fact strings. OK mirrors the per-asset
-// read; Reason is nil when OK, else "insufficient_history" |
-// "source_offline". Served as the envelope's "results" (momentum only).
+// AssetResult is one asset's machine-readable outcome inside a momentum card
+// (review fix 3): a mixed scan is no longer distinguishable from a full one
+// only by reading fact strings. OK mirrors the per-asset read; Reason is nil
+// when OK, else "insufficient_history" | "source_offline". Served as the
+// envelope's "results" (momentum only).
+//
+// Added 2026-09-15 (additive, present only when ok — see momentumResult):
+// the read at raw precision (rsi, macd_histogram — the card prints only the
+// histogram's sign), verdict (bullish|bearish|neutral), state (which neutral),
+// why (the card's reason), timeframe, data_as_of (close of the asset's last
+// closed bar), freshness (on_time|market_closed|data_delayed) and the asset's
+// content blocks.
 type AssetResult struct {
-	Asset  string  `json:"asset"`
-	OK     bool    `json:"ok"`
-	Reason *string `json:"reason,omitempty"`
+	Asset         string         `json:"asset"`
+	OK            bool           `json:"ok"`
+	Reason        *string        `json:"reason,omitempty"`
+	Timeframe     string         `json:"timeframe,omitempty"`
+	DataAsOf      string         `json:"data_as_of,omitempty"`
+	Freshness     string         `json:"freshness,omitempty"`
+	Verdict       string         `json:"verdict,omitempty"`
+	State         string         `json:"state,omitempty"`
+	Why           string         `json:"why,omitempty"`
+	RSI           *float64       `json:"rsi,omitempty"`
+	MACDHistogram *float64       `json:"macd_histogram,omitempty"`
+	Blocks        *ContentBlocks `json:"blocks,omitempty"`
 }
 
 // Card is one agent's reply. RenderHTML produces the exact Telegram
@@ -210,12 +230,14 @@ type Card struct {
 	// Levels carries one of TrendLevels / SRLevels / VolLevels (or nil) —
 	// served verbatim as the envelope's "levels" object, ignored by Telegram.
 	Levels any
-	// Results is the per-asset machine outcome of a multi-asset momentum card
-	// (nil elsewhere) — served as the envelope's "results", ignored by
-	// Telegram (the facts carry the human form).
+	// Results is the per-asset machine outcome of a momentum card (every
+	// multi-asset card and scan; one entry on the single-asset card; nil
+	// elsewhere) — served as the envelope's "results", ignored by Telegram
+	// (the facts carry the human form).
 	Results []AssetResult
-	// Blocks is the content-ready form of the card (trend only today) —
-	// served as the envelope's "blocks", ignored by Telegram. nil elsewhere.
+	// Blocks is the content-ready form of the card (trend, S/R, macro, the
+	// single-asset momentum card) — served as the envelope's "blocks",
+	// ignored by Telegram. nil elsewhere.
 	Blocks *ContentBlocks
 	// Macro is the machine-readable readout of a macro card (per-lamp rule,
 	// weight, contribution, source, as_of; freshness; score bands) — served
@@ -240,6 +262,11 @@ type Card struct {
 	// an unconfirmed reading never outranks a confirmed one. Not rendered,
 	// not served.
 	confirmed bool
+	// noRankedRead marks a multi-asset momentum card with no BTC/ETH reading
+	// (dead or short crypto, a live gold/FX read): nothing on it is a read the
+	// digest ranks, so rankCandidate excludes it (no_ranked_read) instead of
+	// judging a gold bar's freshness. Digest ranking only; not rendered.
+	noRankedRead bool
 	// rankAsOf is the data time of the reading Deviation comes from, when it
 	// differs from DataTime (momentum: its Binance reads, while DataTime is
 	// the oldest bar on the card, gold included). Zero → DataTime. Freshness

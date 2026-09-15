@@ -23,7 +23,7 @@ type Agents struct {
 	ai     *aiClient // nil until EnableAI — every AI block silently omitted
 	// now is the clock for the showcase sweep time (b.at — generated_at and
 	// the /showcase Last-Modified), for the FX market-state wording and its
-	// stamp (decorateFXAt, the momentum "(market closed)" suffix) and for the
+	// stamp (decorateFXAt, the momentum per-asset freshness) and for the
 	// whale 24h window when the snapshot has no captured_at. nil = wall
 	// clock; tests set it to step sweeps and weekends deterministically.
 	now func() time.Time
@@ -691,7 +691,8 @@ func (a *Agents) lastBTCClose(ctx context.Context) float64 {
 
 // Momentum verdict rule (documented, deterministic): RSI≥55 with positive
 // MACD histogram = bullish; RSI≤45 with negative histogram = bearish; else
-// neutral.
+// neutral. The thresholds are momentumBullRSI / momentumBearRSI; everything
+// the card says about the read is worded in momentum_text.go.
 //
 // REGULATORY LANGUAGE (team review batch 2): verdicts are analytical READINGS,
 // never trade instructions — "bullish"/"bearish", NOT "buy"/"sell". The
@@ -700,10 +701,10 @@ func (a *Agents) lastBTCClose(ctx context.Context) float64 {
 // shorts", "crowded longs", "sell pressure" as a flow description) stays.
 func momentumVerdict(rsi, macdHist float64) string {
 	switch {
-	case rsi >= 55 && macdHist > 0:
-		return "bullish"
-	case rsi <= 45 && macdHist < 0:
-		return "bearish"
+	case rsi >= momentumBullRSI && macdHist > 0:
+		return momentumBullish
+	case rsi <= momentumBearRSI && macdHist < 0:
+		return momentumBearish
 	default:
 		return "neutral"
 	}
@@ -726,11 +727,13 @@ type momentumRead struct {
 // momentumReadFromCandles computes one asset's snapshot from an already
 // fetched series, so a read and any derived facts (volume line) always come
 // from the SAME bars — a transient refetch can't produce a half-coherent card.
+// Non-finite indicator output (overflowing or Inf prices) degrades as
+// insufficient history instead of reaching the text and the JSON encoder.
 func momentumReadFromCandles(spec assetSpec, candles []types.OHLCVCandle) (momentumRead, error) {
 	closes := closesOf(candles)
 	rsi, okRSI := rsiWilder(closes, 14)
 	_, _, hist, okMACD := macdLast(closes)
-	if !okRSI || !okMACD {
+	if !okRSI || !okMACD || !isFinite(rsi) || !isFinite(hist) {
 		return momentumRead{name: spec.Display, source: spec.Source}, errInsufficientHistory
 	}
 	return momentumRead{
@@ -760,7 +763,7 @@ func (a *Agents) momentumReadFor(ctx context.Context, spec assetSpec) (momentumR
 // the top slot with a card where every asset said NEUTRAL. Ranking only — the
 // verdict rule (momentumVerdict) is unchanged.
 func momentumRankScore(r momentumRead) int {
-	if r.verdict != "bullish" && r.verdict != "bearish" {
+	if r.verdict != momentumBullish && r.verdict != momentumBearish {
 		return 0
 	}
 	return clampInt(int(math.Abs(r.rsi-50)*2), 0, 100)
@@ -768,9 +771,9 @@ func momentumRankScore(r momentumRead) int {
 
 func momentumEmoji(verdict string) string {
 	switch verdict {
-	case "bullish":
+	case momentumBullish:
 		return emojiBull
-	case "bearish":
+	case momentumBearish:
 		return emojiBear
 	default:
 		return emojiNeutral
@@ -787,8 +790,52 @@ func assetResult(display string, st cardStatus) AssetResult {
 	return res
 }
 
+// momentumAssetFrom classifies one fetched asset for a multi-asset card.
+func momentumAssetFrom(spec assetSpec, r momentumRead, err error) momentumAsset {
+	switch {
+	case err == nil:
+		return momentumAsset{spec: spec, read: r, status: statusOK}
+	case errors.Is(err, errInsufficientHistory):
+		return momentumAsset{spec: spec, read: r, status: statusInsufficientHistory}
+	default:
+		return momentumAsset{spec: spec, status: statusSourceOffline}
+	}
+}
+
+// momentumNoReading applies the zero-readings outcome shared by the overview
+// and the scans (review fix 3): any answered-but-short source →
+// insufficient_history with one line per asset; only an all-dead sweep is
+// source_offline. ok=false when at least one asset read.
+func momentumNoReading(c Card, assets []momentumAsset) (Card, bool) {
+	insufficient := false
+	for _, a := range assets {
+		switch a.status {
+		case statusOK:
+			return c, false
+		case statusInsufficientHistory:
+			insufficient = true
+		}
+	}
+	if insufficient {
+		c.Emoji = emojiNeutral
+		c.Verdict = "Insufficient history — no verdict"
+		c.Short = "insufficient history"
+		c.Offline = true
+		c.Status = statusInsufficientHistory
+		momentumDegraded(&c, assets)
+		return c, true
+	}
+	off := offlineCard("Momentum Agent", "Momentum", c.Asset, keyMomentum, howTexts[keyMomentum])
+	for _, a := range assets {
+		off.Results = append(off.Results, assetResult(a.spec.Display, a.status))
+	}
+	return off, true
+}
+
 // MomentumCard is the default multi-asset card: BTC + ETH (Binance 4h) and
-// XAUUSD (Yahoo 1h, GC=F fallback).
+// XAUUSD (Yahoo 1h, GC=F fallback). The header is a counter over the three
+// reads (momentumHeader), each asset carries its own timeframe, bar time and
+// freshness, and volume / ETH-vs-BTC follow as labelled context.
 func (a *Agents) MomentumCard(ctx context.Context) Card {
 	c := Card{
 		Agent:      "Momentum Agent",
@@ -797,150 +844,45 @@ func (a *Agents) MomentumCard(ctx context.Context) Card {
 		Command:    keyMomentum,
 		HowItWorks: howTexts[keyMomentum],
 		DataTime:   time.Now().UTC(), // narrowed below to the OLDEST closed bar used
-		// Three series, the backend RS read and the market-state suffix: the
-		// oldest bar (DataTime) can stay put while the body changes.
+		// Three series, the backend RS read and the clock-derived freshness:
+		// the oldest bar (DataTime) can stay put while the body changes.
 		noValidator: true,
 	}
-	var reads []momentumRead
-	var insufficientLines []string
-	var assetResults []AssetResult
+	var assets []momentumAsset
 	var btcCandles []types.OHLCVCandle // the exact series the BTC read used
 	for _, key := range []string{"btc", "eth"} {
 		spec := assetTable[key]
 		candles, err := a.candlesFor(ctx, spec)
 		if err != nil {
-			// Hard fetch failure — no fact line (pre-existing contract), but
-			// the machine results array states it (review fix 3).
-			assetResults = append(assetResults, assetResult(spec.Display, statusSourceOffline))
+			assets = append(assets, momentumAssetFrom(spec, momentumRead{}, err))
 			continue
 		}
-		if key == "btc" {
+		r, rerr := momentumReadFromCandles(spec, candles)
+		if key == "btc" && rerr == nil {
 			btcCandles = candles
 		}
-		r, rerr := momentumReadFromCandles(spec, candles)
-		switch {
-		case rerr == nil:
-			reads = append(reads, r)
-			assetResults = append(assetResults, assetResult(spec.Display, statusOK))
-		case errors.Is(rerr, errInsufficientHistory):
-			insufficientLines = append(insufficientLines, r.name+": insufficient history for RSI/MACD")
-			assetResults = append(assetResults, assetResult(spec.Display, statusInsufficientHistory))
-		}
+		assets = append(assets, momentumAssetFrom(spec, r, rerr))
 	}
 	xau, xauErr := a.momentumReadFor(ctx, xauSpec)
-	switch {
-	case xauErr == nil:
-		assetResults = append(assetResults, assetResult(xauSpec.Display, statusOK))
-	case errors.Is(xauErr, errInsufficientHistory):
-		assetResults = append(assetResults, assetResult(xauSpec.Display, statusInsufficientHistory))
-	default:
-		assetResults = append(assetResults, assetResult(xauSpec.Display, statusSourceOffline))
-	}
-	c.Results = assetResults
-	if len(reads) == 0 && xauErr != nil {
-		// Zero real readings — same reason split as the scan card (review
-		// fix 3): any answered-but-short source → insufficient_history; only
-		// an all-dead sweep is source_offline.
-		if len(insufficientLines) > 0 || errors.Is(xauErr, errInsufficientHistory) {
-			c.Emoji = emojiNeutral
-			c.Verdict = "Insufficient history — no verdict"
-			c.Short = "insufficient history"
-			c.Offline = true
-			c.Status = statusInsufficientHistory
-			c.Facts = append(c.Facts, insufficientLines...)
-			return c
-		}
-		off := offlineCard("Momentum Agent", "Momentum", "BTC/ETH/XAUUSD", keyMomentum, howTexts[keyMomentum])
-		off.Results = assetResults
-		return off
+	assets = append(assets, momentumAssetFrom(xauSpec, xau, xauErr))
+	if out, none := momentumNoReading(c, assets); none {
+		return out
 	}
 
-	var verdictParts []string
-	maxDev := 0
-	all := reads
+	composeMomentum(&c, assets, "", a.clock())
 	if xauErr == nil {
-		all = append(all, xau)
-	}
-	fxOpen := isForexOpen(a.clock())
-	for _, r := range all {
-		verdictParts = append(verdictParts, fmt.Sprintf("%s: %s", r.name, strings.ToUpper(r.verdict)))
-		// %g: gold's tiny histogram must not render as a misleading "+0.0".
-		// The overview mixes bar sizes (crypto 4h, gold 1h), so every line
-		// names its own — the scan card already did, this one did not, and
-		// "BTC: RSI 65 / GOLD: RSI 45" compared a 4h read with a 1h read.
-		name := r.name
-		if r.interval != "" {
-			name = fmt.Sprintf("%s (%s)", r.name, r.interval)
-		}
-		line := fmt.Sprintf("%s: RSI(14) %.1f · MACD hist %+.3g → %s", name, r.rsi, r.hist, r.verdict)
-		if r.source == srcYahoo && !fxOpen {
-			line += " (market closed)"
-		}
-		c.Facts = append(c.Facts, line)
-		// Footer time = OLDEST closed bar used across assets: "every number
-		// on this card is at least this fresh" (item 7).
-		if !r.closeAt.IsZero() && r.closeAt.Before(c.DataTime) {
-			c.DataTime = r.closeAt
-		}
-		// Deviation drives the /digest priority rule and is CRYPTO-ONLY in
-		// v1 — FX reads never push momentum to the top slot (see priority.go).
-		// Only a confirmed read scores (momentumRankScore). The ranking's
-		// freshness is the oldest RANKED (Binance) bar, not gold's.
-		// No Confidence bar either: the card contract shows one only where an
-		// API supplies confidence, and this read is computed locally.
-		if r.source == srcBinance {
-			if d := momentumRankScore(r); d > maxDev {
-				maxDev = d
-			}
-			if r.verdict == "bullish" || r.verdict == "bearish" {
-				c.confirmed = true
-			}
-			if !r.closeAt.IsZero() && (c.rankAsOf.IsZero() || r.closeAt.Before(c.rankAsOf)) {
-				c.rankAsOf = r.closeAt
-			}
-		}
-	}
-	c.Facts = append(c.Facts, insufficientLines...)
-	// The driving thresholds, once for all assets (Volatility-model style: the
-	// number lines stay compact, one rule line documents what flips them).
-	if len(all) > 0 {
-		c.Facts = append(c.Facts, "Rule: RSI 55+/45- with matching MACD sign")
-	}
-	switch {
-	case xauErr == nil:
 		c.SourceNote = "XAUUSD data: Yahoo Finance"
-	case errors.Is(xauErr, errInsufficientHistory):
-		c.Facts = append(c.Facts, "XAUUSD: insufficient history for RSI/MACD")
-	default:
-		c.Facts = append(c.Facts, "XAUUSD: "+fxOfflineVerdict)
 	}
-	c.Verdict = strings.Join(verdictParts, " · ")
-	lead := "neutral"
-	if len(all) > 0 {
-		lead = all[0].verdict // BTC leads the semaphore when present
-	}
-	c.Emoji = momentumEmoji(lead)
-	c.Short = strings.ToLower(lead)
-	c.Deviation = maxDev
-
-	// Volume read from the SAME series the BTC read used — no refetch, so
-	// the volume line can never contradict a missing BTC line.
+	// Context, not part of the reading. Volume from the SAME series the BTC
+	// read used — no refetch, so it never sits beside a missing BTC read.
 	if ratio, ok := volRatio20(btcCandles); ok {
-		c.Facts = append(c.Facts, fmt.Sprintf("BTC 4h volume: %.2f× its 20-bar average", ratio))
+		c.Facts = append(c.Facts, momentumVolumeContext("BTC "+btcSpec.Interval+" volume", ratio))
 	}
-
-	// Relative strength vs BTC from the backend (secondary, best-effort).
+	// ETH-vs-BTC return gap from the backend (secondary, best-effort).
 	if rs, err := a.api.MomentumRS(ctx, []string{"ETH"}); err == nil {
 		if item, ok := rs.Items["ETH"]; ok {
-			var parts []string
-			if item.RS7D != nil {
-				parts = append(parts, fmt.Sprintf("7d %+.1f%%", *item.RS7D))
-			}
-			if item.RS30D != nil {
-				parts = append(parts, fmt.Sprintf("30d %+.1f%%", *item.RS30D))
-			}
-			if len(parts) > 0 {
-				c.Facts = append(c.Facts, "ETH vs BTC relative strength: "+strings.Join(parts, " · "))
+			if line := momentumRSContext(item); line != "" {
+				c.Facts = append(c.Facts, line)
 			}
 		}
 	}
@@ -979,6 +921,22 @@ func (a *Agents) MomentumAssetCard(ctx context.Context, spec assetSpec) Card {
 	if err != nil {
 		return assetOffline(spec, "Momentum Agent", "Momentum", keyMomentum, howTexts[keyMomentum])
 	}
+	// Binance assets get the volume read from the SAME series as the RSI/MACD
+	// math. Yahoo FX volume is null throughout, so no line over a fake 0×.
+	ratio, volOK := volRatio20(candles)
+	c := momentumAssetCardFrom(spec, r, ratio, volOK, a.clock())
+	if !complete { // partial Binance window: see candlesWindow
+		c.noValidator = true
+	}
+	return c
+}
+
+// momentumAssetCardFrom is MomentumAssetCard's pure half: one read at the
+// card's clock → the card. Line order: why (the checklist) → what turns or
+// keeps the reading → freshness when late → method → context.
+func momentumAssetCardFrom(spec assetSpec, r momentumRead, volRatio float64, volOK bool, now time.Time) Card {
+	tf := candleWord(spec.Interval)
+	fresh := momentumFreshness(spec.Source, spec.Interval, r.closeAt, now)
 	c := Card{
 		Agent:      "Momentum Agent",
 		ShortName:  "Momentum",
@@ -988,33 +946,33 @@ func (a *Agents) MomentumAssetCard(ctx context.Context, spec assetSpec) Card {
 		HowItWorks: howTexts[keyMomentum],
 		DataTime:   r.closeAt,
 		Emoji:      momentumEmoji(r.verdict),
-		Verdict:    fmt.Sprintf("%s: %s", r.name, strings.ToUpper(r.verdict)),
+		Verdict:    fmt.Sprintf("%s · %s — %s", strings.ToUpper(momentumWord(r.verdict)), tf, momentumWhy(r.rsi, r.hist)),
 		Short:      r.verdict,
 		Deviation:  momentumRankScore(r),
-		confirmed:  r.verdict == "bullish" || r.verdict == "bearish",
+		confirmed:  r.verdict == momentumBullish || r.verdict == momentumBearish,
 	}
-	c.Facts = append(c.Facts,
-		fmt.Sprintf("RSI(14): %.1f", r.rsi),
-		// %g keeps FX-scale histograms (~0.0005) readable without padding
-		// BTC-scale ones (~180) with useless decimals.
-		fmt.Sprintf("MACD histogram: %+.4g", r.hist),
-		fmt.Sprintf("Rule: RSI 55+/45- with matching MACD sign · %s candles", spec.Interval),
-	)
+	c.Facts = append(c.Facts, "Why: "+momentumChecklist(r.rsi, r.hist))
+	for _, d := range momentumDirOrder(r.rsi, r.hist) {
+		c.Facts = append(c.Facts, momentumTurnLine(r.rsi, r.hist, d))
+	}
+	if fresh == momentumDataDelayed {
+		c.Facts = append(c.Facts, fmt.Sprintf("Data delayed: the last closed %s bar (%s) is over 2 bars old", tf, momentumBarTime(r.closeAt)))
+		// The wording follows the clock, not the bars: under the same last
+		// close the body changes from on time to delayed, so no stamp may
+		// version it (a conditional GET would answer 304 for a changed body).
+		c.noValidator = true
+	}
+	c.Facts = append(c.Facts, fmt.Sprintf("Read on closed %s candles: RSI(14) and the MACD(12,26,9) histogram", tf))
 	if spec.Source == srcYahoo && spec.Interval == "4h" {
 		c.Facts = append(c.Facts, yahooAgg4hNote) // B1: disclose the 1h→4h merge
 	}
-	// Binance assets get the volume read from the SAME series as the RSI/MACD
-	// math. Yahoo FX volume is null throughout, so no line over a fake 0×.
-	if spec.Source == srcBinance {
-		if ratio, ok := volRatio20(candles); ok {
-			c.Facts = append(c.Facts, fmt.Sprintf("Volume: %.2f× its 20-bar average (%s)", ratio, spec.Interval))
-		}
+	if spec.Source == srcBinance && volOK {
+		c.Facts = append(c.Facts, momentumVolumeContext("volume", volRatio)+" ("+tf+")")
 	}
+	c.Results = []AssetResult{momentumResult(spec, r, fresh)}
+	c.Blocks = momentumBlocks(spec.Display, spec.Interval, r.rsi, r.hist)
 	if spec.Source == srcYahoo {
-		decorateFXAt(&c, a.clock())
-	}
-	if !complete { // partial Binance window: see candlesWindow
-		c.noValidator = true
+		decorateFXAt(&c, now)
 	}
 	return c
 }
@@ -1041,26 +999,14 @@ func (a *Agents) MomentumScanCard(ctx context.Context, keys []string, tf string)
 		displays = append(displays, spec.Display)
 	}
 
-	type scanResult struct {
-		read         momentumRead
-		insufficient bool
-		failed       bool
-	}
-	results := make([]scanResult, len(specs))
+	assets := make([]momentumAsset, len(specs))
 	var wg sync.WaitGroup
 	for i, spec := range specs {
 		wg.Add(1)
 		go func(i int, spec assetSpec) {
 			defer wg.Done()
 			r, err := a.momentumReadFor(ctx, spec)
-			switch {
-			case err == nil:
-				results[i] = scanResult{read: r}
-			case errors.Is(err, errInsufficientHistory):
-				results[i] = scanResult{read: r, insufficient: true}
-			default:
-				results[i] = scanResult{failed: true}
-			}
+			assets[i] = momentumAssetFrom(spec, r, err)
 		}(i, spec)
 	}
 	wg.Wait()
@@ -1073,112 +1019,32 @@ func (a *Agents) MomentumScanCard(ctx context.Context, keys []string, tf string)
 		HowItWorks: howTexts[keyMomentum],
 		DataTime:   time.Now().UTC(), // narrowed below to the OLDEST closed bar used
 	}
+	if out, none := momentumNoReading(c, assets); none {
+		return out
+	}
 
-	anyOK := false
-	anyInsufficient := false
-	anyYahoo := false
-	agg4h := false
-	now := a.clock() // one clock for the "(market closed)" suffix and its stamp
-	fxOpen := isForexOpen(now)
-	var verdictParts []string
-	var assetResults []AssetResult
-	maxDev := 0
-	lead := ""
-	for i, res := range results {
-		spec := specs[i]
+	composeMomentum(&c, assets, tf, a.clock())
+	anyYahoo, agg4h := false, false
+	for _, spec := range specs {
 		if spec.Source == srcYahoo {
 			anyYahoo = true
-			if spec.Interval == "4h" {
-				agg4h = true
-			}
-		}
-		name := spec.Display
-		if tf == "" {
-			// Mixed native intervals — each line names its own.
-			name = fmt.Sprintf("%s (%s)", spec.Display, spec.Interval)
-		}
-		switch {
-		case res.failed:
-			c.Facts = append(c.Facts, name+": data unavailable right now")
-			assetResults = append(assetResults, assetResult(spec.Display, statusSourceOffline))
-		case res.insufficient:
-			anyInsufficient = true
-			c.Facts = append(c.Facts, name+": insufficient history for RSI/MACD")
-			assetResults = append(assetResults, assetResult(spec.Display, statusInsufficientHistory))
-		default:
-			anyOK = true
-			assetResults = append(assetResults, assetResult(spec.Display, statusOK))
-			r := res.read
-			if lead == "" {
-				lead = r.verdict // first requested asset leads the semaphore
-			}
-			verdictParts = append(verdictParts, fmt.Sprintf("%s: %s", spec.Display, strings.ToUpper(r.verdict)))
-			line := fmt.Sprintf("%s: RSI(14) %.1f · MACD hist %+.3g → %s", name, r.rsi, r.hist, r.verdict)
-			if spec.Source == srcYahoo && !fxOpen {
-				line += " (market closed)"
-			}
-			c.Facts = append(c.Facts, line)
-			if !r.closeAt.IsZero() && r.closeAt.Before(c.DataTime) {
-				c.DataTime = r.closeAt
-			}
-			// Deviation stays CRYPTO-ONLY (v1 priority rule — see priority.go).
-			if spec.Source == srcBinance {
-				if d := momentumRankScore(r); d > maxDev {
-					maxDev = d
-				}
-				if r.verdict == "bullish" || r.verdict == "bearish" {
-					c.confirmed = true
-				}
-				if !r.closeAt.IsZero() && (c.rankAsOf.IsZero() || r.closeAt.Before(c.rankAsOf)) {
-					c.rankAsOf = r.closeAt
-				}
-			}
+			agg4h = agg4h || spec.Interval == "4h"
 		}
 	}
-	c.Results = assetResults
-	if !anyOK {
-		// Zero real readings. The WHY must be honest (review fix 3): when at
-		// least one asset answered but was too short, the scan degrades as
-		// insufficient_history; only an all-sources-dead sweep is
-		// source_offline.
-		if anyInsufficient {
-			c.Emoji = emojiNeutral
-			c.Verdict = "Insufficient history — no verdict"
-			c.Short = "insufficient history"
-			c.Offline = true
-			c.Status = statusInsufficientHistory
-			return c
-		}
-		off := offlineCard("Momentum Agent", "Momentum", c.Asset, keyMomentum, howTexts[keyMomentum])
-		off.Results = assetResults
-		return off
-	}
-
-	rule := "Rule: RSI 55+/45- with matching MACD sign"
-	if tf != "" {
-		rule += " · " + tf + " candles"
-	}
-	c.Facts = append(c.Facts, rule)
 	if agg4h {
 		c.Facts = append(c.Facts, yahooAgg4hNote)
 	}
 	if anyYahoo {
 		c.SourceNote = "FX/gold data: Yahoo Finance"
 	}
-	c.Verdict = strings.Join(verdictParts, " · ")
-	if lead == "" {
-		lead = "neutral"
-	}
-	c.Emoji = momentumEmoji(lead)
-	c.Short = strings.ToLower(lead)
-	c.Deviation = maxDev
 	// Validator: only a single Binance asset read from a complete window keeps
 	// one — its closed bars version the whole body. Several assets are a
 	// composite (the oldest bar can stay put while another asset, or a
 	// failure/recovery, changes the body), a Yahoo asset has no sound stamp at
 	// all (see decorateFXAt), and a partial Binance window neither (see
-	// candlesWindow). With one asset, anyOK means results[0] is that read.
-	if len(specs) > 1 || anyYahoo || !results[0].read.complete {
+	// candlesWindow). A data-delayed read follows the clock, not the bars (see
+	// momentumAssetCardFrom). With one asset, a reading means assets[0] is it.
+	if len(specs) > 1 || anyYahoo || !assets[0].read.complete || c.Results[0].Freshness == momentumDataDelayed {
 		c.noValidator = true
 	}
 	return c

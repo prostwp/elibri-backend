@@ -88,6 +88,177 @@ when every source was dead (the `503` body keeps its usual
 (`?assets=a&assets=b`, duplicated `?asset=`/`?tf=`) is a `400` "duplicate
 parameter" — never a silent first-wins.
 
+## Momentum card and content blocks
+
+> ⚠️ **Momentum `verdict` format changed 2026-09-15 — do not parse it.**
+> Before: the multi-asset verdict listed each asset (`BTC: NEUTRAL · ETH:
+> BEARISH · …`) and the single-asset verdict was `BTC: NEUTRAL`. Now the
+> multi-asset verdict is a counter (`0 bullish · 1 bearish (ETH) · 2 not
+> confirmed`) and the single-asset verdict is `NOT CONFIRMED · 4h — <reason>`,
+> without the asset name. The per-asset direction is machine-readable:
+> `results[].verdict` (`bullish | bearish | neutral`) and `results[].state`;
+> the card colour is `semaphore`. `verdict` and `facts` are display text and
+> may change again.
+
+What changed 2026-09-15: the card reads in one pass. The rule is **unchanged**
+(bullish = RSI(14) ≥ 55 and MACD(12,26,9) histogram > 0; bearish = RSI ≤ 45
+and histogram < 0; else neutral), and so are `semaphore` values, the digest
+inputs and caching. New: a reason for every neutral, a two-condition
+checklist, a counter header for multi-asset cards, per-asset timeframe, bar
+time and freshness, context lines marked as outside the reading, content
+blocks, and the read itself in `results[]`. Every line is at most 110
+characters.
+
+**Neutral with a reason.** One reason per asset, computed from the same two
+numbers as the verdict:
+
+| `state` (results[]) | Reason on the card | When |
+|---|---|---|
+| `confirmed_bullish` / `confirmed_bearish` | `RSI and MACD agree` | the rule's bullish / bearish |
+| `conflict` | `conflict: RSI up, MACD down` / `conflict: RSI down, MACD up` | RSI ≥ 55 with histogram < 0, or RSI ≤ 45 with histogram > 0 |
+| `rsi_below_55` | `RSI below the 55 threshold` | 45 < RSI < 55, histogram > 0: only RSI is missing for bullish |
+| `rsi_above_45` | `RSI above the 45 threshold` | 45 < RSI < 55, histogram < 0: only RSI is missing for bearish |
+| `macd_at_zero` | `RSI up, MACD histogram at 0` / `RSI down, …` | RSI past a threshold, histogram exactly 0 |
+| `neutral_zone` | `RSI in the neutral zone 45–55` | 45 < RSI < 55 and histogram exactly 0: both directions miss both conditions |
+
+With a non-zero histogram, an RSI inside 45–55 always leaves one direction
+short of RSI alone, so the card names that threshold; `neutral_zone` needs a
+histogram of exactly 0.
+
+**Checklist.** The two conditions, evaluated toward the side RSI is past (or,
+inside 45–55, the side of the histogram): `RSI 54.7 < 55 ✗ · MACD histogram
+above 0 ✓`. All ✓ toward a direction is exactly that direction's verdict. The
+card shows the histogram's **sign only**: its raw value is in price units
+(BTC +217, EURUSD +0.00013) and cannot be compared across assets; the raw
+value is `results[].macd_histogram`. RSI is printed to one decimal **rounded
+toward 50**, so a printed value never sits on the other side of 55 or 45 from
+the real one (54.96 prints 54.9, 45.04 prints 45.1).
+
+**Single-asset card** (`?asset=`):
+
+```
+⚪ Momentum Agent · BTC
+NOT CONFIRMED · 4h — RSI below the 55 threshold
+• Why: RSI 54.7 < 55 ✗ · MACD histogram above 0 ✓
+• Turns bullish when RSI ≥ 55 and the MACD histogram is above 0 (now ✗: RSI)
+• Turns bearish when RSI ≤ 45 and the MACD histogram is below 0 (now ✗: RSI, MACD)
+• Read on closed 4h candles: RSI(14) and the MACD(12,26,9) histogram
+• Context, not part of the reading: volume 0.96× its 20-bar average (4h)
+```
+
+A confirmed read says what keeps it: `Stays bullish while RSI ≥ 55 and the
+MACD histogram is above 0; any ✗ turns it neutral`. The verdict line carries
+the timeframe. `semaphore` stays `bullish | bearish | neutral`; the card text
+says `not confirmed` for neutral.
+
+**Multi-asset card** (default trio and every `?assets=` / `?tf=` scan):
+
+```
+⚪ Momentum Agent · BTC/ETH/XAUUSD
+0 bullish · 0 bearish · 3 not confirmed
+• BTC · 4h: not confirmed — RSI below the 55 threshold
+• BTC: RSI 54.7 < 55 ✗ · MACD histogram above 0 ✓ · last bar Sep 15 08:00 UTC
+• ETH · 4h: not confirmed — conflict: RSI up, MACD down
+• ETH: RSI 61.3 ≥ 55 ✓ · MACD histogram below 0 ✗ · last bar Sep 15 08:00 UTC
+• GOLD · COMEX GC=F · 1h: not confirmed — conflict: RSI down, MACD up
+• GOLD · COMEX GC=F: RSI 37.9 ≤ 45 ✓ · MACD histogram above 0 ✗ · last bar Sep 15 09:00 UTC
+• Bullish needs RSI ≥ 55 and MACD histogram above 0; bearish needs RSI ≤ 45 and below 0
+• Context, not part of the reading: BTC 4h volume 0.96× its 20-bar average
+• Context, not part of the reading: ETH return minus BTC return incl. today, 7d +1.4 pp · 30d +9.6 pp
+```
+
+- **Header = counter**: `N bullish (names) · N bearish (names) · N not
+  confirmed`, then `· N unavailable` when an asset produced no reading, then
+  `· <tf>` whenever every read asset shares one timeframe — any `?tf=` scan,
+  a native scan like `?assets=btc,eth` (4h) or `?assets=eurusd,gbpusd` (1h),
+  the trio with gold missing. Gold is named `GOLD` inside the counter. This
+  is also the `verdict` and the digest one-liner. The counter covers every
+  asset, gold and FX included.
+- **Semaphore of a multi-asset card** — the counter's rule, never the first
+  asset, applied to the **BTC/ETH reads only** (the reads the digest ranks):
+  `bullish` when at least one of them reads bullish and none bearish;
+  `bearish` mirrored; `neutral` when none is confirmed or they point both
+  ways. A gold or FX reading is counted but never colours the card, so a
+  colour can never sit beside the digest's "No confirmed reading" line;
+  when a card mixes both kinds it says so: `Colour follows BTC/ETH only, the
+  reads the digest ranks; other assets are only counted`. When BTC/ETH were
+  requested but produced no reading (offline or short history — e.g. the
+  default trio with only gold live), the card stays `neutral` and says
+  `Colour follows BTC/ETH only, the reads the digest ranks; no BTC/ETH read is
+  available`; such a card does not compete in the digest (`no_ranked_read`,
+  below). Only a request with no BTC/ETH asset at all (an FX/gold scan such
+  as `?assets=eurusd,gbpusd`; the digest never sweeps one) colours by all its
+  reads — decided by the requested assets, not by which ones read. The digest inputs
+  (`confirmed`, the score |RSI−50|×2 of a confirmed read, the freshness bar)
+  come from BTC/ETH only, exactly as before.
+- Every asset: a state line (timeframe, verdict word, reason) and a checklist
+  line with the close of its last closed bar and its freshness. A failed asset
+  gets one line (`data unavailable right now` / `insufficient history for
+  RSI/MACD`) and is counted as unavailable.
+- A `?tf=` scan adds `All assets read on closed <tf> candles`; a Yahoo 4h
+  scan keeps the aggregation `Note:`.
+
+**Context, not part of the reading.** BTC volume (last closed bar against
+its 20-bar average; no bands are claimed) and ETH vs BTC. The ETH line is a
+**return gap** in percentage points — ETH's return minus BTC's return — not
+ETH's own move. Each return runs from the daily close 7 (30) UTC days before
+today to the current price: 6 (29) full days plus the still-forming UTC day
+("incl. today"; `internal/market/momentum.go`, `pctChangeOverDays`), so it
+moves during the day and is a different horizon from the closed-bar
+RSI/MACD. Neither feeds the verdict.
+
+**Freshness per asset** (`results[].freshness`, and on the checklist line):
+
+| Value | Card text | Rule |
+|---|---|---|
+| `on_time` | — | no missing bar the rule can detect. **Always** for Binance (BTC, ETH): the kline cache never serves an answer older than 60 s and a klines answer always ends with the bar still forming (never read), so a read's last closed bar is at most one bar old by the source's contract |
+| `market_closed` | `market closed` | a Yahoo asset (FX or gold) while `isForexOpen` says closed: the fixed weekend window Friday 21:00 → Sunday 21:00 UTC. The only "closed" the service knows |
+| `data_delayed` | `data delayed` | Yahoo only: the last closed bar is older than two bars (the digest's own stale bound) while the market has been open for those two bars (right after the Sunday reopen a missing bar is not yet due) |
+
+Limits, stated rather than guessed: FX and COMEX gold share the one weekend
+window. COMEX has its own hours (a daily maintenance break, a different
+weekend edge) and neither calendar knows holidays or DST shifts (±1 h at the
+window edges); the service has no exchange calendar, so it does not invent
+one. Consequences: a holiday or a COMEX break inside the week can read `data
+delayed` (a bar was expected and did not come), never `market closed`; the
+single-asset FX/gold card keeps the shared `⏸ Forex market closed (weekend)`
+banner, gold included.
+
+**Content blocks** (same `ContentBlocks` object as trend / S/R): top-level
+`blocks` on the single-asset card, `results[].blocks` per asset on
+multi-asset cards (the digest keeps dropping top-level `blocks` only).
+Momentum has no price level, no target and no invalidation price; the fields
+say so:
+
+| Field | Momentum meaning | Example |
+|---|---|---|
+| `what_happened` | the reading and its reason, with the RSI and the histogram's sign | `BTC 4h reads not confirmed: RSI below the 55 threshold (RSI 54.7, MACD histogram above 0).` |
+| `why_level` | why the thresholds — there is no price level | `No price level: 55 and 45 are the RSI(14) thresholds, 0 is the MACD histogram line` |
+| `scenarios` | exactly two conditional state changes of the rule, never a price direction | `If RSI rises to 55 or above and the MACD histogram stays above 0, the reading turns bullish` · `If RSI falls to 45 or below and the MACD histogram turns below 0, the reading turns bearish` |
+| `invalidates` | what ends a **confirmed** reading; `null` otherwise | `A closed 4h candle with RSI below 55 or the MACD histogram at or below 0 ends the bullish reading` |
+| `regime` | the asset's **local** momentum state — not a market regime (that is Macro's / Trend's) | `Local momentum · BTC 4h · not confirmed: RSI below the 55 threshold` |
+
+A confirmed read's scenarios are "stays" (both conditions hold) and "turns
+neutral" (either fails).
+
+**`results[]` entries** — degraded entries keep `{"asset","ok","reason"}`
+only; `ok` entries add:
+
+```json
+{"asset": "BTC", "ok": true, "timeframe": "4h",
+ "data_as_of": "2026-09-15T08:00:00Z", "freshness": "on_time",
+ "verdict": "neutral", "state": "rsi_below_55",
+ "why": "RSI below the 55 threshold",
+ "rsi": 54.71203, "macd_histogram": 217.3456,
+ "blocks": {"what_happened": "…", "why_level": "…", "scenarios": ["…", "…"],
+            "invalidates": null, "regime": "…"}}
+```
+
+`rsi` and `macd_histogram` are raw precision (a histogram of exactly 0 is
+served as `0`); `data_as_of` is the close of that asset's last closed bar
+(the envelope's `data_as_of` stays the oldest of them). Indicator output that
+is not finite degrades the asset to `insufficient_history`.
+
 ## ⚠️ Macro correlations changed meaning (B2)
 
 **`/api/v1/macro` `correlations[].coef` and `window` kept their JSON names
@@ -299,7 +470,7 @@ narrative radar).
 | `status` | `live` \| `degraded` — **never `planned`**. This endpoint only lists agents whose builder actually ran; there is no fictional state and no roadmap entry here. For `digest`, `partial` reads `live` here; the three-state value is `digest_status` |
 | `ok` / `reason` | The same machine-readable pair the agent envelopes carry (`source_offline`, `insufficient_history`, `below_threshold`, `no_data`, `market_closed`), `null` when `ok`. **Exception — the `digest` row:** the pair speaks for the whole sweep (`ok: false` only when no section is live, `reason` = the first degraded section's), so it can differ from the top-level pair of `/agents/digest`, which describes the highlighted card. Example: macro and the funding/momentum/trend trio offline, whale live → this row `ok: true`, `digest_status: "partial"`; `/agents/digest` `ok: false`, `"reason": "source_offline"` |
 | `digest_status` | `digest` row only: `live` \| `partial` \| `degraded` — the same value `/agents/digest` serves as `digest.status`. Absent on every other row |
-| `headline` | The card's verdict line — for `digest`, the prioritized "Top signal: …" line |
+| `headline` | The card's verdict line — for `digest`, the prioritized `Top signal: <agent> · <asset> — <verdict>` line (the same line as `/agents/digest` `verdict`). The asset is named whenever the winning card has one — since 2026-09-15 the multi-asset momentum card too (`Momentum Agent · BTC/ETH/XAUUSD`), because its verdict became a counter; funding and macro stay bare |
 | `one_liner` | The digest-style one-liner, plain text |
 | `category` | `crypto` \| `forex` \| `metals` \| `macro` \| `onchain` \| `derivatives` \| `news` \| `tools`. `tools` holds the three that are not a single-market read: `digest`, `top`, `risk`; `metals` holds the gold agent |
 | `example_url` | Where the landing links for the full card: `/agents/<slug>` |
@@ -480,8 +651,8 @@ Every agent endpoint answers with one shape:
 | `semaphore` | string | `bullish` \| `bearish` \| `neutral` — the card's traffic light |
 | `facts` | string[] | The card's bullet facts, `[]` when none |
 | `levels` | object | **trend / sr / vol only**: raw-precision numeric levels — see [levels](#machine-readable-levels). Absent for other agents, on `ok: false` cards, and **on trend cards that are not a confirmed trend** (flat / grey / conflict — since 2026-09-15 there is nothing to invalidate there) |
-| `results` | array | **momentum multi-asset cards only**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Absent elsewhere |
-| `blocks` | object | **trend, sr and the global macro card** (additive): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks) and [macro card and content blocks](#macro-card-and-content-blocks). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they belong to the winning card (never on the digest, below) |
+| `results` | array | **momentum only**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Since 2026-09-15 also on the single-asset momentum card (one entry), and every `ok` entry carries the read itself (`rsi`, `macd_histogram`, `verdict`, `state`, `why`, `timeframe`, `data_as_of`, `freshness`, `blocks`) — see [momentum card](#momentum-card-and-content-blocks). Absent elsewhere |
+| `blocks` | object | **trend, sr, the global macro card and the single-asset momentum card** (additive): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks), [macro card and content blocks](#macro-card-and-content-blocks) and [momentum card](#momentum-card-and-content-blocks) (multi-asset momentum cards carry them per asset, in `results[].blocks`). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they belong to the winning card (never on the digest, below) |
 | `macro` | object | **macro cards only** (additive, 2026-09-15): the numbers behind the card — rule score, bands, per-lamp rule / weight / contribution / source / `as_of`, freshness, Fear & Greed age. See [macro card](#macro-card-and-content-blocks). Absent for every other agent and on macro cards without a reading (`UNKNOWN`, offline) |
 | `confidence` | int \| null | 0–100 when the source supplied one, otherwise `null` — never invented. **Macro is always `null` since 2026-09-15**: its 0–100 composite is a **rule score**, not a confidence or a strength, and ships in the verdict (`RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)`) and in `macro.rule_score`. The `?asset=gold` view has its own `gold score` and also serves `confidence: null` |
 | `ai_text` | string \| null | Plain-text AI block (mood read / idea / brief / why-line); `null` when AI is disabled or the call failed |
@@ -511,10 +682,10 @@ whale top-3 window now hangs off the snapshot's `captured_at`.
 
 | Address | `Last-Modified` | What it means / why there is none |
 |---|---|---|
-| `/agents/trend`, `/agents/sr`, `/agents/vol` and `/agents/momentum?asset=` for `btc`, `eth` (Binance; `?tf=` applies to momentum only, the other three answer it with `400`) | yes, **when the Binance window is complete** (below) | Close of the last closed bar used, equal to `data_as_of`. A bar counts as closed only if it had closed when the candles were fetched (they are cached up to 60 s) **and** Binance already returned the bar after it: a klines answer always ends with the bar still forming, so its last row is never read. A bar with intermediate prices therefore waits for a later fetch rather than appear with numbers that change under the same stamp |
-| `/agents/momentum?assets=` with **one** Binance asset | yes, when the window is complete | Same as the single card |
+| `/agents/trend`, `/agents/sr`, `/agents/vol` and `/agents/momentum?asset=` for `btc`, `eth` (Binance; `?tf=` applies to momentum only, the other three answer it with `400`) | yes, **when the Binance window is complete** (below); momentum also not while its read is `data_delayed` (that wording follows the clock, not the bars) | Close of the last closed bar used, equal to `data_as_of`. A bar counts as closed only if it had closed when the candles were fetched (they are cached up to 60 s) **and** Binance already returned the bar after it: a klines answer always ends with the bar still forming, so its last row is never read. A bar with intermediate prices therefore waits for a later fetch rather than appear with numbers that change under the same stamp |
+| `/agents/momentum?assets=` with **one** Binance asset | yes, when the window is complete and the read is not `data_delayed` | Same as the single card |
 | `/agents/trend/chart` for `btc`, `eth` | yes, when the window is complete | `data_as_of`: the chart reads the closed bars only |
-| `/agents/trend`, `/agents/sr`, `/agents/vol`, `/agents/momentum?asset=` for `eurusd`, `gbpusd`, `usdjpy`, `xauusd` (Yahoo, aliases included), `?assets=` with one Yahoo asset, and `/agents/trend/chart` for those assets | **no** | No stamp versions a Yahoo body. Yahoo can publish a bar late and can revise the OHLC of a bar it already served under the same timestamp, so the bar close stays put while the numbers change. On the cards, the market-state wording (the `⏸ Forex market closed` banner, `(market closed)` on a momentum line) follows the clock of the fixed-UTC week (closes Friday 21:00, opens Sunday 21:00 UTC), not the bars |
+| `/agents/trend`, `/agents/sr`, `/agents/vol`, `/agents/momentum?asset=` for `eurusd`, `gbpusd`, `usdjpy`, `xauusd` (Yahoo, aliases included), `?assets=` with one Yahoo asset, and `/agents/trend/chart` for those assets | **no** | No stamp versions a Yahoo body. Yahoo can publish a bar late and can revise the OHLC of a bar it already served under the same timestamp, so the bar close stays put while the numbers change. On the cards, the market-state wording (the `⏸ Forex market closed` banner, `market closed` on a momentum asset line) follows the clock of the fixed-UTC week (closes Friday 21:00, opens Sunday 21:00 UTC), not the bars |
 | `/agents/news` | **no** | The AI idea is generated and cached by the backend per narrative and hour, and a failed generation is not cached, so an idea can appear or change under the same `captured_at` |
 | `/agents/whale` | **no** | The transfer list comes from the backend's live table (the newest rows), not from the snapshot `captured_at` names: a new transfer pushes an old one out under the same `captured_at`. The top-3 shows transfers of the 24h up to `captured_at`, none stamped after it (with no parseable `captured_at`: the 24h up to the request time) |
 | `/agents/macro`, `?asset=btc`, `?asset=gold` | **no** | The backend's `captured_at` is its request time at one-second resolution, so two different payloads can share it; no lamp stamp versions the body either (a lamp value moves during its session under the same `as_of`) |
@@ -522,7 +693,7 @@ whale top-3 window now hangs off the snapshot's `captured_at`.
 | `/agents/gold` | **no** | Daily bars, the hourly price and its age, the macro payload and the weekend clock. The daily close versions none of the rest |
 | `/agents/fx` | **no** | Four series plus the banner: an older pair can update, drop out or recover while the newest close stays put |
 | `/agents/funding` | **no** | Point-in-time reads (rates, the liquidation feed, a 1h window from the request time, the BTC price). The request time is not a version of that body |
-| `/agents/momentum` without params, `?tf=` alone, `?assets=` with two or more assets | **no** | Composite: the oldest bar (`data_as_of`) can stay put while another asset, the ETH-vs-BTC read, the market state or a source failure/recovery changes the body |
+| `/agents/momentum` without params, `?tf=` alone, `?assets=` with two or more assets | **no** | Composite: the oldest bar (`data_as_of`) can stay put while another asset, the ETH-vs-BTC read, an asset's freshness (`market closed` / `data delayed`) or a source failure/recovery changes the body |
 | `/agents/digest`, `/agents/top`, `/showcase/example` | **no** | The digest re-sweeps per request; `/top` and the example add per-request AI text that reads the whole sweep |
 | `/agents/risk` | **no** | A pure function of the query; its data time is the answering time |
 | `/`, `/agents` | **no** | Static text |
@@ -582,7 +753,8 @@ describe that one card, not the whole sweep (fixed 2026-09-15).
 2. Among funding, momentum, trend: only **eligible** candidates compete —
    status `ok` and fresh: funding ≤ **15 min** (a request-time read),
    momentum and trend ≤ **8 h** (two 4 h bars; momentum judged on its BTC/ETH
-   bars, not gold). The strongest **confirmed** reading wins (funding
+   bars, not gold). Momentum also needs at least one BTC/ETH reading: a card
+   with only gold/FX read is excluded as `no_ranked_read`. The strongest **confirmed** reading wins (funding
    crowded, momentum bullish/bearish on BTC/ETH, trend up/down); ties
    funding > momentum > trend.
 3. Scores (0–100, **not calibrated against each other**): funding = widest
@@ -603,11 +775,11 @@ describe that one card, not the whole sweep (fixed 2026-09-15).
 | `selection.state` | `selected` \| `no_highlight` |
 | `selection.rule` | `macro_risk_off` \| `strongest_confirmed` \| `fallback_unconfirmed` \| `fallback_macro` |
 | `selection.winner` | Agent key of the highlighted card |
-| `selection.line` | The one-line reason printed under the digest header (≤110 chars) |
+| `selection.line` | The one-line reason printed under the digest header (≤110 chars). Since 2026-09-15 it names what each agent's ranked reading covers: `Funding, Momentum (BTC/ETH), Trend (BTC)` — momentum ranks its BTC/ETH reads only, so "No confirmed reading" can sit next to a momentum card that counts a confirmed gold read (that read never colours the card, see [momentum card](#momentum-card-and-content-blocks)) |
 | `selection.highlight_ok` / `highlight_reason` / `highlight_data_as_of` | The highlighted card's own status and data time |
 | `selection.macro_regime` / `macro_risk_off_gate` | The regime; the gate outcome only when it is `risk_off` |
 | `selection.scales_calibrated` | Always `false` for now |
-| `selection.candidates[]` | `{agent, eligible, excluded (degraded\|stale\|no_data_time\|null), confirmed, score, data_as_of, max_age_minutes}` |
+| `selection.candidates[]` | `{agent, eligible, excluded (degraded\|no_ranked_read\|stale\|no_data_time\|null), confirmed, score, data_as_of, max_age_minutes}`. `no_ranked_read` (2026-09-15): the momentum card carries no BTC/ETH reading (both offline or short history) — its gold/FX reads are shown but never ranked, so it does not compete instead of being judged on the gold bar |
 | `sections[]` | Every block `card_html` renders below the highlighted card, in order: `{key, title, lines, ok, reason, data_as_of}`; `key` is an agent key, `fx` or `narrative`; `lines` are the plain-text lines exactly as rendered |
 
 The `503` error body carries the same pair beside the message, so single-agent

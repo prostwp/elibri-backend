@@ -193,8 +193,10 @@ func TestMomentumScanTFMatrix(t *testing.T) {
 			if !strings.Contains(joined, tf+" candles") {
 				t.Errorf("rule line must name the timeframe: %v", c.Facts)
 			}
-			if !strings.Contains(c.Verdict, "BTC:") || !strings.Contains(c.Verdict, "ETH:") {
-				t.Errorf("verdict must cover both assets: %q", c.Verdict)
+			// 2026-09-15: the verdict is a counter; each asset has its own
+			// line naming its timeframe, and a shared one rides in the header.
+			if !strings.Contains(joined, "BTC · "+tf+":") || !strings.Contains(joined, "ETH · "+tf+":") || !strings.HasSuffix(c.Verdict, " · "+tf) {
+				t.Errorf("both assets and the timeframe must be named: %q / %v", c.Verdict, c.Facts)
 			}
 		})
 	}

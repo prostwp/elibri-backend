@@ -31,9 +31,15 @@ func fundingCard(rate float64) Card {
 	return c
 }
 
+// momentumCard is a composite momentum card in the 2026-09-15 format: the
+// verdict (and one-liner) is the counter, coloured by the BTC/ETH reads.
 func momentumCard(dev int, confirmed bool) Card {
+	verdict, emoji := "0 bullish · 0 bearish · 3 not confirmed", emojiNeutral
+	if confirmed {
+		verdict, emoji = "1 bullish (BTC) · 0 bearish · 2 not confirmed", emojiBull
+	}
 	return Card{Agent: "Momentum Agent", ShortName: "Momentum", Asset: "BTC/ETH/XAUUSD", Command: keyMomentum,
-		Verdict: "BTC: NEUTRAL · ETH: NEUTRAL", Short: "neutral", Emoji: emojiNeutral,
+		Verdict: verdict, Short: verdict, Emoji: emoji,
 		DataTime: rankFresh, Deviation: dev, confirmed: confirmed}
 }
 
