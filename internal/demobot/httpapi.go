@@ -651,13 +651,24 @@ func digestHeadline(top Card) string {
 // one-liners — exactly like the Telegram digest.
 func (s *HTTPServer) handleDigest(w http.ResponseWriter, r *http.Request, ctx context.Context) {
 	g := s.ag.gather(ctx)
-	winner, top := topSelection(g)
 	brief := s.ag.aiBrief(ctx, g) // same aiMemo as the Telegram path
+	writeJSONAt(w, r, http.StatusOK, digestDataTime(g), digestEnvelope(g, brief))
+}
 
+// digestEnvelope is the pure half of handleDigest: one gathered sweep + the AI
+// brief → the digest envelope. No network, no clock — testable on its own.
+func digestEnvelope(g gathered, brief string) httpEnvelope {
+	winner, top := topSelection(g)
 	env := cardEnvelope(top)
 	env.Agent = digestAgentName
 	env.Asset = ""
 	env.Verdict = digestHeadline(top)
+	// blocks are one agent's content sentences (trend only). Inherited from the
+	// winner card they read as the DIGEST's own conclusion — a live digest said
+	// "Macro: risk-on" in its sections while blocks.regime said "flat — no
+	// trend" (the BTC Trend card's local regime). /agents/top keeps them: there
+	// the envelope IS that one card.
+	env.Blocks = nil
 	env.AIText = nil
 	if brief != "" {
 		env.AIText = &brief
@@ -677,7 +688,7 @@ func (s *HTTPServer) handleDigest(w http.ResponseWriter, r *http.Request, ctx co
 	// read as current — see oldestData in bot.go.
 	env.DataAsOf = digestDataTime(g).Format(time.RFC3339)
 	env.CardHTML = renderDigestHTML(g, brief)
-	writeJSONAt(w, r, http.StatusOK, digestDataTime(g), env)
+	return env
 }
 
 // handleTop serves the single strongest signal: the winner card's envelope
