@@ -636,9 +636,20 @@ func ppShown(v float64) string {
 	return fmt.Sprintf("%+.1f", v)
 }
 
+// momentumRSLead is the fixed head of the RS context line, up to its first
+// number. The hook finds the line by it and masks the numbers after it before
+// hashing (hookMomentumRSRe) — they follow live prices, not the card's bar —
+// so builder and hook read one constant and cannot drift apart.
+const momentumRSLead = momentumContextPrefix + "ETH return minus BTC return incl. today, "
+
 // momentumRSContext — ETH's return minus BTC's return (backend
 // /api/v1/market/momentum; anchored on the current, still-forming UTC day on
 // both sides). A return gap, not ETH's own move. "" when no window is served.
+//
+// The anchor makes this the one number on the card that follows LIVE prices
+// while the card's data_as_of is the oldest CLOSED bar. It is labelled
+// context for that reason, and the push hook does not count a moved digit
+// here as a new reading (hook.go, hookMomentumRSRe).
 func momentumRSContext(item MomentumItem) string {
 	var parts []string
 	if item.RS7D != nil {
@@ -650,7 +661,7 @@ func momentumRSContext(item MomentumItem) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return momentumContextPrefix + "ETH return minus BTC return incl. today, " + strings.Join(parts, " · ")
+	return momentumRSLead + strings.Join(parts, " · ")
 }
 
 // momentumLastBarRe matches the " · last bar Sep 15 08:00 UTC" segment that
@@ -658,13 +669,25 @@ func momentumRSContext(item MomentumItem) string {
 var momentumLastBarRe = regexp.MustCompile(` · last bar [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2} UTC`)
 
 // momentumAIFacts is the card's facts as the AI payload takes them: without
-// the per-asset bar times. The payload must carry no time stamps (its hash is
-// the 5-minute AI cache key, and the model needs no clock); the freshness
-// words ("market closed", "data delayed") stay — they are not stamps.
+// the per-asset bar times and without the RS context line. The payload must
+// carry no time stamps (its hash is the 5-minute AI cache key, and the model
+// needs no clock); the freshness words ("market closed", "data delayed") stay
+// — they are not stamps.
+//
+// The RS line goes for BOTH of those reasons. It is the one number on this
+// card that is not as of the card's stamp (momentumRSContext: the backend
+// anchors both sides on the still-forming UTC day), so a brief quoting it
+// would attribute a live price to a closed-bar reading. And it follows those
+// prices at 0.1 pp, which would move the payload hash — the cache key — on
+// most sweeps: two LLM calls where one answer would do, and a digest and a
+// top of the SAME sweep narrating the same market in two different texts.
 func momentumAIFacts(facts []string) []string {
-	out := make([]string, len(facts))
-	for i, f := range facts {
-		out[i] = momentumLastBarRe.ReplaceAllString(f, "")
+	out := make([]string, 0, len(facts))
+	for _, f := range facts {
+		if strings.HasPrefix(f, momentumRSLead) {
+			continue
+		}
+		out = append(out, momentumLastBarRe.ReplaceAllString(f, ""))
 	}
 	return out
 }

@@ -2499,12 +2499,34 @@ or the response build, derived from the card builders:
 | any `macro` object (macro cards; digest/top with a macro winner) | `freshness.captured_at`, `fear_greed.age_hours` | the backend's response time and the age counted to it |
 | `digest` | `digest.generated_at`; `selection.highlight_data_as_of`, `selection.candidates[].data_as_of`, `sections[].data_as_of` when inside the call | the sweep clock; the funding entries are request-time stamps |
 | any text | the age in the stale Fear & Greed fact (`(52h ago)`) | counted to the request time. Gold prints no running age since 2026-09-15: its `stale (over 6h old)` is a fixed threshold, so a gold event fires when the flag flips, never on the hour |
+| any text | the **numbers** of momentum's RS context line (`… incl. today, 7d * pp · 30d * pp`) | the backend anchors both sides on the still-forming UTC day, so the gap follows live prices while the card's `data_as_of` is the oldest closed bar. At 0.1 pp it crosses a rounding boundary back and forth (prod, 2026-09-16: eight moves in 14 reads 40 s apart, three of them back to a value already seen, on one bar). The numbers only: the line keeps its shape, so a window the backend stops serving (`rs_7d` nil on short history) is still a change. The line and its numbers are in the event's `data` — only the change hash ignores them |
 
 Everything else is data and counts as a change, including values that move
 with time by design: the funding 1-hour liquidation window, the weekend
 banners, digest candidates turning `stale`, a new bar close on candle agents,
 and AI texts (`ai_text` on digest/top, the backend's AI idea on news) when
 they are regenerated.
+
+The same line is also kept out of the demobot's AI payload
+(`momentumAIFacts`): that payload's hash is the 5-minute AI cache key, so a
+moved digit would cost a second model call and let the `digest` and the `top`
+of one sweep narrate the same market in two different texts — and a brief
+quoting the number would attribute a live price to a closed-bar reading.
+
+A value moving with time is masked only where the card's own stamp already
+says so. Funding's window moves and counts, because a funding card is stamped
+with the request time and its event is honest about what changed; momentum's
+RS gap moves and does not, because that card is stamped with a closed bar and
+the line is labelled context, not part of the reading. The rule is the
+mismatch, not the movement.
+
+**Gold revises a bar it has already closed.** The `XAUUSD` row of the momentum
+composite comes from Yahoo (GC=F 1h), and for a few minutes after an hour
+closes Yahoo keeps amending that bar: measured on prod 2026-09-16, under an
+unchanged `results[].data_as_of` of `07:00:00Z`, gold's RSI went 59.0 → 59.9 →
+59.7 over three reads. That is a different reading of the same bar, not a
+clock artefact, so it is **not** masked and each amendment is sent. It is also
+why Yahoo-fed cards carry no `Last-Modified` (`Card.noValidator`).
 
 **Known edge: one duplicate, never a loss.** For macro, whale, news, digest
 and top a stamp is masked when it falls inside the call window. A real data

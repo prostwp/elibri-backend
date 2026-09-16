@@ -184,7 +184,36 @@ var (
 	// 2026-09-15): "stale (over 6h old)" is a fixed threshold, so nothing of
 	// gold's is masked here.
 	hookFNGAgoRe = regexp.MustCompile(`(stale, last update [^()]*\()(?:\d+h|\d+d|>999d)( ago\))`)
+
+	// Momentum's RS context line — "… ETH return minus BTC return incl.
+	// today, 7d +0.4 pp · 30d +7.9 pp". The backend anchors BOTH sides on the
+	// still-forming UTC day (market/momentum.go, pctChangeOverDays: "we want
+	// the freshest price"), so the gap follows live prices while the card's
+	// data_as_of is the oldest CLOSED bar. Printed at 0.1 pp it crosses a
+	// rounding boundary back and forth: 14 prod reads 40 s apart on
+	// 2026-09-16 moved this line eight times and returned to a value already
+	// seen three times (30d +7.9 ↔ +8.0) while every read field stood still —
+	// the momentum address ping-ponging between two event_ids on one bar.
+	// A moved digit here is a new request time, not a new reading, so the
+	// NUMBERS are masked; the event's data carries them unmasked.
+	//
+	// Masked number by number, never as one tail: the SHAPE of the line stays
+	// in the hash. A window the backend stops serving (rs_7d nil on short
+	// history — momentumRSContext drops that segment) is a real change and
+	// must still be sent, and a tail mask would hide it. For the same reason
+	// the pattern spells out the rendering instead of running to the end of
+	// the line: a sentence that merely quotes the lead (an ai_text on
+	// digest/top) matches only the lead, so nothing of the prose is masked.
+	hookMomentumRSRe = regexp.MustCompile(regexp.QuoteMeta(momentumRSLead) +
+		`(?:7d ` + hookPPNum + ` pp)?(?: \x{00b7} )?(?:30d ` + hookPPNum + ` pp)?`)
+	// hookPPNumRe finds those numbers inside a matched line.
+	hookPPNumRe = regexp.MustCompile(hookPPNum)
 )
+
+// hookPPNum matches one printed return gap — ppShown's "%+.1f" or its
+// clamps. Kept as a source string so the line pattern and the number pattern
+// cannot describe different things.
+const hookPPNum = `(?:>\+999|<-999|[+-]\d+\.\d)`
 
 // hookRequestStampAgents may carry a request-time stamp where a data time
 // belongs (parseWhen / offlineCard / oldestData fall back to now; macro's
@@ -231,7 +260,8 @@ func (n hookNormalizer) maskIfRequestTime(m map[string]any, key string) {
 //   - digest: digest.generated_at (sweep clock); highlight_data_as_of,
 //     candidates[].data_as_of and sections[].data_as_of inside the window
 //     (the funding entries always are);
-//   - any string: the stale-F&G "(Nh ago)" age.
+//   - any string: the stale-F&G "(Nh ago)" age, and the numbers of momentum's
+//     RS context line (live prices under a closed-bar stamp).
 func hookNormalize(agent string, body []byte, start, end time.Time) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber() // numbers stay byte-exact through the round trip
@@ -300,7 +330,10 @@ func asAnySlice(v any) []any {
 func hookMaskStrings(v any) any {
 	switch x := v.(type) {
 	case string:
-		return hookFNGAgoRe.ReplaceAllString(x, "${1}"+hookMasked+"${2}")
+		x = hookFNGAgoRe.ReplaceAllString(x, "${1}"+hookMasked+"${2}")
+		return hookMomentumRSRe.ReplaceAllStringFunc(x, func(line string) string {
+			return hookPPNumRe.ReplaceAllLiteralString(line, hookMasked)
+		})
 	case map[string]any:
 		for k, e := range x {
 			x[k] = hookMaskStrings(e)

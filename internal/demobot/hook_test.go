@@ -14,12 +14,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -238,6 +240,7 @@ func liveHookAgentsAt(t *testing.T, rates map[string]string, wall time.Time) *Ag
 	premiumIndexURL = prem.URL + "/?symbol="
 
 	liqAt := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
+	var rsCalls atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().UTC().Format(time.RFC3339)
 		var body string
@@ -254,7 +257,18 @@ func liveHookAgentsAt(t *testing.T, rates map[string]string, wall time.Time) *Ag
 			  {"symbol":"ETHUSDT","side":"short_liq","qty":10,"price":4500,"usd_value":45000,"ts":"` + liqAt + `"}],
 			  "zones":[{"symbol":"BTCUSDT","price_band":"117900-118100","total_usd":90000,"count":1,"side":"long_liq"}]}`
 		case "/api/v1/market/momentum":
-			body = `{"baseline":"BTC","items":{"ETH":{"rs_7d":-2.4,"rs_30d":5.1}}}`
+			// The gap moves on every request, as the real endpoint does: both
+			// sides are anchored on the still-forming UTC day, so it follows
+			// live prices. The two values straddle a 0.1 pp rounding boundary
+			// ("-2.4" / "-2.5"), which is exactly how prod ping-ponged the
+			// momentum address between two event_ids on one bar. The card
+			// body must not move with it (TestHookHashStableAcrossCalls,
+			// TestHookDataEqualsGET), like the funding markPrice above.
+			rs := "-2.44"
+			if rsCalls.Add(1)%2 == 0 {
+				rs = "-2.46"
+			}
+			body = `{"baseline":"BTC","items":{"ETH":{"rs_7d":` + rs + `,"rs_30d":5.1}}}`
 		case "/api/v1/market/mood-read":
 			body = `{"read":"Calm tape.","source":"alphavizor-ai"}`
 		default:
@@ -1310,6 +1324,138 @@ func TestHookDataEqualsGET(t *testing.T) {
 		}
 		if hashOf(t, tg.Agent, ev.Data, start, end) != hashOf(t, tg.Agent, body, gs, ge) {
 			t.Errorf("%s: normalized data differs from GET\nhook: %s\nGET:  %s", tg.Path, ev.Data, body)
+		}
+	}
+}
+
+// The RS context line follows live prices under a closed-bar data_as_of
+// (momentumRSContext): its digits must not count as a new reading, while the
+// line and its numbers still reach the site in the event's data. A real
+// reading on the same card must still count.
+func TestHookMomentumRSLineIsNotAReading(t *testing.T) {
+	ag := liveHookAgents(t)
+	th := newTestHook(t, ag, "http://127.0.0.1:1", nil)
+	ctx := context.Background()
+	var tg hookTarget
+	for _, c := range hookTargets() {
+		if c.Path == "/agents/momentum" {
+			tg = c
+		}
+	}
+	if tg.Path == "" {
+		t.Fatal("no /agents/momentum target")
+	}
+
+	read := func() ([]byte, string) {
+		start := time.Now()
+		st, body := th.fetch(ctx, tg)
+		if st != http.StatusOK {
+			t.Fatalf("/agents/momentum: got %d: %s", st, body)
+		}
+		return body, hashOf(t, tg.Agent, body, start, time.Now())
+	}
+	a, ha := read()
+	b, hb := read()
+
+	line := regexp.MustCompile(regexp.QuoteMeta(momentumRSLead) + `[^"\\]*`)
+	la, lb := line.FindString(string(a)), line.FindString(string(b))
+	switch {
+	case la == "" || lb == "":
+		t.Fatalf("the RS context line is missing — the fixture does not exercise this:\n%s", a)
+	case la == lb:
+		t.Fatalf("the fixture's RS line did not move between reads (%s): nothing was tested", la)
+	}
+	if ha != hb {
+		t.Errorf("the hash moved with the RS line alone\nA: %s\nB: %s", la, lb)
+	}
+	// The mask is for the hash only: the site is sent the numbers.
+	if !regexp.MustCompile(regexp.QuoteMeta(momentumRSLead)+`7d [+-]\d`).MatchString(string(a)) ||
+		strings.Contains(string(a), hookMasked+" pp") {
+		t.Errorf("the event data must carry the line unmasked: %.400s", a)
+	}
+	norm, err := hookNormalize(keyMomentum, a, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	// Masked in both places the line is rendered: facts[] and card_html —
+	// numbers only, so both windows are still named.
+	if n := strings.Count(string(norm), momentumRSLead+`7d `+hookMasked+` pp`); n != 2 {
+		t.Errorf("want the numbers masked in facts[] and card_html (2), got %d: %s", n, norm)
+	}
+	// A reading on the same card still counts as a change. The VALUE moves,
+	// not the shape: an added key would change the hash whatever the mask does.
+	moved := []byte(regexp.MustCompile(`"rsi":[0-9.]+`).ReplaceAllString(string(a), `"rsi":1.5`))
+	if string(moved) == string(a) {
+		t.Fatalf("the rsi mutation did not apply: %.200s", a)
+	}
+	if hashOf(t, tg.Agent, moved, time.Time{}, time.Time{}) == ha {
+		t.Error("a changed reading must change the hash")
+	}
+}
+
+// The RS mask covers the numbers and only them: every rendering of the line
+// keeps its shape in the hash, so a window the backend stops serving is still
+// a change, and prose that merely quotes the line's opening is left alone.
+func TestHookMomentumRSMaskShape(t *testing.T) {
+	mask := func(s string) string {
+		v, err := hookNormalize(keyMomentum, []byte(strconv.Quote(s)), time.Time{}, time.Time{})
+		if err != nil {
+			t.Fatalf("normalize %q: %v", s, err)
+		}
+		out, err := strconv.Unquote(strings.TrimSpace(string(v)))
+		if err != nil {
+			t.Fatalf("unquote %s: %v", v, err)
+		}
+		return out
+	}
+	both := momentumRSLead + "7d +0.4 pp · 30d +7.9 pp"
+	only7 := momentumRSLead + "7d +0.4 pp"
+	only30 := momentumRSLead + "30d +7.9 pp"
+	clamped := momentumRSLead + "7d >+999 pp · 30d <-999 pp"
+	for _, c := range []struct{ in, want string }{
+		{both, momentumRSLead + "7d * pp · 30d * pp"},
+		{momentumRSLead + "7d +0.5 pp · 30d +8.0 pp", momentumRSLead + "7d * pp · 30d * pp"},
+		{only7, momentumRSLead + "7d * pp"},
+		{only30, momentumRSLead + "30d * pp"},
+		{clamped, momentumRSLead + "7d * pp · 30d * pp"},
+		// The next fact survives the mask; the volume context line is untouched.
+		{both + "\n• " + momentumVolumeContext("BTC 4h volume", 0.69),
+			momentumRSLead + "7d * pp · 30d * pp\n• " + momentumVolumeContext("BTC 4h volume", 0.69)},
+		// Prose that only quotes the opening keeps its own words and numbers —
+		// signed ones included, which is what proves the pattern stops at the
+		// lead instead of running to the end of the line.
+		{momentumRSLead + "the desk sees ETH lagging by -0.4 pp today.",
+			momentumRSLead + "the desk sees ETH lagging by -0.4 pp today."},
+		{both + " \u2014 and the desk adds -1.5 pp of slippage.",
+			momentumRSLead + "7d * pp · 30d * pp \u2014 and the desk adds -1.5 pp of slippage."},
+	} {
+		if got := mask(c.in); got != c.want {
+			t.Errorf("mask(%q)\n got %q\nwant %q", c.in, got, c.want)
+		}
+	}
+	// Losing a window is a change, not a masked digit.
+	if mask(both) == mask(only7) {
+		t.Error("a dropped RS window must survive the mask as a difference")
+	}
+	// The table above spells the rendering out, so it cannot notice a window
+	// the BUILDER learns to print later. Take the input from the builder and
+	// demand that no printed number survives: a third window added to
+	// momentumRSContext without teaching hookMomentumRSRe about it fails here,
+	// instead of quietly putting a live price back into the hash.
+	pp := func(v float64) *float64 { return &v }
+	for _, it := range []MomentumItem{
+		{RS7D: pp(-2.44), RS30D: pp(7.9)},
+		{RS7D: pp(0.04)},
+		{RS30D: pp(-8.0)},
+		{RS7D: pp(math.Copysign(0, -1)), RS30D: pp(0)}, // a real -0.0: "%+.1f" prints "-0.0"
+		{RS7D: pp(1e9), RS30D: pp(-1e9)},               // the >+999 / <-999 clamps
+	} {
+		line := momentumRSContext(it)
+		if line == "" {
+			t.Fatalf("the fixture item %+v rendered no line", it)
+		}
+		if got := mask(line); regexp.MustCompile(hookPPNum).MatchString(got) {
+			t.Errorf("a number survived the mask: %q -> %q", line, got)
 		}
 	}
 }
