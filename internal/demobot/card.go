@@ -123,6 +123,17 @@ type TrendLevels struct {
 // are the two day-range closes ([] when the range is undefined); invalidates
 // only for a confirmed regime; regime is the local 1d regime; limitations
 // names the instrument.
+//
+// COMPOSITE cards (2026-09-16): FX (fx.go), the MULTI-ASSET momentum card
+// (momentum_text.go) and the digest / top envelopes (httpapi.go) fill
+// what_happened and limitations ONLY. None of them holds a single reading:
+// FX compares four instruments and refuses to add them up, the momentum
+// overview is a counter over its assets, the digest is a selection over
+// agents. So why_level and regime stay empty and scenarios / invalidates stay
+// null on all three — a reading up there would read as the whole card's
+// verdict. /agents/top is the exception: the envelope IS the winning card, so
+// it keeps that card's own blocks and only appends the selection caveat to
+// limitations.
 type ContentBlocks struct {
 	WhatHappened string   `json:"what_happened"`
 	WhyLevel     string   `json:"why_level"`
@@ -214,18 +225,26 @@ type VolLevels struct {
 // closed bar), freshness (on_time|market_closed|data_delayed) and the asset's
 // content blocks.
 type AssetResult struct {
-	Asset         string         `json:"asset"`
-	OK            bool           `json:"ok"`
-	Reason        *string        `json:"reason,omitempty"`
-	Timeframe     string         `json:"timeframe,omitempty"`
-	DataAsOf      string         `json:"data_as_of,omitempty"`
-	Freshness     string         `json:"freshness,omitempty"`
-	Verdict       string         `json:"verdict,omitempty"`
-	State         string         `json:"state,omitempty"`
-	Why           string         `json:"why,omitempty"`
-	RSI           *float64       `json:"rsi,omitempty"`
-	MACDHistogram *float64       `json:"macd_histogram,omitempty"`
-	Blocks        *ContentBlocks `json:"blocks,omitempty"`
+	Asset         string   `json:"asset"`
+	OK            bool     `json:"ok"`
+	Reason        *string  `json:"reason,omitempty"`
+	Timeframe     string   `json:"timeframe,omitempty"`
+	DataAsOf      string   `json:"data_as_of,omitempty"`
+	Freshness     string   `json:"freshness,omitempty"`
+	Verdict       string   `json:"verdict,omitempty"`
+	State         string   `json:"state,omitempty"`
+	Why           string   `json:"why,omitempty"`
+	RSI           *float64 `json:"rsi,omitempty"`
+	MACDHistogram *float64 `json:"macd_histogram,omitempty"`
+	// RSIShown (momentum rows only, additive 2026-09-16) is the RSI EXACTLY as
+	// the card prints it (rsiShown): one decimal, rounded TOWARD 50 (floored
+	// above 50, ceiled below: 60.89 prints 60.8), so a printed value never sits
+	// on the other side of 55 / 45 from the real one. `rsi` keeps the raw value. A consumer that rounds
+	// `rsi` itself can print 60.9 under text that says 60.8 — that mismatch is
+	// what this field exists to remove. Never rounded for display twice: print
+	// this string as it is.
+	RSIShown string         `json:"rsi_shown,omitempty"`
+	Blocks   *ContentBlocks `json:"blocks,omitempty"`
 	// FX rows only (additive, 2026-09-15 — see fxResult): the last close,
 	// its change and the window it spans ("24h" | "since_previous_close")
 	// with the reference bar's close time, EMA50 vs EMA200 (above | below |

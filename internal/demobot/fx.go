@@ -815,55 +815,78 @@ func fxPairsRead(reads []fxRead) int {
 	return n
 }
 
+// fxCoverageCount is one sweep's coverage, counted ONCE. The header
+// (fxCoverage) and the content blocks (fxBlocksOf) both word it, so the two can
+// never disagree on what was read — in particular on gold, which a stale bar
+// takes out of the "read" list and names separately.
+type fxCoverageCount struct {
+	pairs, pairsOK, short, dead, delayed int
+	goldOK, goldStale                    bool
+}
+
+func fxCoverageOf(reads []fxRead, now time.Time) fxCoverageCount {
+	var n fxCoverageCount
+	for _, r := range reads {
+		gold := r.spec.isGold()
+		if !gold {
+			n.pairs++
+		}
+		switch {
+		case r.OK:
+			if gold {
+				n.goldOK = true
+			} else {
+				n.pairsOK++
+			}
+			switch fxFreshness(r, now) {
+			case momentumDataDelayed:
+				n.delayed++
+			case fxNoRecentBar:
+				n.goldStale = true
+			}
+		case r.Insufficient:
+			n.short++
+		default:
+			n.dead++
+		}
+	}
+	return n
+}
+
+// read lists what counts as read: the pairs (as "3 pairs" / "2 of 3 pairs")
+// and gold — but gold only with a recent bar, unless it is all the card has.
+func (n fxCoverageCount) read() []string {
+	var who []string
+	if n.pairs > 0 {
+		who = append(who, fxPairsWord(n.pairsOK, n.pairs))
+	}
+	if n.goldOK && (!n.goldStale || n.pairs == 0) {
+		who = append(who, "gold")
+	}
+	return who
+}
+
+// goldNamedStale: gold has a reading but no recent bar, and is therefore left
+// out of read() and named on its own.
+func (n fxCoverageCount) goldNamedStale() bool { return n.goldStale }
+
 // fxCoverage is the header's coverage part: "3 pairs + gold read[ · N short
 // history][ · N unavailable][ · N data delayed][ · gold: no recent bar]".
 // A gold read without a recent bar leaves the "+ gold" coverage and is named
 // at the end instead, so the header never implies it is current.
 func fxCoverage(reads []fxRead, now time.Time) string {
-	var pairs, pairsOK, short, dead, delayed int
-	goldOK, goldStale := false, false
-	for _, r := range reads {
-		gold := r.spec.isGold()
-		if !gold {
-			pairs++
-		}
-		switch {
-		case r.OK:
-			if gold {
-				goldOK = true
-			} else {
-				pairsOK++
-			}
-			switch fxFreshness(r, now) {
-			case momentumDataDelayed:
-				delayed++
-			case fxNoRecentBar:
-				goldStale = true
-			}
-		case r.Insufficient:
-			short++
-		default:
-			dead++
-		}
+	n := fxCoverageOf(reads, now)
+	parts := []string{strings.Join(n.read(), " + ") + " read"}
+	if n.short > 0 {
+		parts = append(parts, fmt.Sprintf("%d short history", n.short))
 	}
-	var who []string
-	if pairs > 0 {
-		who = append(who, fxPairsWord(pairsOK, pairs))
+	if n.dead > 0 {
+		parts = append(parts, fmt.Sprintf("%d unavailable", n.dead))
 	}
-	if goldOK && (!goldStale || pairs == 0) {
-		who = append(who, "gold")
+	if n.delayed > 0 {
+		parts = append(parts, fmt.Sprintf("%d data delayed", n.delayed))
 	}
-	parts := []string{strings.Join(who, " + ") + " read"}
-	if short > 0 {
-		parts = append(parts, fmt.Sprintf("%d short history", short))
-	}
-	if dead > 0 {
-		parts = append(parts, fmt.Sprintf("%d unavailable", dead))
-	}
-	if delayed > 0 {
-		parts = append(parts, fmt.Sprintf("%d data delayed", delayed))
-	}
-	if goldStale {
+	if n.goldNamedStale() {
 		parts = append(parts, "gold: no recent bar")
 	}
 	return strings.Join(parts, " · ")
@@ -882,6 +905,55 @@ func fxPairsWord(ok, total int) string {
 		return fmt.Sprintf("%d %s", total, word)
 	}
 	return fmt.Sprintf("%d of %d %s", ok, total, word)
+}
+
+// ── content blocks (stage 2, 2026-09-16) ─────────────────────────────────────
+//
+// The FX card had no blocks at all, so the site had no CURRENT READING and no
+// SCOPE AND LIMITATIONS section for it: the page was the coverage header and a
+// numbered list in which the column header read as "clue No. 01" and the order
+// note as "clue No. 02". The blocks below give those two sections something to
+// hold WITHOUT adding a rule.
+//
+// what_happened states the COVERAGE and that the card is a comparison. It does
+// not name an instrument, does not add the pairs up and says nothing about any
+// currency: that is stage 3 and needs its own decision (fxOrderNote,
+// fxConclusion, and the fxStage3Claim test that guards it).
+//
+// scenarios and invalidates stay nil, and so do why_level and regime: an
+// overview of four instruments holds no single idea to invalidate, no level
+// and no one regime. Per-instrument numbers live in results[].
+
+// fxLimitations is the card's scope caveat, in the words the card already
+// uses: no common base (the honesty rule behind the missing combined verdict),
+// gold's contract (fxGoldHeader) and what the row order is not (fxOrderNote).
+const fxLimitations = "The instruments are not normalised to a common base and are never added into one reading; " +
+	"gold is COMEX GC=F futures, not spot XAUUSD; the row order is a reading aid, not a ranking."
+
+// fxOrderClause is the order note (fxOrderNote) worded for prose, true on
+// every path: the size of the move each row SHOWS (a row after a session gap
+// shows its change since the named close, not over 24h), rows without a fresh
+// bar last, and not a ranking.
+const fxOrderClause = "rows are ordered by the size of the move each row shows, rows without a fresh bar last, not by importance"
+
+// fxBlocksOf words the coverage from the SAME count the header is built from
+// (fxCoverageOf — the header's "read" list and its "gold: no recent bar"), and
+// the order clause only when the table actually shows an order (fxOrderNote,
+// more than one row). nil when the header's read list is empty.
+func fxBlocksOf(reads []fxRead, now time.Time, rows int) *ContentBlocks {
+	n := fxCoverageOf(reads, now)
+	who := n.read()
+	if len(who) == 0 || (n.pairsOK == 0 && !n.goldOK) {
+		return nil
+	}
+	what := strings.Join(who, " and ") + " read side by side on closed 1h bars"
+	if n.goldNamedStale() {
+		what += "; gold has no recent bar"
+	}
+	if rows > 1 {
+		what += "; " + fxOrderClause
+	}
+	return &ContentBlocks{WhatHappened: what + ".", Limitations: fxLimitations}
 }
 
 // fxOverviewCard assembles the /fx card from reads with at least one reading
@@ -925,6 +997,7 @@ func fxOverviewCard(reads []fxRead, now time.Time) Card {
 	for i, r := range table.shown {
 		c.Results = append(c.Results, fxResult(r, now, i+1))
 	}
+	c.Blocks = fxBlocksOf(reads, now, len(table.shown))
 	return c
 }
 

@@ -369,6 +369,16 @@ func fxAllTextLines(t *testing.T, reads []fxRead, now time.Time) []string {
 	t.Helper()
 	c := fxCardFromReads(reads, now)
 	lines := append([]string{c.Verdict, c.Short, howTexts[keyFX]}, c.Facts...)
+	// The content blocks are text a reader sees too (the site's CURRENT READING
+	// and SCOPE AND LIMITATIONS sections), so they face the same rules as the
+	// rows: no recommendation, no forecast, no stage-3 dollar claim.
+	if b := c.Blocks; b != nil {
+		lines = append(lines, b.WhatHappened, b.WhyLevel, b.Regime, b.Limitations, b.Context, b.StateChanges, b.Source)
+		lines = append(lines, b.Scenarios...)
+		if b.Invalidates != nil {
+			lines = append(lines, *b.Invalidates)
+		}
+	}
 	lines = append(lines, exampleFacts(c)...)
 	lines = append(lines, strongestFact(c), conclusionFor(c), detectedSentence(c))
 	g := gathered{fx: reads, fxAnyOK: c.effectiveStatus() == statusOK, cards: map[string]Card{}}

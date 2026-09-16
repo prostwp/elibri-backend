@@ -311,9 +311,29 @@ func allSignalNames() string {
 	return strings.Join(names, ", ")
 }
 
+// confirmedSplit is what the strongest_confirmed rule actually compared:
+// pickTop scores only candidates that are BOTH eligible and confirmed
+// (best(signalOrder, true)). An eligible but unconfirmed reading is fresh and
+// live, yet it never competed — so the selection line and the digest caveat
+// list the confirmed ones as the comparison, and name the eligible ones only
+// as the field the single confirmed reading stood in.
+func confirmedSplit(p topPick) (eligible, confirmed []string) {
+	for _, c := range p.Candidates {
+		if !c.Eligible {
+			continue
+		}
+		eligible = append(eligible, scopedSignalName(c.Key))
+		if c.Confirmed {
+			confirmed = append(confirmed, scopedSignalName(c.Key))
+		}
+	}
+	return eligible, confirmed
+}
+
 // selectionLine is the one line (≤110 chars) saying how the highlighted card
 // was chosen. It explains the RULE, never the market: no "because the market
-// is about to…", and it states that the three scales are not comparable.
+// is about to…". It says the scales are not calibrated only where scores were
+// actually compared — two or more confirmed readings (confirmedSplit).
 // Every list names what each agent's ranked reading covers (signalScope).
 func selectionLine(p topPick) string {
 	all := allSignalNames()
@@ -321,16 +341,14 @@ func selectionLine(p topPick) string {
 	case ruleMacroRiskOff:
 		return "Macro risk-off tops the digest by rule, ahead of " + all
 	case ruleConfirmed:
-		var eligible []string
-		for _, c := range p.Candidates {
-			if c.Eligible {
-				eligible = append(eligible, scopedSignalName(c.Key))
-			}
+		eligible, confirmed := confirmedSplit(p)
+		switch {
+		case len(confirmed) >= 2:
+			return "Selected among " + strings.Join(confirmed, ", ") + " by the digest rule; scales not calibrated"
+		case len(eligible) >= 2:
+			return signalNames[p.Winner] + " is the only confirmed reading among " + strings.Join(eligible, ", ") + "; selected by rule"
 		}
-		if len(eligible) < 2 {
-			return signalNames[p.Winner] + " is the only fresh live reading among " + all + "; selected by rule"
-		}
-		return "Selected among " + strings.Join(eligible, ", ") + " by the digest rule; scales not calibrated"
+		return signalNames[p.Winner] + " is the only fresh live reading among " + all + "; selected by rule"
 	case ruleUnconfirmed:
 		return "No confirmed reading among " + all + "; shown by the digest's fallback order"
 	default:

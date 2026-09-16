@@ -597,16 +597,24 @@ func TestDigestJSONSectionsEqualHTML(t *testing.T) {
 // ── the selection line ───────────────────────────────────────────────────────
 
 func TestSelectionLineShortAndHonest(t *testing.T) {
+	// ruleConfirmed only ever scores eligible AND confirmed candidates, so the
+	// comparison fixture is confirmed; mixedField is the review case of
+	// 2026-09-16 — three fresh readings, one confirmed, nothing compared.
 	all := []topCandidate{
-		{Key: keyFunding, Eligible: true}, {Key: keyMomentum, Eligible: true}, {Key: keyTrend, Eligible: true},
+		{Key: keyFunding, Eligible: true, Confirmed: true}, {Key: keyMomentum, Eligible: true, Confirmed: true},
+		{Key: keyTrend, Eligible: true, Confirmed: true},
 	}
-	one := []topCandidate{{Key: keyTrend, Eligible: true}, {Key: keyFunding, Excluded: excludedStale}}
+	one := []topCandidate{{Key: keyTrend, Eligible: true, Confirmed: true}, {Key: keyFunding, Excluded: excludedStale}}
+	mixedField := []topCandidate{
+		{Key: keyFunding, Eligible: true}, {Key: keyMomentum, Eligible: true}, {Key: keyTrend, Eligible: true, Confirmed: true},
+	}
 	picks := []topPick{
 		{Rule: ruleMacroRiskOff, Winner: keyMacro},
 		{Rule: ruleConfirmed, Winner: keyFunding, Candidates: all},
 		{Rule: ruleConfirmed, Winner: keyTrend, Candidates: one},
 		{Rule: ruleUnconfirmed, Winner: keyMomentum, NoHighlight: true},
 		{Rule: ruleFallbackMacro, Winner: keyMacro, NoHighlight: true},
+		{Rule: ruleConfirmed, Winner: keyTrend, Candidates: mixedField},
 	}
 	for _, p := range picks {
 		l := selectionLine(p)
@@ -622,6 +630,12 @@ func TestSelectionLineShortAndHonest(t *testing.T) {
 	}
 	if l := selectionLine(picks[2]); !strings.HasPrefix(l, "Trend is the only") {
 		t.Errorf("single eligible: %q", l)
+	}
+	// One confirmed among three fresh readings: no scores were compared, so no
+	// "Selected among" the unconfirmed ones and no calibration claim.
+	want := "Trend is the only confirmed reading among Funding, Momentum (BTC/ETH), Trend (BTC); selected by rule"
+	if l := selectionLine(picks[5]); l != want {
+		t.Errorf("one confirmed among eligible:\n got %q\nwant %q", l, want)
 	}
 }
 

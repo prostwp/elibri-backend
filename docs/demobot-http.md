@@ -227,7 +227,9 @@ banner, gold included.
 
 **Content blocks** (same `ContentBlocks` object as trend / S/R): top-level
 `blocks` on the single-asset card, `results[].blocks` per asset on
-multi-asset cards (the digest keeps dropping top-level `blocks` only).
+multi-asset cards. Since 2026-09-16 the multi-asset card ALSO carries
+top-level `blocks` — the counter and the scope, never one asset's reading
+(see "Composite card blocks" below).
 Momentum has no price level, no target and no invalidation price; the fields
 say so:
 
@@ -250,7 +252,7 @@ only; `ok` entries add:
  "data_as_of": "2026-09-15T08:00:00Z", "freshness": "on_time",
  "verdict": "neutral", "state": "rsi_below_55",
  "why": "RSI below the 55 threshold",
- "rsi": 54.71203, "macd_histogram": 217.3456,
+ "rsi": 54.71203, "rsi_shown": "54.7", "macd_histogram": 217.3456,
  "blocks": {"what_happened": "…", "why_level": "…", "scenarios": ["…", "…"],
             "invalidates": null, "regime": "…"}}
 ```
@@ -259,6 +261,29 @@ only; `ok` entries add:
 served as `0`); `data_as_of` is the close of that asset's last closed bar
 (the envelope's `data_as_of` stays the oldest of them). Indicator output that
 is not finite degrades the asset to `insufficient_history`.
+
+**`rsi_shown`** (added 2026-09-16, momentum rows only) is the RSI **exactly as
+the card prints it** — one decimal, rounded toward 50 (see Checklist above).
+Print this string; do not round `rsi` yourself. A consumer that rounds the raw
+value to one decimal can land on the other side of a threshold from the card's
+own text (live 2026-09-16: a gauge printed `RSI 60.9` above a line reading
+`60.8`). `rsi` is unchanged and stays the raw value.
+
+**Composite card blocks** (added 2026-09-16). The multi-asset momentum card
+now carries top-level `blocks` of its own: `what_happened` is the same counter
+as the verdict, worded as prose (`1 bullish (BTC), 0 bearish, 2 not confirmed
+on closed 4h candles.`), and `limitations` states what the colour follows and
+that the histogram is not compared across assets. The colour part branches like
+the card's own colour lines: `Colour follows BTC/ETH only, the reads the digest
+ranks; other assets are only counted.` (BTC/ETH beside other reads), `Colour
+follows BTC/ETH only, the reads the digest ranks; no BTC/ETH read is available.`
+(requested, none read), `No BTC/ETH is on this card, so the colour follows every
+asset read.` (an FX/gold scan), `Colour follows the BTC/ETH reads, the ones the
+digest ranks.` (BTC/ETH only); each is followed by `The MACD histogram is in
+price units, so the card shows only its sign and never compares it between
+assets.` The card holds no single reading, so
+`why_level` and `regime` are empty and `scenarios` / `invalidates` are null —
+the per-asset reading stays in `results[].blocks`.
 
 ## FX card
 
@@ -499,6 +524,31 @@ card has no levels for.
 **AI brief input.** The FX rows sent to the model are the market line plus
 the indicators; gold is named `GOLD (COMEX GC=F futures)` there, since the
 model sees no gold section header and would otherwise call it spot.
+
+**Content blocks** (added 2026-09-16; absent on a card with no reading). The
+FX card refuses a combined verdict, so its blocks state the **coverage** and
+that the card is a comparison — they name no instrument, add nothing up and
+say nothing about any currency:
+
+```json
+"blocks": {
+  "what_happened": "3 pairs and gold read side by side on closed 1h bars; rows are ordered by the size of the move each row shows, rows without a fresh bar last, not by importance.",
+  "why_level": "", "scenarios": null, "invalidates": null, "regime": "",
+  "limitations": "The instruments are not normalised to a common base and are never added into one reading; gold is COMEX GC=F futures, not spot XAUUSD; the row order is a reading aid, not a ranking."
+}
+```
+
+The coverage phrase is counted by the same code as the verdict's coverage, so
+the two cannot disagree: `1 of 3 pairs and gold …`, `0 of 3 pairs and gold …`,
+`1 pair read …`. Gold without a recent bar leaves the read list exactly as it
+does in the verdict (`gold: no recent bar`) and is named on its own: `3 pairs
+read side by side on closed 1h bars; gold has no recent bar; …`. The order
+clause appears only when the table shows more than one row, and says what the
+rows are ordered by on every path — after a session gap a row shows its change
+since a named close, not over 24h. `scenarios` and `invalidates`
+stay `null` and `why_level` / `regime` empty: an overview of four instruments
+holds no single idea, level or regime. Per-instrument numbers are in
+`results[]`.
 
 ## ⚠️ Macro correlations changed meaning (B2)
 
@@ -907,7 +957,7 @@ Every agent endpoint answers with one shape:
 | `facts` | string[] | The card's bullet facts, `[]` when none |
 | `levels` | object | **trend / sr / vol only**: raw-precision numeric levels — see [levels](#machine-readable-levels). Absent for other agents, on `ok: false` cards, and **on trend cards that are not a confirmed trend** (flat / grey / conflict — since 2026-09-15 there is nothing to invalidate there) |
 | `results` | array | **momentum and fx**: per-asset machine outcomes `{"asset","ok","reason"}` — see [momentum scan](#momentum-scan-assets--tf). Since 2026-09-15 also on the single-asset momentum card (one entry), and every `ok` entry carries the read itself (`rsi`, `macd_histogram`, `verdict`, `state`, `why`, `timeframe`, `data_as_of`, `freshness`, `blocks`) — see [momentum card](#momentum-card-and-content-blocks). On `/agents/fx` (since 2026-09-15) one entry per instrument with `price`, `change_pct`, `change_window`, `change_from`, `rsi`, `ema_relation`, `range_position_pct`, `timeframe`, `data_as_of`, `freshness` — see [FX card](#fx-card). On `/agents/funding` (since 2026-09-15) one entry per major with `symbol`, `rate`, `side_threshold`, `crossed`, `ratio_to_threshold`, `selected` — see [funding card](#funding-card-and-content-blocks). Absent elsewhere |
-| `blocks` | object | **trend, sr, vol, funding, whale, the global macro card and the single-asset momentum card** (additive; funding and whale since 2026-09-15, see [funding card](#funding-card-and-content-blocks) and [whale card](#whale-card-and-content-blocks) — whale adds a `source` field and serves `scenarios` / `invalidates` as `null`): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks), [volatility card](#volatility-card-and-content-blocks), [macro card and content blocks](#macro-card-and-content-blocks) and [momentum card](#momentum-card-and-content-blocks) (multi-asset momentum cards carry them per asset, in `results[].blocks`). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they belong to the winning card (never on the digest, below) |
+| `blocks` | object | **trend, sr, vol, funding, whale, the global macro card and both momentum cards; since 2026-09-16 also fx, digest and top** (additive; funding and whale since 2026-09-15, see [funding card](#funding-card-and-content-blocks) and [whale card](#whale-card-and-content-blocks) — whale adds a `source` field and serves `scenarios` / `invalidates` as `null`): ready-made sentences for content — see [trend card and content blocks](#trend-card-and-content-blocks), [S/R card and content blocks](#sr-card-and-content-blocks), [volatility card](#volatility-card-and-content-blocks), [macro card and content blocks](#macro-card-and-content-blocks) and [momentum card](#momentum-card-and-content-blocks) (multi-asset momentum cards carry them per asset in `results[].blocks` AND a top-level pair of their own). Absent for every other agent, on `ok: false` cards, on the S/R "No significant levels detected" finding and on the macro asset views; on `/agents/top` they are the winning card's, with the selection rule's caveat appended to `limitations`, and the digest has its own pair (below); both are absent when the highlighted card is `ok: false` |
 | `macro` | object | **macro cards only** (additive, 2026-09-15): the numbers behind the card — rule score, bands, per-lamp rule / weight / contribution / source / `as_of`, freshness, Fear & Greed age. See [macro card](#macro-card-and-content-blocks). Absent for every other agent and on macro cards without a reading (`UNKNOWN`, offline) |
 | `funding` | object | **funding card only** (additive, 2026-09-15): `state`, `selected_symbol`, `coverage`, `liquidations` — see [funding card](#funding-card-and-content-blocks). Absent for every other agent and on the all-offline funding `503` |
 | `whale` | object | **whale card only** (additive, 2026-09-15): `state`, `count`, `threshold_usd`, `window`, `direction`, the listed transactions — see [whale card](#whale-card-and-content-blocks). Absent for every other agent and on the offline `503` |
@@ -996,9 +1046,30 @@ The health of the whole digest sweep is **not** in this pair: it is
 `digest.status` (`live` \| `partial` \| `degraded`, the same value as the
 `/showcase` digest row's `digest_status`), with `digest.live_sections` and
 `digest.degraded_sources`. `digest.selection.highlight_ok` /
-`highlight_reason` repeat the top-level pair. `blocks` (one agent's content sentences) ship on
-`/agents/top` only — the digest envelope never carries them, since they
-describe that one card, not the whole sweep (fixed 2026-09-15).
+`highlight_reason` repeat the top-level pair. `blocks`: the digest never
+carries the WINNER's content sentences — they describe that one card, not the
+whole sweep (fixed 2026-09-15). Since 2026-09-16 it carries **its own** two
+instead: `what_happened` = how much of the sweep read, which card the fixed
+rule highlighted and the selection line; `limitations` = the caveat of the
+rule that chose the card, branching exactly like `selection.line`:
+
+| `selection.rule` | `limitations` |
+|---|---|
+| `macro_risk_off` | `Placed by the macro risk-off gate, ahead of Funding, Momentum (BTC/ETH), Trend (BTC); no comparison between agents chose it, and it is a backdrop, not a finding about one market.` |
+| `strongest_confirmed`, ≥2 eligible **and confirmed** | `Chosen by comparing the confirmed readings of <confirmed agents>; their scores are on scales not calibrated against each other, so a higher score does not mean a stronger reading.` |
+| `strongest_confirmed`, 1 confirmed among ≥2 eligible | `<Agent> is the only confirmed reading among <eligible agents>; it was not compared with another agent.` |
+| `strongest_confirmed`, 1 eligible | `<Agent> is the only fresh live reading among Funding, Momentum (BTC/ETH), Trend (BTC); it was not compared with another agent.` |
+| `fallback_unconfirmed` | `No confirmed reading among Funding, Momentum (BTC/ETH), Trend (BTC); this card is shown by the digest's fallback order, not as a finding.` |
+| `fallback_macro` | `No fresh live reading among Funding, Momentum (BTC/ETH), Trend (BTC); the macro card is shown as the last resort, not as a finding.` |
+
+Only the branch where scores were actually compared speaks of scores: the rule scores candidates that are both eligible **and** confirmed, so a fresh but unconfirmed reading never counts as compared. `selection.line` follows the same split (since 2026-09-16): `Selected among <confirmed agents> by the digest rule; scales not calibrated` only with two or more confirmed, `<Agent> is the only confirmed reading among <eligible agents>; selected by rule` when the others were fresh but unconfirmed. All
+three agents rank; Funding carries no scope suffix because it is market-wide.
+Every other field is empty or null — a sweep of many markets holds no single
+level, regime or idea. `/agents/top` IS the winning card, so it keeps that
+card's own blocks and appends the same caveat to their `limitations`. Neither
+envelope carries `blocks` when the highlighted card is `ok: false` (like every
+other agent), and `/agents/top` carries none when the winner has no blocks of
+its own.
 
 ### Digest readout
 
@@ -1294,7 +1365,7 @@ has no price level and no directional idea; two additive keys are its own:
 | `invalidates` | Always `null`: there is no directional idea to invalidate |
 | `state_changes_when` | **vol only** (additive): `"A closed 4h candle with the ratio below 1.25 ends the elevated state"`; normal: `"A closed 4h candle with the ratio at 0.80 or below (compressed) or 1.25 or above (elevated) changes the state"` |
 | `regime` | The **local amplitude** regime, not a market regime: `"Local amplitude regime · BTC 4h · normal: ATR 1.050× its 30-bar baseline"` |
-| `limitations` | **vol and funding only** (additive): `"Measures how far price moves per candle, not its direction; it does not confirm a breakout"` (funding: see [funding card](#funding-card-and-content-blocks)) |
+| `limitations` | Additive. What the reading does not cover: `"Measures how far price moves per candle, not its direction; it does not confirm a breakout"`. Also served by funding, whale, narrative, gold, and since 2026-09-16 by trend, S/R, macro, fx, both momentum cards, digest and top — see each card's section |
 
 The Gold card's volatility line uses the same words (daily gold series):
 `Volatility: normal · 1d · ATR 1.000× its 30-bar baseline` (before:

@@ -379,6 +379,10 @@ func (v srView) blocks() *ContentBlocks {
 	return &ContentBlocks{
 		WhatHappened: fmt.Sprintf("On %s: %s.", tf, lowerFirst(v.headline())),
 		WhyLevel:     why,
+		// limitations (additive 2026-09-16): the card's own window/method line,
+		// verbatim — it is what the levels are and are not measured over, and
+		// it already closes facts[].
+		Limitations: v.methodLine(),
 		// "its band" = ±0.25 ATR around the level (the window line and the
 		// how-it-works text define it). Both events are worded from the level's
 		// CURRENT side of price (side comes from the card's own split), so they

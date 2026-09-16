@@ -427,6 +427,62 @@ func momentumCountName(spec assetSpec) string {
 	return spec.Display
 }
 
+// momentumTally is one sweep's counter, computed ONCE: the bullish and
+// bearish asset names, the neutral and failed counts, the same counts over the
+// RANKED (Binance) reads, and the shared timeframe when every read has one.
+// The header (momentumHeader) and the card's content blocks
+// (momentumOverviewBlocks) both read it, so the counter a reader sees in the
+// verdict and the counter the blocks describe can never disagree.
+type momentumTally struct {
+	bull, bear             []string
+	neutral, failed        int
+	rankedBull, rankedBear int
+	rankedAsked            bool
+	tf                     string // "" when nothing read
+	sameTF                 bool   // every read shares tf
+}
+
+func momentumTallyOf(assets []momentumAsset) momentumTally {
+	t := momentumTally{sameTF: true}
+	for _, a := range assets {
+		isRanked := a.spec.Source == srcBinance
+		t.rankedAsked = t.rankedAsked || isRanked
+		if a.status != statusOK {
+			t.failed++
+			continue
+		}
+		switch a.read.verdict {
+		case momentumBullish:
+			t.bull = append(t.bull, momentumCountName(a.spec))
+			if isRanked {
+				t.rankedBull++
+			}
+		case momentumBearish:
+			t.bear = append(t.bear, momentumCountName(a.spec))
+			if isRanked {
+				t.rankedBear++
+			}
+		default:
+			t.neutral++
+		}
+		if t.tf == "" {
+			t.tf = a.read.interval
+		} else if a.read.interval != t.tf {
+			t.sameTF = false
+		}
+	}
+	return t
+}
+
+// count words one side of the counter: "1 bullish (BTC)", "0 bearish".
+func momentumCountPart(names []string, word string) string {
+	s := fmt.Sprintf("%d %s", len(names), word)
+	if len(names) > 0 {
+		s += " (" + strings.Join(names, ", ") + ")"
+	}
+	return s
+}
+
 // momentumHeader is the overview/scan verdict — a counter, never one asset's
 // verdict — and the semaphore derived from it:
 //
@@ -445,55 +501,18 @@ func momentumCountName(spec assetSpec) string {
 // on what read: requested BTC/ETH that produced no reading leave the card
 // neutral (the default trio with dead crypto and a live gold read).
 func momentumHeader(assets []momentumAsset) (verdict, emoji string) {
-	var bull, bear []string
-	neutral, failed := 0, 0
-	rankedBull, rankedBear := 0, 0
-	rankedAsked := false
-	tf, sameTF := "", true
-	for _, a := range assets {
-		isRanked := a.spec.Source == srcBinance
-		rankedAsked = rankedAsked || isRanked
-		if a.status != statusOK {
-			failed++
-			continue
-		}
-		switch a.read.verdict {
-		case momentumBullish:
-			bull = append(bull, momentumCountName(a.spec))
-			if isRanked {
-				rankedBull++
-			}
-		case momentumBearish:
-			bear = append(bear, momentumCountName(a.spec))
-			if isRanked {
-				rankedBear++
-			}
-		default:
-			neutral++
-		}
-		if tf == "" {
-			tf = a.read.interval
-		} else if a.read.interval != tf {
-			sameTF = false
-		}
+	t := momentumTallyOf(assets)
+	verdict = momentumCountPart(t.bull, momentumBullish) + " · " + momentumCountPart(t.bear, momentumBearish) +
+		fmt.Sprintf(" · %d not confirmed", t.neutral)
+	if t.failed > 0 {
+		verdict += fmt.Sprintf(" · %d unavailable", t.failed)
 	}
-	part := func(names []string, word string) string {
-		s := fmt.Sprintf("%d %s", len(names), word)
-		if len(names) > 0 {
-			s += " (" + strings.Join(names, ", ") + ")"
-		}
-		return s
+	if t.sameTF && t.tf != "" {
+		verdict += " · " + t.tf
 	}
-	verdict = part(bull, momentumBullish) + " · " + part(bear, momentumBearish) + fmt.Sprintf(" · %d not confirmed", neutral)
-	if failed > 0 {
-		verdict += fmt.Sprintf(" · %d unavailable", failed)
-	}
-	if sameTF && tf != "" {
-		verdict += " · " + tf
-	}
-	cb, cr := rankedBull, rankedBear
-	if !rankedAsked {
-		cb, cr = len(bull), len(bear)
+	cb, cr := t.rankedBull, t.rankedBear
+	if !t.rankedAsked {
+		cb, cr = len(t.bull), len(t.bear)
 	}
 	switch {
 	case cb > 0 && cr == 0:
@@ -504,6 +523,68 @@ func momentumHeader(assets []momentumAsset) (verdict, emoji string) {
 		emoji = emojiNeutral
 	}
 	return verdict, emoji
+}
+
+// momentumMACDLimitation: the card prints the histogram's sign only, because
+// its raw value is in price units and so is not comparable between assets.
+const momentumMACDLimitation = "The MACD histogram is in price units, so the card shows only its sign and never compares it between assets."
+
+// momentumOverviewLimitations is the multi-asset card's scope caveat. The
+// colour part branches exactly like the card's own colour lines
+// (composeMomentum, momentumHeader), because what the colour follows depends
+// on what was requested and what read:
+//
+//   - BTC/ETH read beside other assets: momentumColourLine;
+//   - BTC/ETH requested, none read: momentumColourNoneLine;
+//   - no BTC/ETH requested (an FX/gold scan): the colour follows every read —
+//     the header's fallback; saying "BTC/ETH only" there would be false;
+//   - only BTC/ETH on the card: they are all the colour follows.
+func momentumOverviewLimitations(t momentumTally, rankedRead, otherRead bool) string {
+	var colour string
+	switch {
+	case rankedRead && otherRead:
+		colour = momentumColourLine
+	case t.rankedAsked && !rankedRead:
+		colour = momentumColourNoneLine
+	case !t.rankedAsked:
+		colour = "No BTC/ETH is on this card, so the colour follows every asset read"
+	default:
+		colour = "Colour follows the BTC/ETH reads, the ones the digest ranks"
+	}
+	return colour + ". " + momentumMACDLimitation
+}
+
+// momentumOverviewBlocks is the content-ready form of the MULTI-ASSET card.
+// The card holds no single reading — its verdict is a counter over the assets
+// — so the block that carries a reading on a single-asset card
+// (momentumBlocks: why_level, scenarios, invalidates, regime) has nothing to
+// say here and stays empty. Per-asset blocks keep living in results[].blocks.
+// nil when nothing read: there is no counter to describe.
+func momentumOverviewBlocks(assets []momentumAsset) *ContentBlocks {
+	t := momentumTallyOf(assets)
+	if len(t.bull)+len(t.bear)+t.neutral == 0 {
+		return nil
+	}
+	rankedRead, otherRead := false, false
+	for _, a := range assets {
+		if a.status == statusOK {
+			rankedRead = rankedRead || a.spec.Source == srcBinance
+			otherRead = otherRead || a.spec.Source != srcBinance
+		}
+	}
+	what := momentumCountPart(t.bull, momentumBullish) + ", " + momentumCountPart(t.bear, momentumBearish) +
+		fmt.Sprintf(", %d not confirmed", t.neutral)
+	if t.failed > 0 {
+		what += fmt.Sprintf(", %d unavailable", t.failed)
+	}
+	where := ", each asset on its own timeframe"
+	if t.sameTF && t.tf != "" {
+		where = " on closed " + candleWord(t.tf) + " candles"
+	}
+	return &ContentBlocks{
+		WhatHappened: what + where + ".",
+		Limitations:  momentumOverviewLimitations(t, rankedRead, otherRead),
+	}
 }
 
 // momentumColourLine is added when a card mixes ranked (BTC/ETH) and other
@@ -528,6 +609,10 @@ func momentumResult(spec assetSpec, r momentumRead, fresh string) AssetResult {
 	res.State = momentumState(rsi, hist)
 	res.Why = momentumWhy(rsi, hist)
 	res.RSI, res.MACDHistogram = &rsi, &hist
+	// The RSI exactly as the card prints it, beside the raw value: a consumer
+	// rounding `rsi` itself can land on the other side of a threshold from the
+	// text (live 2026-09-16: a gauge printed 60.9 under text saying 60.8).
+	res.RSIShown = rsiShown(rsi)
 	res.Blocks = momentumBlocks(spec.Display, r.interval, rsi, hist)
 	return res
 }
@@ -604,6 +689,10 @@ func composeMomentum(c *Card, assets []momentumAsset, tf string, now time.Time) 
 	c.Deviation = maxDev
 	c.Verdict, c.Emoji = momentumHeader(assets)
 	c.Short = c.Verdict
+	// The card's own content blocks (additive 2026-09-16). The multi-asset card
+	// had none, so the site had no CURRENT READING / SCOPE section for it and
+	// every caveat sank into the numbered facts list.
+	c.Blocks = momentumOverviewBlocks(assets)
 }
 
 // momentumDegraded fills a multi-asset card that produced no reading at all:

@@ -463,19 +463,40 @@ func TestMomentumResultsJSON(t *testing.T) {
 	}
 	var env struct {
 		Results []map[string]any `json:"results"`
-		Blocks  any              `json:"blocks"`
+		Blocks  map[string]any   `json:"blocks"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		t.Fatal(err)
 	}
-	if len(env.Results) != 2 || env.Blocks != nil {
-		t.Fatalf("results %d, top-level blocks %v (composite: per-asset blocks only)", len(env.Results), env.Blocks)
+	if len(env.Results) != 2 {
+		t.Fatalf("results %d, want 2", len(env.Results))
+	}
+	// The composite card's OWN blocks (2026-09-16): the counter and the scope,
+	// never one asset's reading — a per-asset reading lives in results[].blocks
+	// and would read as the whole card's verdict up here.
+	if env.Blocks == nil {
+		t.Fatal("the composite card must carry its own blocks")
+	}
+	if got := env.Blocks["what_happened"]; got != "0 bullish, 0 bearish, 1 not confirmed, 1 unavailable on closed 4h candles." {
+		t.Errorf("blocks.what_happened = %v", got)
+	}
+	if env.Blocks["limitations"] != "Colour follows the BTC/ETH reads, the ones the digest ranks. "+momentumMACDLimitation {
+		t.Errorf("blocks.limitations = %v", env.Blocks["limitations"])
+	}
+	for _, k := range []string{"why_level", "regime"} {
+		if env.Blocks[k] != "" {
+			t.Errorf("the composite card has no single %s: %v", k, env.Blocks[k])
+		}
+	}
+	if env.Blocks["scenarios"] != nil || env.Blocks["invalidates"] != nil {
+		t.Errorf("the composite card has no idea to run forward or invalidate: %v", env.Blocks)
 	}
 	btc := env.Results[0]
 	for k, want := range map[string]any{
 		"asset": "BTC", "ok": true, "timeframe": "4h", "data_as_of": "2026-09-15T08:00:00Z",
 		"freshness": "on_time", "verdict": "neutral", "state": "rsi_below_55",
 		"why": "RSI below the 55 threshold", "rsi": 54.7, "macd_histogram": 217.3456789,
+		"rsi_shown": "54.7",
 	} {
 		if fmt.Sprint(btc[k]) != fmt.Sprint(want) {
 			t.Errorf("results[0].%s = %v, want %v", k, btc[k], want)

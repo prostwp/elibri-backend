@@ -814,6 +814,115 @@ func digestHeadline(top Card) string {
 	return "Top signal: " + who + " — " + top.Verdict
 }
 
+// ── composite content blocks (additive 2026-09-16) ───────────────────────────
+//
+// /agents/digest and /agents/top had no blocks at all, so the site rendered
+// neither a CURRENT READING nor a SCOPE AND LIMITATIONS section for them and
+// every caveat sank into the numbered facts list.
+//
+// Both blocks describe the SELECTION, never the market: what the sweep read,
+// which card the fixed rule highlighted, and the one thing the rule cannot do
+// — compare three agents whose scales are not calibrated against each other
+// (the same statement howTexts[keyDigest] and selectionLine already make).
+// scenarios, invalidates, why_level and regime stay empty on the digest: a
+// sweep of many markets holds no single idea, level or regime.
+
+// selectionCaveat is the limitation of a card chosen by the digest rule. It
+// branches EXACTLY like selectionLine, because what the reader must not
+// over-read depends on what actually put the card there:
+//
+//   - macro_risk_off: the gate put it there, ahead of every agent — nothing
+//     was compared;
+//   - strongest_confirmed with two or more CONFIRMED eligible readings: the
+//     only branch where scores were compared (pickTop scores eligible AND
+//     confirmed only), so the only one that says the scales are not
+//     calibrated (selectionLine says so too);
+//   - strongest_confirmed with one confirmed reading among several eligible:
+//     the others were fresh but never competed — nothing was compared;
+//   - strongest_confirmed with one eligible: the only fresh live reading —
+//     nothing to compare it with;
+//   - fallback_unconfirmed: nothing confirmed, the card is the fallback order's;
+//   - fallback_macro: no fresh live reading at all, macro is the last resort.
+//
+// Agent names come from allSignalNames / scopedSignalName, which also carry
+// what each ranked reading covers. Funding is ranked like the other two; it
+// has no scope suffix only because it is market-wide.
+func selectionCaveat(p topPick) string {
+	all := allSignalNames()
+	switch p.Rule {
+	case ruleMacroRiskOff:
+		return "Placed by the macro risk-off gate, ahead of " + all +
+			"; no comparison between agents chose it, and it is a backdrop, not a finding about one market."
+	case ruleConfirmed:
+		// Only eligible AND confirmed candidates were scored (confirmedSplit).
+		eligible, confirmed := confirmedSplit(p)
+		switch {
+		case len(confirmed) >= 2:
+			return "Chosen by comparing the confirmed readings of " + strings.Join(confirmed, ", ") +
+				"; their scores are on scales not calibrated against each other, so a higher score does not mean a stronger reading."
+		case len(eligible) >= 2:
+			return signalNames[p.Winner] + " is the only confirmed reading among " + strings.Join(eligible, ", ") +
+				"; it was not compared with another agent."
+		}
+		return signalNames[p.Winner] + " is the only fresh live reading among " + all +
+			"; it was not compared with another agent."
+	case ruleUnconfirmed:
+		return "No confirmed reading among " + all +
+			"; this card is shown by the digest's fallback order, not as a finding."
+	default:
+		return "No fresh live reading among " + all +
+			"; the macro card is shown as the last resort, not as a finding."
+	}
+}
+
+// digestBlocks words one sweep: how much of it read (the same Live/Total the
+// digest.status object carries), which card the rule highlighted (the headline
+// the digest already prints) and how it was chosen (selectionLine, verbatim).
+// nil when the highlighted card has no live reading: like every other agent,
+// an ok:false envelope carries no blocks.
+func digestBlocks(g gathered, p topPick, top Card) *ContentBlocks {
+	if top.effectiveStatus() != statusOK {
+		return nil
+	}
+	h := g.health()
+	return &ContentBlocks{
+		WhatHappened: fmt.Sprintf("%d of %d sections read. %s. %s.",
+			h.Live, h.Total, strings.TrimSuffix(digestHeadlineFor(p, top), "."), selectionLine(p)),
+		Limitations: selectionCaveat(p),
+	}
+}
+
+// topBlocks keeps the winner card's own blocks — on /agents/top the envelope IS
+// that one card — and appends the selection caveat for the rule that chose it.
+// The blocks are copied first: the pointer is shared with the gathered sweep,
+// and a digest rendered from the same sweep must not inherit the sentence.
+// nil when the winner has no live reading or no blocks of its own: an
+// ok:false card carries no blocks, and a caveat alone under an empty
+// what_happened describes nothing.
+func topBlocks(p topPick, c Card) *ContentBlocks {
+	if c.effectiveStatus() != statusOK || c.Blocks == nil {
+		return nil
+	}
+	// Deep copy: the slice and the invalidates pointer are the winner's own.
+	b := *c.Blocks
+	if c.Blocks.Scenarios != nil {
+		b.Scenarios = append([]string{}, c.Blocks.Scenarios...)
+	}
+	if c.Blocks.Invalidates != nil {
+		inv := *c.Blocks.Invalidates
+		b.Invalidates = &inv
+	}
+	caveat := selectionCaveat(p)
+	if b.Limitations == "" {
+		b.Limitations = caveat
+	} else {
+		// Funding's and trend's limitations end without a full stop; joined as
+		// is they ran into the caveat ("…other venues No confirmed reading…").
+		b.Limitations = endSentence(b.Limitations) + " " + caveat
+	}
+	return &b
+}
+
 // handleDigest runs the exact digest sweep and serves the top card as the
 // envelope head, the remaining one-liners as sections and the AI brief as
 // ai_text. Partial upstream failures stay inside the 200 as honest offline
@@ -846,12 +955,15 @@ func digestEnvelope(g gathered, brief string) httpEnvelope {
 	// live_sections / degraded_sources (and /showcase digest_status);
 	// digest.selection.highlight_ok/_reason repeat the top-level pair.
 	env.Digest = digestReadout(g, p, top)
-	// blocks are one agent's content sentences (trend only). Inherited from the
-	// winner card they read as the DIGEST's own conclusion — a live digest said
-	// "Macro: risk-on" in its sections while blocks.regime said "flat — no
-	// trend" (the BTC Trend card's local regime). /agents/top keeps them: there
-	// the envelope IS that one card.
-	env.Blocks = nil
+	// The winner's blocks are ONE agent's content sentences. Inherited here they
+	// read as the DIGEST's own conclusion — a live digest said "Macro: risk-on"
+	// in its sections while blocks.regime said "flat — no trend" (the BTC Trend
+	// card's local regime). So they are replaced, not kept: the digest gets its
+	// own pair, about the sweep and the selection (digestBlocks, 2026-09-16 —
+	// before that the field was simply dropped and the site had no CURRENT
+	// READING section for the digest at all). /agents/top keeps the winner's:
+	// there the envelope IS that one card.
+	env.Blocks = digestBlocks(g, p, top)
 	env.AIText = nil
 	if brief != "" {
 		env.AIText = &brief
@@ -883,6 +995,7 @@ func (s *HTTPServer) handleTop(w http.ResponseWriter, r *http.Request, ctx conte
 	brief, why := s.ag.aiTopTexts(ctx, winner, g) // same aiMemo as the Telegram path
 
 	env := cardEnvelope(mergeTopWhy(card, why))
+	env.Blocks = topBlocks(g.selection(), card)
 	var parts []string
 	if brief != "" {
 		parts = append(parts, brief)

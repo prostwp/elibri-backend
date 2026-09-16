@@ -396,11 +396,21 @@ func (v trendView) blocks(short string) *ContentBlocks {
 	if head != "" {
 		head = strings.ToUpper(head[:1]) + head[1:]
 	}
+	limits := v.confirmLine()
+	if v.r.Confirmed() {
+		limits = v.holdsLine()
+	}
 	b := &ContentBlocks{
 		WhatHappened: fmt.Sprintf("%s on %s: %s.", head, candleWord(v.tf), lowerFirst(v.positionLine())),
 		WhyLevel:     v.whyLevel(),
 		Scenarios:    v.scenarios(),
 		Regime:       fmt.Sprintf("%s · %s · ADX %s", short, candleWord(v.tf), adxShown(v.r.ADX)),
+		// limitations (additive 2026-09-16) is the card's OWN caveat line,
+		// verbatim: what keeps a confirmed reading (holdsLine) or what an
+		// unconfirmed one still needs (confirmLine). Both are already facts[];
+		// the block lifts one into the site's scope section so it stops
+		// sinking into the numbered list.
+		Limitations: limits,
 	}
 	if v.r.Confirmed() && v.atr > 0 {
 		s := fmt.Sprintf("A closed %s candle %s %s invalidates the %s idea",

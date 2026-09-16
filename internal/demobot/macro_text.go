@@ -1216,6 +1216,20 @@ func goldRuleLines() []string {
 
 // ── content blocks (global card) ─────────────────────────────────────────────
 
+// limitations (additive 2026-09-16) is the global card's caveat. It is NOT a
+// verbatim fact line: it is assembled from three phrases the card already
+// prints elsewhere — "A backdrop, not a forecast" (howTexts[keyMacro]), "BTC
+// direction is not inferred" (btcContext) and "experimental model, own
+// weights" (goldContext). The gold clause is added only when the gold model
+// scored: when goldContext prints "no read" there is no gold score to qualify.
+func (v macroView) limitations() string {
+	s := "A backdrop, not a forecast: BTC direction is not inferred from the regime"
+	if v.gold.score != nil {
+		s += ", and the gold score is a separate experimental model with its own weights"
+	}
+	return s + "."
+}
+
 // blocks are the global card's content sentences. why_level stays "": Macro
 // has no price level. nil when there is nothing to read.
 func (v macroView) blocks() *ContentBlocks {
@@ -1239,9 +1253,10 @@ func (v macroView) blocks() *ContentBlocks {
 	b := &ContentBlocks{
 		WhatHappened: fmt.Sprintf("Lamps%s: %d positive, %d negative, %d neutral in this model; %s",
 			v.sessionSpan(), pos, neg, neu, score),
-		Scenarios: v.scenarios(),
-		Regime:    v.regimeBlock(),
-		Context:   v.contextBlock(),
+		Scenarios:   v.scenarios(),
+		Regime:      v.regimeBlock(),
+		Context:     v.contextBlock(),
+		Limitations: v.limitations(),
 	}
 	hi, lo, min := riskModel.high, riskModel.low, riskModel.minVoters
 	var inv string
