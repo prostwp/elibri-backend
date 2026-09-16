@@ -383,9 +383,19 @@ func whaleLines(c Card) []string {
 
 func TestWhaleLinesFitEveryPath(t *testing.T) {
 	for key, c := range whaleEveryCard(t) {
-		for _, l := range whaleLines(c) {
-			if n := utf8.RuneCountInString(l); n > whaleFactMaxRunes {
-				t.Errorf("%s: %d runes > %d: %q", key, n, whaleFactMaxRunes, l)
+		// Only a labeled read whose what_happened explains the colour (a coin
+		// leads, or a stablecoin carries the sentence) is site prose on
+		// whaleBlockProseMaxRunes; every other line and branch, the silent
+		// labeled source (a BTC monitor card) included, keeps the card-line budget.
+		prose := c.Whale != nil && c.Whale.ReadSource == whaleReadLabeled &&
+			(c.Whale.LeadAsset != nil || strings.HasPrefix(c.Verdict, "Stablecoin flow"))
+		for i, l := range whaleLines(c) {
+			max := whaleFactMaxRunes
+			if prose && c.Blocks != nil && i == 2+len(c.Facts) {
+				max = whaleBlockProseMaxRunes
+			}
+			if n := utf8.RuneCountInString(l); n > max {
+				t.Errorf("%s: %d runes > %d: %q", key, n, max, l)
 			}
 		}
 	}

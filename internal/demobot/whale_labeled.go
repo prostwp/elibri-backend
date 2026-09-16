@@ -41,7 +41,9 @@ package demobot
 //     the silence;
 //   - mempool wording (poll sampling, total outputs with change, the BTC
 //     price) belongs to the BTC path only and never appears here;
-//   - every line fits whaleFactMaxRunes.
+//   - every line fits whaleFactMaxRunes, except blocks.what_happened when it
+//     explains the colour: that is site prose, bounded by
+//     whaleBlockProseMaxRunes.
 
 import (
 	"fmt"
@@ -462,7 +464,7 @@ func whaleLabeledCardFrom(w *WhaleResp, ro *WhaleReadout, respEnd time.Time) Car
 		}
 	}
 
-	c.Blocks = whaleLabeledBlocks(lead, stable, totalTx, assets, anchor, stamped)
+	c.Blocks = whaleLabeledBlocks(lead, stable, labeled, totalTx, assets, anchor, stamped)
 	return c
 }
 
@@ -628,10 +630,123 @@ func whaleLabeledTxLine(t WhaleTransfer) string {
 	return whaleFit(amt, side, when)
 }
 
+// whaleBlockProseMaxRunes bounds blocks.what_happened on the labeled card when
+// it explains the colour (a coin leads, or a stablecoin carries the sentence).
+// whaleFactMaxRunes (110) is the budget of a card line and of the Telegram
+// card; blocks are neither (RenderHTML, the one-liner and the showcase never
+// read WhatHappened) — the site shows them as prose in its upper section, where
+// other agents already run longer (Digest ~230). Three sentences — the coin's
+// flow, the stablecoin's flow with its own window, and the colour reason —
+// measure up to ~306 runes with real asset names, hence 320. Facts, verdict,
+// short and every other branch stay on 110.
+const whaleBlockProseMaxRunes = 320
+
+// whaleProseAssetMaxRunes caps an asset name inside the prose so a long name
+// can never push the colour reason out of the bound. Real names are ≤ 5 runes;
+// facts[] keep the name whole.
+const whaleProseAssetMaxRunes = 24
+
+func whaleProseAsset(name string) string {
+	if r := []rune(name); len(r) > whaleProseAssetMaxRunes {
+		return string(r[:whaleProseAssetMaxRunes-1]) + "…"
+	}
+	return name
+}
+
+// whaleLabeledColourReason says why the card carries its colour, matched to
+// the lead coin's real direction (the semaphore in whaleLabeledCardFrom).
+func whaleLabeledColourReason(lead *WhaleFlow) string {
+	coin := whaleProseAsset(lead.Asset)
+	if lead.Direction == "outflow" {
+		return fmt.Sprintf("The colour follows %s only: %s moving off exchanges is counted as supply locked away. "+
+			"Stablecoin moves do not change the colour.", coin, coin)
+	}
+	return fmt.Sprintf("The colour follows %s only: %s moving to exchanges is counted as supply arriving there. "+
+		"Stablecoin moves do not change the colour.", coin, coin)
+}
+
+// whaleLabeledNeutralReason: a stablecoin moved and no coin carries a
+// direction. It names the band only when every coin that moved is
+// demonstrably inside it, and names no coin at all when none moved.
+func whaleLabeledNeutralReason(labeled []WhaleFlow) string {
+	moved, allUnderBand := 0, true
+	for _, f := range labeled {
+		if whaleIsStablecoin(f.Asset) || !whaleFlowHasActivity(f) {
+			continue
+		}
+		moved++
+		if f.NetFlowUSD24h == 0 || !whaleLabeledUnderBand(f) {
+			allUnderBand = false
+		}
+	}
+	switch {
+	case moved == 0:
+		return "Stablecoin moves do not change the colour, so the card stays neutral."
+	case allUnderBand:
+		return fmt.Sprintf("No coin's net reached the %d%% of gross flow needed for a direction, "+
+			"and stablecoin moves do not change the colour, so the card stays neutral.", whaleNeutralBandPct)
+	default:
+		return "No coin carried a net direction, and stablecoin moves do not change the colour, so the card stays neutral."
+	}
+}
+
+// whaleLabeledStableSentence names the stablecoin flow next to the coin's with
+// its OWN window: the backend serves each asset's latest snapshot separately,
+// so a failed tick can leave the stablecoin on an older time than the coin.
+func whaleLabeledStableSentence(lead, stable *WhaleFlow) string {
+	var window string
+	switch {
+	case stable.CapturedAt.IsZero():
+		window = "over its latest 24h snapshot"
+	case !lead.CapturedAt.IsZero() && stable.CapturedAt.Equal(lead.CapturedAt):
+		window = "in the same window"
+	default:
+		window = "in the 24h to " + whaleClock(stable.CapturedAt)
+	}
+	return fmt.Sprintf("%s shows a net %s %s exchanges %s.",
+		whaleProseAsset(stable.Asset), usd(whaleAbs(stable.NetFlowUSD24h)), whaleSide(stable.Direction), window)
+}
+
+// whaleProseFit joins full sentences (each already closed) under
+// whaleBlockProseMaxRunes. The LAST sentence is the reason and is never
+// dropped: first the optional middle sentences go, then the first sentence is
+// cut with "…" to leave the reason whole.
+func whaleProseFit(first string, middle []string, reason string) string {
+	fits := func(s string) bool { return utf8.RuneCountInString(s) <= whaleBlockProseMaxRunes }
+	for n := len(middle); n >= 0; n-- {
+		parts := append(append([]string{first}, middle[:n]...), reason)
+		if s := strings.Join(parts, " "); fits(s) {
+			return s
+		}
+	}
+	room := whaleBlockProseMaxRunes - utf8.RuneCountInString(reason) - 1
+	if r := []rune(first); room >= 2 && len(r) > room {
+		return string(r[:room-1]) + "… " + reason
+	}
+	if room >= 2 {
+		return first + " " + reason
+	}
+	return reason
+}
+
+// whaleFitSentence is whaleFit for a closed sentence on the 110 budget: parts
+// are dropped from the end until the line and its full stop fit; a single part
+// still too long is cut with "…" and not closed.
+func whaleFitSentence(parts ...string) string {
+	for len(parts) > 1 && utf8.RuneCountInString(strings.Join(parts, " · "))+1 > whaleFactMaxRunes {
+		parts = parts[:len(parts)-1]
+	}
+	s := strings.Join(parts, " · ")
+	if r := []rune(s); len(r)+1 > whaleFactMaxRunes {
+		return string(r[:whaleFactMaxRunes-1]) + "…"
+	}
+	return s + "."
+}
+
 // whaleLabeledBlocks is the content-ready form. No scenarios, nothing to
 // invalidate and no regime: the agent sees a flow between wallets, not price.
 // The window is named with a time only when the lead snapshot dated itself.
-func whaleLabeledBlocks(lead, stable *WhaleFlow, totalTx int, assets []string, windowEnd time.Time, stamped bool) *ContentBlocks {
+func whaleLabeledBlocks(lead, stable *WhaleFlow, labeled []WhaleFlow, totalTx int, assets []string, windowEnd time.Time, stamped bool) *ContentBlocks {
 	window := "in the last 24h"
 	if stamped {
 		window = "in the 24h to " + whaleClock(windowEnd)
@@ -639,17 +754,23 @@ func whaleLabeledBlocks(lead, stable *WhaleFlow, totalTx int, assets []string, w
 	var what string
 	switch {
 	case lead != nil:
-		what = whaleFit(fmt.Sprintf("Labeled exchange wallets show a net %s %s exchanges in %s %s",
-			usd(whaleAbs(lead.NetFlowUSD24h)), whaleSide(lead.Direction), lead.Asset, window))
+		first := fmt.Sprintf("Labeled exchange wallets show a net %s %s exchanges in %s %s.",
+			usd(whaleAbs(lead.NetFlowUSD24h)), whaleSide(lead.Direction), whaleProseAsset(lead.Asset), window)
+		var middle []string
+		if stable != nil {
+			middle = append(middle, whaleLabeledStableSentence(lead, stable))
+		}
+		what = whaleProseFit(first, middle, whaleLabeledColourReason(lead))
 	case stable != nil:
-		what = whaleFit(fmt.Sprintf("Labeled exchange wallets show a stablecoin net %s %s exchanges in %s %s",
-			usd(whaleAbs(stable.NetFlowUSD24h)), whaleSide(stable.Direction), stable.Asset, window))
+		first := fmt.Sprintf("Labeled exchange wallets show a stablecoin net %s %s exchanges in %s %s.",
+			usd(whaleAbs(stable.NetFlowUSD24h)), whaleSide(stable.Direction), whaleProseAsset(stable.Asset), window)
+		what = whaleProseFit(first, nil, whaleLabeledNeutralReason(labeled))
 	case totalTx == 0:
-		what = whaleFit(fmt.Sprintf("No labeled exchange transfer was recorded %s (%s)",
+		what = whaleFitSentence(fmt.Sprintf("No labeled exchange transfer was recorded %s (%s)",
 			window, strings.Join(assets, ", ")))
 	default:
-		what = whaleFit(fmt.Sprintf("Labeled exchange wallets show no net direction %s · %s",
-			window, whaleLabeledTransfersPhrase(totalTx)))
+		what = whaleFitSentence(fmt.Sprintf("Labeled exchange wallets show no net direction %s", window),
+			whaleLabeledTransfersPhrase(totalTx))
 	}
 	return &ContentBlocks{WhatHappened: what, WhyLevel: whaleLabeledWhyLevel,
 		Limitations: whaleLabeledLimitations, Source: whaleLabeledBlockSource}

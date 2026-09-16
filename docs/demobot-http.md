@@ -108,7 +108,10 @@ inputs and caching. New: a reason for every neutral, a two-condition
 checklist, a counter header for multi-asset cards, per-asset timeframe, bar
 time and freshness, context lines marked as outside the reading, content
 blocks, and the read itself in `results[]`. Every line is at most 110
-characters.
+characters. (This is the budget of a card line. The one exception is the Whale
+card on the labeled source: its `blocks.what_happened` is prose for the site's
+upper section and runs up to 320 characters when it explains the colour; see
+*Whale: the labeled source*.)
 
 **Neutral with a reason.** One reason per asset, computed from the same two
 numbers as the verdict:
@@ -2199,6 +2202,38 @@ monitor is shown unchanged and the silence is the last line —
 • Outputs total 30.00 BTC ≈ $2.28M · detected by the monitor at Sep 15 23:20 UTC, not the block time
 • The labeled source returned nothing this tick; address coverage is not reported
 ```
+
+**`blocks.what_happened` says why the card has its colour.** ⚠️ Text changed
+2026-09-16. On a labeled card that a coin leads, or that a stablecoin
+carries, `what_happened` is now several sentences, at most 320 characters
+(`whaleBlockProseMaxRunes`). It names the stablecoin flow next to the coin's
+and says why the card has its colour. Facts, verdict, `short`, the Telegram
+card and `/showcase/example` are unchanged byte for byte; the rules and the
+semaphore are unchanged. Do not parse the text.
+
+- The stablecoin sentence carries its **own** window. The backend serves each
+  asset's latest snapshot separately, so a failed tick can leave the stablecoin
+  on a different time: equal times read `in the same window`, a different time
+  reads `in the 24h to <its time>`, no time reads `over its latest 24h
+  snapshot`.
+- The colour reason matches the lead coin's real direction and is never the
+  part dropped: when the text does not fit, the stablecoin sentence goes first
+  (it stays in `facts[]`), then the first sentence is shortened. Asset names
+  longer than 24 characters are shortened inside this text only.
+- A neutral card that a stablecoin carries names the band only when every coin
+  that moved is demonstrably inside it; when no coin moved, only the stablecoin
+  rule is given.
+- The branches with nothing to explain (no labeled transfer, no net direction)
+  keep their words and the 110-character budget, now closed with a full stop.
+
+| Case | Before | After |
+|---|---|---|
+| coin to exchanges + stablecoin | `Labeled exchange wallets show a net $121.92M to exchanges in ETH in the 24h to Sep 15 23:24 UTC` | `Labeled exchange wallets show a net $121.92M to exchanges in ETH in the 24h to Sep 15 23:24 UTC. USDT shows a net $219.74M to exchanges in the same window. The colour follows ETH only: ETH moving to exchanges is counted as supply arriving there. Stablecoin moves do not change the colour.` |
+| coin from exchanges + stablecoin | `Labeled exchange wallets show a net $20.09M from exchanges in ETH in the 24h to Sep 15 23:24 UTC` | `Labeled exchange wallets show a net $20.09M from exchanges in ETH in the 24h to Sep 15 23:24 UTC. USDT shows a net $61.10M to exchanges in the same window. The colour follows ETH only: ETH moving off exchanges is counted as supply locked away. Stablecoin moves do not change the colour.` |
+| stablecoin + a coin inside the band | `Labeled exchange wallets show a stablecoin net $61.10M to exchanges in USDT in the 24h to Sep 15 23:24 UTC` | `Labeled exchange wallets show a stablecoin net $61.10M to exchanges in USDT in the 24h to Sep 15 23:24 UTC. No coin's net reached the 10% of gross flow needed for a direction, and stablecoin moves do not change the colour, so the card stays neutral.` |
+| stablecoin + a coin moved, band not provable (no gross flow in both directions, or net 0) | same as above | `Labeled exchange wallets show a stablecoin net $61.10M to exchanges in USDT in the 24h to Sep 15 23:24 UTC. No coin carried a net direction, and stablecoin moves do not change the colour, so the card stays neutral.` |
+| stablecoin only, no coin moved | same as above | `Labeled exchange wallets show a stablecoin net $61.10M to exchanges in USDT in the 24h to Sep 15 23:24 UTC. Stablecoin moves do not change the colour, so the card stays neutral.` |
+| no net direction | `Labeled exchange wallets show no net direction in the 24h to Sep 15 23:24 UTC · 31 labeled transfers` | the same, ending with `.` |
 
 What the card claims, and what it refuses to:
 
