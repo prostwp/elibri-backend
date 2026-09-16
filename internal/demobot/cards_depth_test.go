@@ -167,10 +167,7 @@ func TestNewsCardBelowMentionThreshold(t *testing.T) {
 	if c.Emoji != emojiNeutral {
 		t.Errorf("emoji: got %q, want neutral (no finding to color)", c.Emoji)
 	}
-	wantVerdict := "Below threshold: Zero-knowledge (ZK) networks leads by activity score with 3 matched items in 24h; 5 needed to score"
-	if len([]rune(wantVerdict)) > narrativeFactMaxRunes {
-		wantVerdict = "Below threshold: Zero-knowledge (ZK) networks leads with 3 matched items/24h; 5 needed"
-	}
+	wantVerdict := "Below threshold: Zero-knowledge (ZK) networks ranks first, 3 matched items/24h; 5 needed"
 	if c.Verdict != wantVerdict {
 		t.Errorf("verdict:\ngot:  %q\nwant: %q", c.Verdict, wantVerdict)
 	}
@@ -638,11 +635,11 @@ func TestSRHeadlineNearestShown(t *testing.T) {
 	sup := []SRLevel{{Level: 61200, Raw: 61200, Touches: 4}, {Level: 60000, Raw: 60000, Touches: 2}}
 	res := []SRLevel{{Level: 63000, Raw: 63000, Touches: 3}}
 	c := srCardFrom(btcSpec, sup, res, 62000, 249, time.Time{}, nil)
-	if want := "Price 62000 — 1.3% above the nearest shown support 61200 (candidate, 4 pivots)"; c.Verdict != want {
+	if want := "Price 62000 — 1.3% above nearest shown support 61200 (candidate, 4 pivots; no resolved tests)"; c.Verdict != want {
 		t.Errorf("verdict: got %q, want %q", c.Verdict, want)
 	}
 	c = srCardFrom(btcSpec, sup, res, 62900, 249, time.Time{}, nil)
-	if !strings.Contains(c.Verdict, "0.2% below the nearest shown resistance 63000") {
+	if !strings.Contains(c.Verdict, "0.2% below nearest shown resistance 63000") {
 		t.Errorf("resistance-nearest: got %q", c.Verdict)
 	}
 	// FX keeps pip precision.

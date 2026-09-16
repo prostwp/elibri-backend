@@ -15,6 +15,8 @@ package demobot
 //     reproduce each percentage from the card itself;
 //   - test counts are neutral: breakHoldStats keeps no approach side, so a
 //     level's history is "reactions / breaks", never "support held";
+//   - the class word counts pivots only, so the verdict carries the level's
+//     "reactions / breaks" beside it ("established" is not "it holds");
 //   - "nearest shown" — the card picks the three STRONGEST levels per side,
 //     so the nearest of them is not necessarily the nearest cluster overall;
 //   - the volume flag is stated as the observation it is (lower volume on
@@ -31,6 +33,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/prostwp/elibri-backend/pkg/types"
 )
@@ -261,15 +264,75 @@ func (v srView) dist(l SRLevel) string {
 	return pctAway(p, q)
 }
 
-// headline — where price is against the nearest shown level and how
-// confirmed that level is.
-func (v srView) headline() string {
+// srTestsLabel is the level's resolved-test history as the verdict words it:
+// "tests: 1 reaction / 4 breaks" (the level line's own counts, labeled so they
+// read without the method), or "no resolved tests".
+func srTestsLabel(l SRLevel) string {
+	if l.Holds+l.Breaks == 0 {
+		return testsShort(l)
+	}
+	return "tests: " + testsShort(l)
+}
+
+// headline — where price is against the nearest shown level, how confirmed
+// that level is and how its tests resolved. Fits srFactMaxRunes.
+func (v srView) headline() string { h, _ := v.headlines(); return h }
+
+// headlines returns the verdict and blocks.what_happened, worded alike. The
+// class word counts pivots only, so it never stands without the level's test
+// history ("established" is not "it holds"). One form is chosen for both:
+// the first whose verdict AND "On <tf>: …." sentence fit srFactMaxRunes.
+// For width the pivot count goes first, then the class word (both stay in
+// the level's fact line); the test history goes last, and only at widths no
+// served asset reaches, where the level stands alone.
+func (v srView) headlines() (verdict, what string) {
 	l, side, _ := v.nearest()
 	px, lv := v.px.str(v.last), v.px.str(l.Raw)
+	at := fmt.Sprintf("Price %s — at", px)
 	if d := v.dist(l); d != "" {
-		return fmt.Sprintf("Price %s — %s %s the nearest shown %s %s (%s)", px, d, side.away, side.noun, lv, classPivots(l))
+		at = fmt.Sprintf("Price %s — %s %s", px, d, side.away)
 	}
-	return fmt.Sprintf("Price %s — at the nearest shown %s %s (%s)", px, side.noun, lv, classPivots(l))
+	base := fmt.Sprintf("%s nearest shown %s %s", at, side.noun, lv)
+	sentence := func(h string) string { return "On " + candleWord(v.tf) + ": " + lowerFirst(h) + "." }
+	for _, detail := range []string{
+		classPivots(l) + "; " + srTestsLabel(l),
+		srClassOf(l.Touches) + "; " + srTestsLabel(l),
+		srTestsLabel(l),
+	} {
+		h := base + " (" + detail + ")"
+		w := sentence(h)
+		if utf8.RuneCountInString(h) <= srFactMaxRunes && utf8.RuneCountInString(w) <= srFactMaxRunes {
+			return h, w
+		}
+	}
+	return base, sentence(base)
+}
+
+// nearestSidesLine — the signed distance from price to the nearest shown
+// level on each side, from the printed numbers (the level lines' own
+// arithmetic); a side with no shown level says so. Only the two numbers side
+// by side: no judgement of near or far.
+func (v srView) nearestSidesLine() string {
+	return srNearestSidesPrefix + v.nearestSides()
+}
+
+// srNearestSidesPrefix opens the nearest-sides fact. The /showcase/example
+// data block and fallback explanation skip that line (srShowcaseSkip): they
+// quote the level lines, as before the line existed.
+const srNearestSidesPrefix = "Nearest shown levels: "
+
+func (v srView) nearestSides() string {
+	part := func(side srSide, levels []SRLevel, ord []int) string {
+		if len(levels) == 0 {
+			return "no " + side.noun + " shown " + side.toward + " price"
+		}
+		l := levels[ord[0]]
+		if v.dist(l) == "" {
+			return side.noun + " at price"
+		}
+		return side.noun + " " + signedPct(v.px.val(v.last), v.px.val(l.Raw))
+	}
+	return part(sideResistance, v.res, v.resOrd) + " · " + part(sideSupport, v.sup, v.supOrd)
 }
 
 // levelLine — one shown level: price, signed distance, class, tests, last touch.
@@ -322,7 +385,8 @@ func (v srView) methodLine() string {
 }
 
 // facts is the card body: resistances then supports, each nearest first,
-// then the volume observation and the window/closed-candle line.
+// then the volume observation, the nearest shown distance per side and the
+// window/closed-candle line.
 func (v srView) facts() []string {
 	var out []string
 	if len(v.res) == 0 {
@@ -340,7 +404,7 @@ func (v srView) facts() []string {
 	if vl := v.volumeLine(); vl != "" {
 		out = append(out, vl)
 	}
-	return append(out, v.methodLine())
+	return append(out, v.nearestSidesLine(), v.methodLine())
 }
 
 // short is the digest one-liner.
@@ -363,6 +427,7 @@ func (v srView) blocks() *ContentBlocks {
 	l, side, _ := v.nearest()
 	tf := candleWord(v.tf)
 	lv := v.px.str(l.Raw)
+	_, what := v.headlines()
 	// "pivots", the card's word for swing pivots throughout (class lines, the
 	// how-it-works text): "swing pivots" put the worst case (9999 pivots,
 	// 19998 resolved tests, 8-rune price) at 111 runes.
@@ -377,7 +442,7 @@ func (v srView) blocks() *ContentBlocks {
 	inv := fmt.Sprintf("A closed %s candle %s %s puts it %s price: it no longer reads as %s",
 		tf, side.toward, lv, side.away, side.noun)
 	return &ContentBlocks{
-		WhatHappened: fmt.Sprintf("On %s: %s.", tf, lowerFirst(v.headline())),
+		WhatHappened: what,
 		WhyLevel:     why,
 		// limitations (additive 2026-09-16): the card's own window/method line,
 		// verbatim — it is what the levels are and are not measured over, and

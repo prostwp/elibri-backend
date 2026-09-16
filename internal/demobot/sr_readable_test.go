@@ -117,7 +117,7 @@ func TestSRPrecisionPerInstrument(t *testing.T) {
 
 // The printed distance must be reproducible from the printed numbers.
 var srLevelLineRe = regexp.MustCompile(`^(Resistance|Support) ([0-9.]+) \(([^)]*)\) · `)
-var srHeadRe = regexp.MustCompile(`^Price ([0-9.]+) — (?:([<0-9.]+%) (above|below)|at) the nearest shown (support|resistance) ([0-9.]+) \(`)
+var srHeadRe = regexp.MustCompile(`^Price ([0-9.]+) — (?:([<0-9.]+%) (above|below)|at) nearest shown (support|resistance) ([0-9.]+) \(`)
 
 func TestSRPrintedNumbersReproduceTheDistance(t *testing.T) {
 	for _, f := range srLiveFixtures {
@@ -151,13 +151,16 @@ func TestSRPrintedNumbersReproduceTheDistance(t *testing.T) {
 }
 
 func TestSRLiveCardsRead(t *testing.T) {
+	// With "tests:" every live verdict drops the pivot count to fit its
+	// "On <tf>: …." sentence; GBPUSD (111 runes with the class) drops the
+	// class too. The pivot count and class stay on the level's fact line.
 	want := map[string]string{
-		"btc":    "Price 78189 — 0.7% below the nearest shown resistance 78723 (candidate, 3 pivots)",
-		"eth":    "Price 2516.4 — 0.6% below the nearest shown resistance 2531.0 (established, 7 pivots)",
-		"eurusd": "Price 1.1542 — 0.7% below the nearest shown resistance 1.1622 (established, 64 pivots)",
-		"gbpusd": "Price 1.3487 — 0.4% below the nearest shown resistance 1.3536 (established, 75 pivots)",
-		"usdjpy": "Price 154.74 — 0.1% below the nearest shown resistance 154.94 (established, 8 pivots)",
-		"xauusd": "Price 4344.2 — 0.1% above the nearest shown support 4340.8 (established, 7 pivots)",
+		"btc":    "Price 78189 — 0.7% below nearest shown resistance 78723 (candidate; tests: 7 reactions / 6 breaks)",
+		"eth":    "Price 2516.4 — 0.6% below nearest shown resistance 2531.0 (established; tests: 5 reactions / 1 break)",
+		"eurusd": "Price 1.1542 — 0.7% below nearest shown resistance 1.1622 (established; tests: 8 reactions / 2 breaks)",
+		"gbpusd": "Price 1.3487 — 0.4% below nearest shown resistance 1.3536 (tests: 9 reactions / 11 breaks)",
+		"usdjpy": "Price 154.74 — 0.1% below nearest shown resistance 154.94 (established; tests: 1 reaction / 0 breaks)",
+		"xauusd": "Price 4344.2 — 0.1% above nearest shown support 4340.8 (established; tests: 3 reactions / 0 breaks)",
 	}
 	for _, f := range srLiveFixtures {
 		c := f.card()
@@ -234,7 +237,7 @@ func TestSRAtLevelWhenPrintedEqual(t *testing.T) {
 	f := srLiveFixtures[4] // USDJPY; 154.938 prints 154.94
 	f.last = 154.936       // prints 154.94 too, still below the raw mean
 	c := f.card()
-	if !strings.HasPrefix(c.Verdict, "Price 154.94 — at the nearest shown resistance 154.94") {
+	if !strings.HasPrefix(c.Verdict, "Price 154.94 — at nearest shown resistance 154.94 (established; tests: 1 reaction / 0 breaks)") {
 		t.Errorf("verdict = %q", c.Verdict)
 	}
 	if !strings.Contains(strings.Join(c.Facts, "\n"), "Resistance 154.94 (at price)") {
@@ -342,7 +345,7 @@ func TestSRBlocksContract(t *testing.T) {
 	// ETH, spelled out.
 	b := srLiveFixtures[1].card().Blocks
 	for got, want := range map[string]string{
-		b.WhatHappened: "On 4h: price 2516.4 — 0.6% below the nearest shown resistance 2531.0 (established, 7 pivots).",
+		b.WhatHappened: "On 4h: price 2516.4 — 0.6% below nearest shown resistance 2531.0 (established; tests: 5 reactions / 1 break).",
 		b.WhyLevel:     "2531.0 = mean of 7 pivots · 5 reactions / 1 break in 6 resolved tests · last touch Sep 14",
 		b.Scenarios[0]: "If a 4h close tests 2531.0 and a close within 3 candles exits its band below, the level holds as resistance",
 		b.Scenarios[1]: "If a 4h candle closes above 2531.0's band, the level is broken and moves below price",

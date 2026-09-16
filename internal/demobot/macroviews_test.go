@@ -299,7 +299,7 @@ func TestMacroCardAssetContextLines(t *testing.T) {
 	if !strings.Contains(joined, "BTC macro backdrop: risk-off (the regime itself); BTC direction is not inferred") {
 		t.Errorf("BTC context line missing: %v", c.Facts)
 	}
-	if !strings.Contains(joined, "Gold macro backdrop: positive, gold score 100/100 (experimental model, own weights)") {
+	if !strings.Contains(joined, "Gold macro backdrop: positive, gold score 100/100 (separate experimental model, own weights)") {
 		t.Errorf("gold context line missing: %v", c.Facts)
 	}
 }

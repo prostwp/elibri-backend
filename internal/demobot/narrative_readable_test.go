@@ -214,9 +214,7 @@ func TestNarrativeWordingMatchesBackend(t *testing.T) {
 
 func TestNarrativeGoldenBelowThreshold(t *testing.T) {
 	c := narrCard(t, narrBelow22)
-	// The full form ("… leads by activity score with … in 24h; 5 needed to
-	// score") is 124 runes with this name: the short form stands in.
-	if want := "Below threshold: Restaking and liquid staking (LST/LRT) leads with 1 matched item/24h; 5 needed"; c.Verdict != want {
+	if want := "Below threshold: Restaking and liquid staking (LST/LRT) ranks first, 1 matched item/24h; 5 needed"; c.Verdict != want {
 		t.Errorf("verdict:\n%q\nwant\n%q", c.Verdict, want)
 	}
 	if c.Short != "below threshold" {
@@ -227,7 +225,7 @@ func TestNarrativeGoldenBelowThreshold(t *testing.T) {
 		"Restaking and liquid staking (LST/LRT) — 1 matched item · previous 24h: 0",
 		"Modular blockchains — 1 matched item · previous 24h: 0",
 		"Stablecoins and regulation — 3 matched items · previous 24h: 2",
-		"Leader's matched items by source: CoinTelegraph 1",
+		"Top activity score theme's matched items by source: CoinTelegraph 1",
 		narrativeLineSources,
 		narrativeLineMatch,
 	})
@@ -259,16 +257,15 @@ func TestNarrativeGoldenBelowThreshold(t *testing.T) {
 	if b == nil {
 		t.Fatal("blocks missing")
 	}
-	// 112 runes with "by activity score": the form keeping the window end wins.
-	if want := "Restaking and liquid staking (LST/LRT) leads with 1 matched item in the 24h to Sep 15 22:00 UTC"; b.WhatHappened != want {
+	if want := "Restaking and liquid staking (LST/LRT) ranks first, 1 matched item in the 24h to Sep 15 22:00 UTC"; b.WhatHappened != want {
 		t.Errorf("what_happened %q", b.WhatHappened)
 	}
-	if b.WhyLevel != narrativeWhyBelow || b.Invalidates != nil || b.Regime != narrativeRegimeQuiet {
+	if b.WhyLevel != narrativeWhyBelow || b.Invalidates != nil || b.Regime != narrativeRegimeBelow {
 		t.Errorf("why %q invalidates %v regime %q", b.WhyLevel, b.Invalidates, b.Regime)
 	}
 	eqLines(t, "scenarios", b.Scenarios, []string{
-		"If the leading theme by activity score reaches 5 matched items in 24h, the radar scores it",
-		"If the leader stays under 5 matched items in 24h, the radar stays below threshold",
+		"If the top activity score theme reaches 5 matched items in 24h, the radar scores it",
+		"If the top activity score theme stays under 5 matched items in 24h, the radar stays below threshold",
 	})
 	if b.Limitations != narrativeLimitations || b.Source != narrativeBlockSource {
 		t.Errorf("limitations %q source %q", b.Limitations, b.Source)
@@ -389,8 +386,8 @@ func TestNarrativeEligibleNotLeader(t *testing.T) {
 		"Restaking and liquid staking (LST/LRT) — 1 matched item · previous 24h: 0",
 		"Modular blockchains — 1 matched item · previous 24h: 0",
 		"Zero-knowledge (ZK) networks — 2 matched items · previous 24h: 2",
-		"Checked on the leader only: Bitcoin ETFs and ETF issuers has 6 matched items, lower activity score",
-		"Leader's matched items by source: CoinTelegraph 1",
+		"Checked on the top activity score theme only: Bitcoin ETFs and ETF issuers has 6 matched items",
+		"Top activity score theme's matched items by source: CoinTelegraph 1",
 		narrativeLineSources,
 		narrativeLineMatch,
 	})
@@ -776,7 +773,7 @@ func TestNarrativeShowcaseConclusion(t *testing.T) {
 		t.Errorf("scored conclusion %q", got)
 	}
 	if got := conclusionFor(narrCard(t, narrBelow22)); got !=
-		"This is a news-activity reading, not a forecast: no theme is scored; the leader has 1 of the 5 matched items needed in 24h." {
+		"This is a news-activity reading, not a forecast: the radar is below threshold; the top activity score theme has 1 of the 5 matched items needed in 24h." {
 		t.Errorf("below conclusion %q", got)
 	}
 	// The example's top-up line names data quality, never "confidence".

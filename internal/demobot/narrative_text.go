@@ -119,17 +119,29 @@ const (
 	narrativeLineOrderScored = "Top themes by activity score (0-100), not by count"
 	narrativeLineSources     = "Source status (which feeds answered this cycle) is not served by the backend"
 	narrativeLineMatch       = "Matched item: a theme keyword in an RSS headline/summary or a Reddit title/author line; precision unmeasured"
-	narrativeRegimeQuiet     = "Local news regime: quiet, no theme scored; no price direction"
+	narrativeRegimeBelow     = "News radar below threshold: the top activity score theme has under 5 matched items in 24h; no price direction"
+	narrativeRegimeNone      = "News radar below threshold: no theme has a matched item in 24h; no price direction"
 	narrativeLimitations     = "Keyword matches, precision not measured; source status not served; tone is not direction"
 	narrativeBlockSource     = "CoinDesk and CoinTelegraph RSS plus Reddit when reachable, read by the AlphaVizor backend"
 )
 
 var (
-	narrativeWhyBelow = fmt.Sprintf("No price level: %d matched items in 24h is the radar's threshold, checked on the leader only",
+	// Below the threshold every line names the checked theme one way: the
+	// top activity score theme (never "leader"/"leads": a lower-scored theme
+	// can have more items, and it is not checked).
+	narrativeWhyBelow = fmt.Sprintf("No price level: %d matched items in 24h is the radar's threshold, checked on the top activity score theme only",
 		newsMinMentions)
+	// No matched items at all: nothing singles a theme out, so these lines
+	// name none (the verdict says no theme has a matched item).
+	narrativeWhyNone = fmt.Sprintf("No price level: %d matched items in 24h is the radar's threshold; no theme has a matched item",
+		newsMinMentions)
+	narrativeScenariosNone = []string{
+		fmt.Sprintf("If a theme with the top activity score reaches %d matched items in 24h, the radar scores it", newsMinMentions),
+		fmt.Sprintf("Until a theme with the top activity score has %d matched items in 24h, the radar stays below threshold", newsMinMentions),
+	}
 	narrativeScenariosBelow = []string{
-		fmt.Sprintf("If the leading theme by activity score reaches %d matched items in 24h, the radar scores it", newsMinMentions),
-		fmt.Sprintf("If the leader stays under %d matched items in 24h, the radar stays below threshold", newsMinMentions),
+		fmt.Sprintf("If the top activity score theme reaches %d matched items in 24h, the radar scores it", newsMinMentions),
+		fmt.Sprintf("If the top activity score theme stays under %d matched items in 24h, the radar stays below threshold", newsMinMentions),
 	}
 	narrativeScenariosScored = []string{
 		fmt.Sprintf("If the leading theme keeps %d+ matched items in 24h and the top score, the radar keeps scoring it", newsMinMentions),
@@ -226,6 +238,48 @@ func narrativeFit(s string) string {
 	return s
 }
 
+// narrativeBelowVerdict is the below-threshold verdict, one form at every
+// length. "ranks first" is the place in the activity-score order (the order
+// line under it says so). It deliberately does not say "score": below the
+// threshold the radar does not score a theme, and "top-scored" next to "scores
+// are not shown below the threshold" read as a contradiction. The short phrase
+// keeps every name of the theme table whole up to a 3-digit count; a longer,
+// unknown name is shortened by narrativeWithName.
+func narrativeBelowVerdict(name string, matched int) string {
+	return narrativeWithName(name, func(n string) string {
+		return fmt.Sprintf("Below threshold: %s ranks first, %s/24h; %d needed", n, matchedItems(matched), newsMinMentions)
+	})
+}
+
+// narrativeBelowWhat is the below-threshold what_happened, the verdict's
+// wording with the window end.
+func narrativeBelowWhat(name string, matched int, window string) string {
+	return narrativeWithName(name, func(n string) string {
+		return fmt.Sprintf("%s ranks first, %s %s", n, matchedItems(matched), window)
+	})
+}
+
+// narrativeWithName renders line(name) within narrativeFactMaxRunes by
+// shortening ONLY the theme name: first its trailing parenthesis goes whole
+// ("Restaking and liquid staking (LST/LRT)" → "Restaking and liquid
+// staking"), then the name is cut with "…". The counts and the threshold in
+// the rest of the line are never cut.
+func narrativeWithName(name string, line func(string) string) string {
+	if s := line(name); utf8.RuneCountInString(s) <= narrativeFactMaxRunes {
+		return s
+	}
+	if i := strings.LastIndex(name, " ("); i > 0 && strings.HasSuffix(name, ")") {
+		if s := line(name[:i]); utf8.RuneCountInString(s) <= narrativeFactMaxRunes {
+			return s
+		}
+	}
+	room := narrativeFactMaxRunes - utf8.RuneCountInString(line(""))
+	if room < 2 {
+		return narrativeFit(line(""))
+	}
+	return line(strings.TrimRight(string([]rune(name)[:room-1]), " ") + "…")
+}
+
 // narrativeFirstFit returns the first candidate within the budget, else the
 // last one cut.
 func narrativeFirstFit(cands ...string) string {
@@ -272,9 +326,10 @@ func narrativePrev(s NarrativeSnapshot) string {
 	return fmt.Sprintf(" · previous 24h: %d", *s.MentionCountPrev24h)
 }
 
-// narrativeSourcesLine lists the leader's matched items by source, the
-// largest first; "" when the payload has no breakdown.
-func narrativeSourcesLine(s NarrativeSnapshot) string {
+// narrativeSourcesLine lists the top theme's matched items by source, the
+// largest first; "" when the payload has no breakdown. who names the theme:
+// "Leader's" on a scored card, "Top activity score theme's" below threshold.
+func narrativeSourcesLine(who string, s NarrativeSnapshot) string {
 	if len(s.SourcesBreakdown) == 0 {
 		return ""
 	}
@@ -298,7 +353,7 @@ func narrativeSourcesLine(s NarrativeSnapshot) string {
 	for i, k := range keys {
 		parts[i] = fmt.Sprintf("%s %d", name(k), s.SourcesBreakdown[k])
 	}
-	return narrativeFit("Leader's matched items by source: " + strings.Join(parts, " · "))
+	return narrativeFit(who + " matched items by source: " + strings.Join(parts, " · "))
 }
 
 // newsCardFrom builds the card from one backend answer. Pure: every time on
@@ -370,12 +425,18 @@ func newsCardFrom(n *NarrativesResp) Card {
 				narrativeLineSources, narrativeLineMatch,
 			}
 			c.Blocks = narrativeBlocksBelow(narrativeFit("No theme had a matched item " + window))
+			c.Blocks.WhyLevel = narrativeWhyNone
+			c.Blocks.Scenarios = append([]string{}, narrativeScenariosNone...)
+			c.Blocks.Regime = narrativeRegimeNone
 			return c
 		}
 		ro.State = narrStateBelow
-		c.Verdict = narrativeFirstFit(
-			fmt.Sprintf("Below threshold: %s leads by activity score with %s in 24h; %d needed to score", name, items, newsMinMentions),
-			fmt.Sprintf("Below threshold: %s leads with %s/24h; %d needed", name, items, newsMinMentions))
+		// The threshold is checked on the top activity score theme only, so the
+		// text names that theme by its score and its count against the
+		// threshold — never "leads" (a lower-scored theme can have more items)
+		// and never "no theme reached it" (one below it in the order may have).
+		// One form at every length: only the name is shortened.
+		c.Verdict = narrativeBelowVerdict(name, top.MentionCount)
 		c.Short = "below threshold"
 		// Names and matched items only, unnumbered: nothing below the
 		// threshold is a ranking or a finding.
@@ -398,19 +459,14 @@ func newsCardFrom(n *NarrativesResp) Card {
 			}
 			en, ei := narrativeName(e.Narrative), matchedItems(e.MentionCount)
 			c.Facts = append(c.Facts, narrativeFirstFit(
-				fmt.Sprintf("Threshold is checked on the leader only: %s has %s but a lower activity score", en, ei),
-				fmt.Sprintf("Checked on the leader only: %s has %s, lower activity score", en, ei),
-				fmt.Sprintf("Leader only is checked: %s has %s", en, ei)))
+				fmt.Sprintf("Checked on the top activity score theme only: %s has %s, lower activity score", en, ei),
+				fmt.Sprintf("Checked on the top activity score theme only: %s has %s", en, ei)))
 		}
-		if l := narrativeSourcesLine(top); l != "" {
+		if l := narrativeSourcesLine("Top activity score theme's", top); l != "" {
 			c.Facts = append(c.Facts, l)
 		}
 		c.Facts = append(c.Facts, narrativeLineSources, narrativeLineMatch)
-		c.Blocks = narrativeBlocksBelow(narrativeFirstFit(
-			fmt.Sprintf("%s leads by activity score with %s %s", name, items, window),
-			fmt.Sprintf("%s leads with %s %s", name, items, window),
-			fmt.Sprintf("%s leads by activity score with %s in 24h", name, items),
-			fmt.Sprintf("%s leads with %s in 24h", name, items)))
+		c.Blocks = narrativeBlocksBelow(narrativeBelowWhat(name, top.MentionCount, window))
 		// No data quality, no AI text: nothing below the threshold is a finding.
 		return c
 	}
@@ -445,7 +501,7 @@ func newsCardFrom(n *NarrativesResp) Card {
 	if tone := narrativeTone(top.SentimentLabel); tone != "" {
 		c.Facts = append(c.Facts, narrativeToneLine(tone))
 	}
-	if l := narrativeSourcesLine(top); l != "" {
+	if l := narrativeSourcesLine("Leader's", top); l != "" {
 		c.Facts = append(c.Facts, l)
 	}
 	if top.Confidence > 0 {
@@ -491,7 +547,7 @@ func narrativeBlocksBelow(what string) *ContentBlocks {
 		WhatHappened: what,
 		WhyLevel:     narrativeWhyBelow,
 		Scenarios:    append([]string{}, narrativeScenariosBelow...),
-		Regime:       narrativeRegimeQuiet,
+		Regime:       narrativeRegimeBelow,
 		Limitations:  narrativeLimitations,
 		Source:       narrativeBlockSource,
 	}
@@ -532,6 +588,6 @@ func narrativeConclusion(c Card) string {
 	if ro.Leader != nil {
 		have = ro.Leader.Matched24h
 	}
-	return fmt.Sprintf("This is a news-activity reading, not a forecast: no theme is scored; "+
-		"the leader has %d of the %d matched items needed in 24h.", have, ro.Threshold)
+	return fmt.Sprintf("This is a news-activity reading, not a forecast: the radar is below threshold; "+
+		"the top activity score theme has %d of the %d matched items needed in 24h.", have, ro.Threshold)
 }

@@ -822,6 +822,15 @@ reads it: **detected → explained → data → conclusion**.
   disabled or the call failed.
 - **`data`** is 3-4 of the card's own live fact lines. Fewer only when the
   card itself carries fewer — nothing is invented to reach a rounder number.
+  Two kinds of line are not quoted, in `data` or as the fallback `explained`
+  (2026-09-16): the S/R `Nearest shown levels: …` summary (the level lines
+  carry the same distances with prices and tests, and S/R `explained`/`data`
+  stay as they were before the line existed). Macro folds each factor side
+  into its first line: the `… for rule score (cont.): …` lines are not
+  quoted (they would push the regime's hold condition out), and the first
+  line ends with `· +N more on the card` for the lamps it no longer shows;
+  when that tail does not fit 110 characters, the last shown lamp moves into
+  N. No lamp is dropped without the count.
 - **`conclusion`** is analytical language only: what the reading means while
   its inputs hold. Never BUY/SELL, never an instruction to enter or exit —
   the same sanitizer rules that apply to `ai_text` apply here.
@@ -1244,20 +1253,50 @@ envelopes.
 
 ## S/R card and content blocks
 
-Reads top to bottom: **where price is against the nearest shown level →
-every shown level, each side nearest first → observations → window**.
+> ⚠️ **текст изменён 2026-09-16** — S/R `verdict`, `facts` and
+> `blocks.what_happened` changed; do not parse them. The class word
+> (`established` = ≥ 7 pivots) read as "a level that holds" while the level's
+> own tests said otherwise, so the verdict now carries the labeled test counts
+> beside it, and one fact gives the nearest shown distance per side. Rules,
+> the `levels` JSON (including `class`) and the order of levels are unchanged.
+>
+> | | Before | Now |
+> |---|---|---|
+> | `verdict` | `Price 75767 — 0.8% below the nearest shown resistance 76407 (established, 8 pivots)` | `Price 75767 — 0.8% below nearest shown resistance 76407 (established; tests: 1 reaction / 4 breaks)` |
+> | `verdict`, no tests | `Price 2500.0 — 4.0% below the nearest shown resistance 2600.0 (established, 9 pivots)` | `Price 2500.0 — 4.0% below nearest shown resistance 2600.0 (established, 9 pivots; no resolved tests)` |
+> | `verdict`, GBPUSD live | `Price 1.3487 — 0.4% below the nearest shown resistance 1.3536 (established, 75 pivots)` | `Price 1.3487 — 0.4% below nearest shown resistance 1.3536 (tests: 9 reactions / 11 breaks)` |
+> | `blocks.what_happened` | `On 4h: price 75767 — 0.8% below the nearest shown resistance 76407 (established, 8 pivots).` | `On 4h: price 75767 — 0.8% below nearest shown resistance 76407 (established; tests: 1 reaction / 4 breaks).` |
+> | new fact, before `Window: …` | — | `Nearest shown levels: resistance +0.8% · support -13.8%` (a side without a shown level: `no support shown below price` / `no resistance shown above price`; printed equal: `resistance at price`) |
+>
+> One form is chosen for the verdict and `what_happened` together (`what_happened`
+> is always `On <tf>: ` + the verdict + `.`), the first where both fit 110:
+> `(<class>, N pivots; tests: …)` → `(<class>; tests: …)` → `(tests: …)` →
+> the level alone (only at widths no served asset reaches). With the
+> `tests:` label every live card of 2026-09-15 drops the pivot count
+> (the ETH sentence with it is 119 runes), and GBPUSD drops the class too
+> (its sentence is 111 with it). Class and pivot count stay on each level's fact line. The
+> class word never appears without the counts. The nearest-sides line is
+> only the two signed distances, from the printed numbers: no "near/far",
+> no new threshold. `/showcase/example` does not quote that line (its
+> `explained` and `data` for S/R are byte for byte what they were before
+> it existed). The "No significant levels detected" card is unchanged.
+
+Reads top to bottom: **where price is against the nearest shown level and
+how its tests resolved → every shown level, each side nearest first →
+observations → the nearest shown distance per side → window**.
 Wording only; the rules are unchanged (see the `sr` row above).
 
 ```
 ⚪ S/R Agent · ETH
-Price 2515.8 — 0.6% below the nearest shown resistance 2531.0 (established, 7 pivots)
+Price 2516.4 — 0.6% below nearest shown resistance 2531.0 (established; tests: 5 reactions / 1 break)
 • Resistance 2531.0 (+0.6%) · established, 7 pivots · 5 reactions / 1 break · last touch Sep 14
 • Resistance 2546.5 (+1.2%) · candidate, 3 pivots · 1 reaction / 1 break · last touch Sep 14
-• Resistance 2666.0 (+6.0%) · single swing, 1 pivot · no resolved tests · last touch Sep 11
+• Resistance 2666.0 (+5.9%) · single swing, 1 pivot · no resolved tests · last touch Sep 11
 • Support 2436.4 (-3.2%) · candidate, 5 pivots · 5 reactions / 3 breaks · last touch Sep 11
 • Support 1892.1 (-24.8%) · established, 7 pivots · 4 reactions / 2 breaks · last touch Aug 18
 • Support 1862.4 (-26.0%) · candidate, 6 pivots · 1 reaction / 0 breaks · last touch Aug 16
 • Last 3 pivots on lower volume than first 3: 2531.0, 1892.1
+• Nearest shown levels: resistance +0.6% · support -3.2%
 • Window: 249 closed 4h candles · test = a close within 0.25 ATR of a level, resolved within 3 candles
 ```
 
@@ -1287,7 +1326,7 @@ are about the nearest shown level:
 
 | Field | Meaning |
 |---|---|
-| `what_happened` | `"On 4h: price 2515.8 — 0.6% below the nearest shown resistance 2531.0 (established, 7 pivots)."` |
+| `what_happened` | The verdict as a sentence, the same form: `"On 4h: price 2516.4 — 0.6% below nearest shown resistance 2531.0 (established; tests: 5 reactions / 1 break)."` |
 | `why_level` | What the level is made of: `"2531.0 = mean of 7 pivots · 5 reactions / 1 break in 6 resolved tests · last touch Sep 14"` |
 | `scenarios` | Exactly two market events, worded from the side of price the level is on now: `"If a 4h close tests 2531.0 and a close within 3 candles exits its band below, the level holds as resistance"` / `"If a 4h candle closes above 2531.0's band, the level is broken and moves below price"` (mirrored for a support below price). No counts, no targets, no probabilities, no forecast |
 | `invalidates` | What makes the level no longer this side: `"A closed 4h candle above 2531.0 puts it below price: it no longer reads as resistance"` |
@@ -1716,6 +1755,40 @@ also follows the clock (the stale flag, the weekend banner).
 
 ## Narrative card and content blocks
 
+> ⚠️ **текст изменён 2026-09-16** — below the threshold the card's text
+> names the checked theme one way, **the top activity score theme**: no
+> `leads` / `leader` / `leading` and no `quiet` in any line, block or the
+> `/showcase/example` conclusion. The threshold is checked only on that theme;
+> with 1 matched item "leads" read as the main theme of the day while themes
+> with 2–3 items sat below it, and "quiet" read as "no news" while a
+> lower-scored theme could have 6. The text never says that no theme reached
+> the threshold (see `eligible_not_leader`). Order, threshold, state and every
+> JSON field (`leader`, `threshold_checked_on`, `eligible_not_leader`) are
+> unchanged; the scored card keeps its wording.
+>
+> | | Before | Now |
+> |---|---|---|
+> | `verdict` | `Below threshold: Restaking and liquid staking (LST/LRT) leads with 1 matched item/24h; 5 needed` | `Below threshold: Restaking and liquid staking (LST/LRT) ranks first, 1 matched item/24h; 5 needed` |
+> | `verdict`, long name | (four forms by length) | one form: `Below threshold: Decentralized physical infrastructure (DePIN) ranks first, 4 matched items/24h; 5 needed` |
+> | fact | `Leader's matched items by source: CoinTelegraph 1` | `Top activity score theme's matched items by source: CoinTelegraph 1` |
+> | fact | `Checked on the leader only: Bitcoin ETFs and ETF issuers has 6 matched items, lower activity score` | `Checked on the top activity score theme only: Bitcoin ETFs and ETF issuers has 6 matched items` (`, lower activity score` when it fits) |
+> | `blocks.what_happened` | `Restaking and liquid staking (LST/LRT) leads with 1 matched item in the 24h to Sep 15 22:00 UTC` | `Restaking and liquid staking (LST/LRT) ranks first, 1 matched item in the 24h to Sep 15 22:00 UTC` |
+> | `blocks.why_level` | `No price level: 5 matched items in 24h is the radar's threshold, checked on the leader only` | `No price level: 5 matched items in 24h is the radar's threshold, checked on the top activity score theme only` |
+> | `blocks.scenarios` | `If the leading theme by activity score reaches 5 matched items in 24h, the radar scores it` / `If the leader stays under 5 matched items in 24h, the radar stays below threshold` | `If the top activity score theme reaches 5 matched items in 24h, the radar scores it` / `If the top activity score theme stays under 5 matched items in 24h, the radar stays below threshold` |
+> | `blocks.regime` | `Local news regime: quiet, no theme scored; no price direction` | `News radar below threshold: the top activity score theme has under 5 matched items in 24h; no price direction` |
+> | showcase `conclusion` | `This is a news-activity reading, not a forecast: no theme is scored; the leader has 1 of the 5 matched items needed in 24h.` | `This is a news-activity reading, not a forecast: the radar is below threshold; the top activity score theme has 1 of the 5 matched items needed in 24h.` |
+>
+> | `blocks` on `no_matched_items` | why/scenarios/regime as below threshold (`… the leader …`, `quiet`) | no theme singled out: `No price level: 5 matched items in 24h is the radar's threshold; no theme has a matched item` · `If a theme with the top activity score reaches 5 matched items in 24h, the radar scores it` / `Until a theme with the top activity score has 5 matched items in 24h, the radar stays below threshold` · `News radar below threshold: no theme has a matched item in 24h; no price direction` |
+> | `how_it_works` (every state) | `… Score 0-100; leader needs 5.` | `… Score 0-100; first-ranked theme needs 5.` |
+>
+> The verdict and `what_happened` each have one form at every length.
+> "Ranks first" is the place in the activity-score order (the order line under
+> the verdict says so); it does not say "score", since below the threshold the
+> radar scores no theme. Every name of the theme table stays whole up to
+> a 3-digit count (1, 4, 99 and 999 are tested); the count and `5 needed` are
+> never cut. Only a longer, unknown name is shortened: first a trailing
+> `(…)` goes whole, then the name is cut with `…`.
+
 > ⚠️ **Narrative `verdict` format changed 2026-09-15 — do not parse it.**
 > Before: `Radar warming up — top theme 'restaking' has only 1 mention in 24h;
 > not enough to score`, `Top narrative: rwa — trending, trend score 72/100`,
@@ -1788,21 +1861,21 @@ What the card no longer claims:
 
 ```
 ⚪ Narrative Radar
-Below threshold: Restaking and liquid staking (LST/LRT) leads with 1 matched item/24h; 5 needed
+Below threshold: Restaking and liquid staking (LST/LRT) ranks first, 1 matched item/24h; 5 needed
 • Order: by activity score, not by count · scores are not shown below the threshold
 • Restaking and liquid staking (LST/LRT) — 1 matched item · previous 24h: 0
 • Modular blockchains — 1 matched item · previous 24h: 0
 • Stablecoins and regulation — 3 matched items · previous 24h: 2
-• Leader's matched items by source: CoinTelegraph 1
+• Top activity score theme's matched items by source: CoinTelegraph 1
 • Source status (which feeds answered this cycle) is not served by the backend
 • Matched item: a theme keyword in an RSS headline/summary or a Reddit title/author line; precision unmeasured
 ```
 
 When the leader is below the threshold while a lower-scored theme is at or
-above it, one more line says so (`Threshold is checked on the leader only: <name> has 6
-matched items but a lower activity score`, shortened for a long name to
-`Checked on the leader only: Bitcoin ETFs and ETF issuers has 6 matched items,
-lower activity score`) and
+above it, one more line says so (`Checked on the top activity score theme
+only: <name> has 6 matched items, lower activity score`, shortened for a long
+name to `Checked on the top activity score theme only: Bitcoin ETFs and ETF
+issuers has 6 matched items`) and
 `narrative.eligible_not_leader` lists the ids; the state stays
 `below_threshold`.
 
@@ -1845,11 +1918,11 @@ scenarios; the two scenarios are the radar's own state changes:
 
 | Field | Meaning |
 |---|---|
-| `what_happened` | `"Perpetual DEXs leads by activity score with 1 matched item in the 24h to Sep 15 22:00 UTC"` (a longer name drops `by activity score`, then the window end); `"Restaking and liquid staking (LST/LRT) leads with 1 matched item in the 24h to Sep 15 22:00 UTC"`; scored: `"Real-world assets (RWA): 8 matched items in the 24h to Sep 15 22:00 UTC, 3 in the previous 24h"`; none: `"No theme had a matched item in the 24h to …"` |
-| `why_level` | Below: `"No price level: 5 matched items in 24h is the radar's threshold, checked on the leader only"`; scored: `"No price level: activity score 72/100 blends item growth, volume, tone, impact and source count"` |
-| `scenarios` | Below: `"If the leading theme by activity score reaches 5 matched items in 24h, the radar scores it"`, `"If the leader stays under 5 matched items in 24h, the radar stays below threshold"`; scored: `"If the leading theme keeps 5+ matched items in 24h and the top score, the radar keeps scoring it"`, `"If it drops under 5 matched items in 24h, the radar goes below threshold and hides scores"` |
+| `what_happened` | Below: `"Restaking and liquid staking (LST/LRT) ranks first, 1 matched item in the 24h to Sep 15 22:00 UTC"` (one form; table names stay whole); scored: `"Real-world assets (RWA): 8 matched items in the 24h to Sep 15 22:00 UTC, 3 in the previous 24h"`; none: `"No theme had a matched item in the 24h to …"` |
+| `why_level` | Below: `"No price level: 5 matched items in 24h is the radar's threshold, checked on the top activity score theme only"`; no matched items: `"No price level: 5 matched items in 24h is the radar's threshold; no theme has a matched item"`; scored: `"No price level: activity score 72/100 blends item growth, volume, tone, impact and source count"` |
+| `scenarios` | Below: `"If the top activity score theme reaches 5 matched items in 24h, the radar scores it"`, `"If the top activity score theme stays under 5 matched items in 24h, the radar stays below threshold"`; no matched items: `"If a theme with the top activity score reaches 5 matched items in 24h, the radar scores it"`, `"Until a theme with the top activity score has 5 matched items in 24h, the radar stays below threshold"`; scored: `"If the leading theme keeps 5+ matched items in 24h and the top score, the radar keeps scoring it"`, `"If it drops under 5 matched items in 24h, the radar goes below threshold and hides scores"` |
 | `invalidates` | Scored only: `"Under 5 matched items in 24h, or another theme taking a higher activity score"`; `null` otherwise |
-| `regime` | The local news regime: `"Local news regime: quiet, no theme scored; no price direction"` / `"Local news regime: one theme scored, Real-world assets (RWA); no price direction"` |
+| `regime` | The local news regime: `"News radar below threshold: the top activity score theme has under 5 matched items in 24h; no price direction"` / no matched items: `"News radar below threshold: no theme has a matched item in 24h; no price direction"` / `"Local news regime: one theme scored, Real-world assets (RWA); no price direction"` |
 | `limitations` | `"Keyword matches, precision not measured; source status not served; tone is not direction"` |
 | `source` | `"CoinDesk and CoinTelegraph RSS plus Reddit when reachable, read by the AlphaVizor backend"` |
 
@@ -2242,6 +2315,34 @@ still serves no `Last-Modified`.
 
 ## Macro card and content blocks
 
+> ⚠️ **текст изменён 2026-09-16** — global Macro `facts` changed; do not parse
+> them. (1) No lamp is hidden: `· 1 more` hid US 10Y. Every voting lamp of
+> each side is listed; a side over 110 characters continues on a second line
+> of the same side, `Positive for rule score (cont.): …`. (2) The factor lines
+> and the gold line are two different scores: Gold rising is negative **for
+> the rule score**, while the separate gold model can read positive. The words
+> now say which score each line is about. Numbers, signs, weights, order of
+> the sides and every rule are unchanged; the `?asset=btc|gold` views are
+> unchanged.
+>
+> | | Before | Now |
+> |---|---|---|
+> | factor line | `Positive: VIX 17.10 (<18) → +12.5 · S&P 500 +0.11% (rose) → +12.5 · 1 more` | `Positive for rule score: VIX 17.10 (<18) → +12.5 · S&P 500 +0.11% (rose) → +12.5 · US 10Y -0.36% (fell) → +7.5` |
+> | factor line | `Negative: Gold +0.81% (rose >0.5%) → -5.0` | `Negative for rule score: Gold +0.81% (rose >0.5%) → -5.0` |
+> | empty side | `Negative: none in this model` | `Negative for rule score: none in this model` |
+> | gold line | `Gold macro backdrop: positive, gold score 70/100 (experimental model, own weights)` | `Gold macro backdrop: positive, gold score 70/100 (separate experimental model, own weights)` |
+> | gold line, no read | `Gold macro backdrop: no read, 2 of 4 lamps vote (the model needs 3)` | `Gold macro backdrop: no read, 2 of 4 lamps vote (the separate gold model needs 3)` |
+>
+> `/showcase/example` folds each side into one line and counts what it
+> no longer shows: the `(cont.)` lines are not quoted, the first line ends
+> with `· +N more on the card`, and the 4-line `data` block keeps the
+> regime's hold condition. At the widest numbers, with N lamps negative:
+> 1–2 lamps unchanged (`Negative for rule score: DXY +999.99% (rose >0.5%)
+> → -12.5 · VIX 99.99 (>25) → -12.5`); 3 lamps `Negative for rule score: DXY
+> +999.99% (rose >0.5%) → -12.5 · VIX 99.99 (>25) → -12.5 · +1 more on the
+> card`; 5 lamps `… · +3 more on the card`. The live payload of 2026-09-15
+> (three positive lamps in exactly 110 characters) is quoted whole.
+
 The global card (`/agents/macro`, 2026-09-15) says what five tradfin prices
 look like under a fixed rule, and nothing more: no forecast for BTC or gold,
 no causes ("favors crypto", "haven bid" are gone), no confidence. The rules
@@ -2255,18 +2356,20 @@ the card prints them from those constants.
 ```
 🟢 Macro Agent
 RISK-ON — rule score 83/100 (risk-on above 65, risk-off below 35)
-• Positive: VIX 17.10 (<18) → +12.5 · S&P 500 +0.11% (rose) → +12.5 · 1 more
-• Negative: none in this model
+• Positive for rule score: VIX 17.10 (<18) → +12.5 · S&P 500 +0.11% (rose) → +12.5 · US 10Y -0.36% (fell) → +7.5
+• Negative for rule score: none in this model
 • Risk-on holds while the rule score stays above 65 with at least 3 voting lamps
 • Data: 5 of 5 lamps live · Sep 14: US 10Y, VIX, S&P 500 · Sep 15: DXY, Gold
 • Rule score 83 ≈ 50 + US 10Y +7.5 + VIX +12.5 + S&P 500 +12.5 · neutral: DXY, Gold
 • BTC macro backdrop: risk-on (the regime itself); BTC direction is not inferred
-• Gold macro backdrop: mixed, gold score 45/100 (experimental model, own weights)
+• Gold macro backdrop: mixed, gold score 45/100 (separate experimental model, own weights)
 • Crypto Fear & Greed 69 (Greed), Sep 15 · separate index, not in the rule score
 ```
 
-- **Order**: regime and rule score → main factors (up to two of the side
-  with the larger total, one of the other) → what holds the regime → data
+- **Order**: regime and rule score → factors (every voting lamp of the side
+  with the larger total, then every lamp of the other side, each largest
+  first; a side wraps to a `(cont.)` line rather than hiding a lamp) → what
+  holds the regime → data
   dates → the breakdown → BTC / gold context → Fear & Greed.
 - **Contributions**: a voting lamp adds its weight (positive), half of it
   (neutral) or nothing (negative), renormalised over the voting lamps, so

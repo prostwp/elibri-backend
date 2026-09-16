@@ -215,7 +215,7 @@ var howTexts = map[string]string{
 	keyDigest:   "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",
 	keyTop:      "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",
 	keyGold:     goldHow,
-	keyNews:     "Counts CoinDesk/CoinTelegraph RSS items and Reddit posts (if reachable) with a theme keyword in headline, RSS summary or Reddit author: 24h vs prior 24h. Score 0-100; leader needs 5.",
+	keyNews:     "Counts CoinDesk/CoinTelegraph RSS items and Reddit posts (if reachable) with a theme keyword in headline, RSS summary or Reddit author: 24h vs prior 24h. Score 0-100; first-ranked theme needs 5.",
 }
 
 // ── Macro ────────────────────────────────────────────────────────────────────

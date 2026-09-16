@@ -41,6 +41,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/prostwp/elibri-backend/internal/macro"
 )
@@ -566,8 +567,10 @@ func (r modelRead) outcome(lr lampRead, forWhat string) string {
 	return s
 }
 
-// factorLines are the main factors: up to two lamps of the side with the
-// larger total contribution, then the strongest of the other side.
+// factorLines are the voting lamps by side: every lamp of the side with the
+// larger total contribution, then every lamp of the other side, each side
+// largest first. No lamp is hidden behind a count: a side that does not fit
+// one line continues on the next (listLines).
 func (r modelRead) factorLines() []string {
 	var pos, neg []lampRead
 	for _, lr := range r.lamps {
@@ -597,31 +600,100 @@ func (r modelRead) factorLines() []string {
 	byt(pos)
 	byt(neg)
 	if sp >= sn {
-		return []string{r.listLine("Positive", pos, 2), r.listLine("Negative", neg, 1)}
+		return append(r.listLines(contribPositive, pos), r.listLines(contribNegative, neg)...)
 	}
-	return []string{r.listLine("Negative", neg, 2), r.listLine("Positive", pos, 1)}
+	return append(r.listLines(contribNegative, neg), r.listLines(contribPositive, pos)...)
 }
 
-func (r modelRead) listLine(head string, items []lampRead, max int) string {
-	if len(items) == 0 {
-		return head + ": none in this model"
+// listLines words one side: "Positive for rule score: <lamp> → +12.5 · …".
+// The head names the score the contributions are to (the risk model's rule
+// score), so a lamp that is negative here is not read as negative for the
+// asset it names — the gold model is a separate reading. Lamps are packed
+// into lines of at most macroFactMaxRunes; the rest of the side continues on
+// "Positive for rule score (cont.): …" lines, never "· N more".
+// macroContMark marks a factor line that continues its side.
+const macroContMark = " (cont.): "
+
+// macroFactorHead splits a factor line into its head ("Positive for rule
+// score"), whether it continues its side, and its lamp parts; ok=false for
+// any other line.
+func macroFactorHead(f string) (head string, cont bool, parts []string, ok bool) {
+	if !strings.HasPrefix(f, upperFirst(contribPositive)+" for ") && !strings.HasPrefix(f, upperFirst(contribNegative)+" for ") {
+		return "", false, nil, false
 	}
-	parts := make([]string, 0, max)
-	for i, lr := range items {
-		if i == max {
-			break
+	if i := strings.Index(f, macroContMark); i > 0 {
+		return f[:i], true, strings.Split(f[i+len(macroContMark):], " · "), true
+	}
+	i := strings.Index(f, ": ")
+	if i < 0 {
+		return "", false, nil, false
+	}
+	return f[:i], false, strings.Split(f[i+2:], " · "), true
+}
+
+// macroShowcaseFacts folds each factor side into its first line for the
+// /showcase/example block: the "(cont.)" lines go, and the first line ends
+// with "· +N more on the card" for the lamps it no longer shows. When that
+// tail does not fit macroFactMaxRunes, the last shown lamp moves into N.
+// Every other line, and every side that fit one line, is unchanged.
+func macroShowcaseFacts(facts []string) []string {
+	out := make([]string, 0, len(facts))
+	for i := 0; i < len(facts); i++ {
+		head, cont, parts, ok := macroFactorHead(facts[i])
+		if !ok || cont {
+			out = append(out, facts[i])
+			continue
 		}
+		hidden := 0
+		for i+1 < len(facts) {
+			h, c, p, ok := macroFactorHead(facts[i+1])
+			if !ok || !c || h != head {
+				break
+			}
+			hidden += len(p)
+			i++
+		}
+		if hidden == 0 {
+			out = append(out, facts[i])
+			continue
+		}
+		shown := parts
+		for {
+			line := fmt.Sprintf("%s: %s · +%d more on the card", head, strings.Join(shown, " · "), hidden)
+			if utf8.RuneCountInString(line) <= macroFactMaxRunes || len(shown) == 1 {
+				out = append(out, line)
+				break
+			}
+			shown = shown[:len(shown)-1]
+			hidden++
+		}
+	}
+	return out
+}
+
+func (r modelRead) listLines(word string, items []lampRead) []string {
+	head := upperFirst(word) + " for " + r.m.scoreName
+	if len(items) == 0 {
+		return []string{head + ": none in this model"}
+	}
+	var out []string
+	line := ""
+	for _, lr := range items {
 		p := lampCause(lr.l)
 		if r.pts {
 			p += " → " + signedPts(lr.vsNeutral)
 		}
-		parts = append(parts, p)
+		switch {
+		case line == "":
+			line = head + ": " + p
+		case utf8.RuneCountInString(line+" · "+p) <= macroFactMaxRunes:
+			line += " · " + p
+		default:
+			out = append(out, line)
+			line = head + macroContMark + p
+		}
 	}
-	s := head + ": " + strings.Join(parts, " · ")
-	if n := len(items) - max; n > 0 {
-		s += fmt.Sprintf(" · %d more", n)
-	}
-	return s
+	return append(out, line)
 }
 
 // holdsLine — what keeps the reading and what ends it, from the bands and
@@ -1035,7 +1107,10 @@ func (v macroView) globalVerdict() string {
 }
 
 // btcContext / goldContext are the global card's asset lines: context of the
-// regime, not signals on the assets.
+// regime, not signals on the assets. The gold line calls its model separate:
+// the factor lines above are contributions to the rule score (Gold rising is
+// negative there), while the gold score is its own model with its own
+// mapping, so the two can point different ways without contradicting.
 func (v macroView) btcContext() string {
 	return fmt.Sprintf("BTC macro backdrop: %s (the regime itself); BTC direction is not inferred", regimeWord(v.regime))
 }
@@ -1043,9 +1118,9 @@ func (v macroView) btcContext() string {
 func (v macroView) goldContext() string {
 	g := v.gold
 	if g.score == nil {
-		return fmt.Sprintf("Gold macro backdrop: no read, %d of %d lamps vote (the model needs %d)", g.voters, g.inModel, goldMinVoters)
+		return fmt.Sprintf("Gold macro backdrop: no read, %d of %d lamps vote (the separate gold model needs %d)", g.voters, g.inModel, goldMinVoters)
 	}
-	return fmt.Sprintf("Gold macro backdrop: %s, gold score %d/100 (experimental model, own weights)", g.reading(), *g.score)
+	return fmt.Sprintf("Gold macro backdrop: %s, gold score %d/100 (separate experimental model, own weights)", g.reading(), *g.score)
 }
 
 // fillGlobal writes the global regime card: regime and score → main factors

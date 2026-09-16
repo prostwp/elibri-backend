@@ -63,13 +63,13 @@ func TestMacroGlobalCardLiveGolden(t *testing.T) {
 		t.Errorf("verdict: %q", c.Verdict)
 	}
 	assertLines(t, "global facts", c.Facts, []string{
-		"Positive: VIX 17.10 (<18) → +12.5 · S&P 500 +0.11% (rose) → +12.5 · 1 more",
-		"Negative: none in this model",
+		"Positive for rule score: VIX 17.10 (<18) → +12.5 · S&P 500 +0.11% (rose) → +12.5 · US 10Y -0.36% (fell) → +7.5",
+		"Negative for rule score: none in this model",
 		"Risk-on holds while the rule score stays above 65 with at least 3 voting lamps",
 		"Data: 5 of 5 lamps live · Sep 14: US 10Y, VIX, S&P 500 · Sep 15: DXY, Gold",
 		"Rule score 83 ≈ 50 + US 10Y +7.5 + VIX +12.5 + S&P 500 +12.5 · neutral: DXY, Gold",
 		"BTC macro backdrop: risk-on (the regime itself); BTC direction is not inferred",
-		"Gold macro backdrop: mixed, gold score 45/100 (experimental model, own weights)",
+		"Gold macro backdrop: mixed, gold score 45/100 (separate experimental model, own weights)",
 		"Crypto Fear & Greed 69 (Greed), Sep 15 · separate index, not in the rule score",
 	})
 	// The data stamp is the OLDEST live lamp (VIX, Sep 14 07:00), not the

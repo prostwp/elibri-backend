@@ -160,8 +160,8 @@ func TestMacroCardMixedWithRealLamps(t *testing.T) {
 	}
 	joined := strings.Join(c.Facts, "|")
 	for _, want := range []string{
-		"Positive: DXY -0.20% (fell) → +16.7",
-		"Negative: VIX 27.10 (>25) → -16.7",
+		"Positive for rule score: DXY -0.20% (fell) → +16.7",
+		"Negative for rule score: VIX 27.10 (>25) → -16.7",
 		"Mixed while the rule score is 35-65: above 65 reads risk-on, below 35 risk-off",
 		// Two voting weights of 25 plus a neutral 25: every share is 33.3.
 		"Rule score 50 = 50 + DXY +16.7 + VIX -16.7 · neutral: S&P 500",

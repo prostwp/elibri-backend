@@ -472,11 +472,14 @@ func detectedSentence(c Card) string {
 // leading row IS the gold row, the row carries the contract in it — a lone
 // "GOLD · 4320.7 · …" would read as spot XAUUSD (fxNamedRow).
 func strongestFact(c Card) string {
-	for _, f := range c.Facts {
+	for _, f := range showcaseFacts(c) {
 		if f == fxClosedBanner || (c.Command == keyFX && (fxUnreadLine(f) || fxCaptionLine(f))) {
 			continue
 		}
 		if c.Command == keyNews && narrativeHeaderLine(f) { // a list header, not a reading
+			continue
+		}
+		if showcaseSkipLine(c, f) {
 			continue
 		}
 		if strings.TrimSpace(f) != "" {
@@ -492,13 +495,33 @@ func strongestFact(c Card) string {
 	return endSentence(c.Verdict)
 }
 
+// showcaseSkipLine drops card lines the example does not quote (added
+// 2026-09-16): the S/R nearest-sides summary — the level lines carry the same
+// distances with the levels' prices and tests, and the S/R block reads as
+// before the line existed.
+func showcaseSkipLine(c Card, f string) bool {
+	return c.Command == keySR && strings.HasPrefix(f, srNearestSidesPrefix)
+}
+
+// showcaseFacts is the card's fact list as the example reads it. Macro folds
+// each factor side into one line (macroShowcaseFacts): its "(cont.)" lines
+// would push the regime's hold condition out of the capped block, and the
+// folded line says how many lamps of that side are on the card only — a
+// lamp is never dropped silently.
+func showcaseFacts(c Card) []string {
+	if c.Command == keyMacro {
+		return macroShowcaseFacts(c.Facts)
+	}
+	return c.Facts
+}
+
 // exampleFacts is the data block: the card's own live fact lines, capped.
 // When a card carries fewer than three, the top-up comes only from values it
 // already computed (confidence, source note) — nothing is invented to reach
 // a nicer-looking three.
 func exampleFacts(c Card) []string {
 	out := []string{}
-	facts := c.Facts
+	facts := showcaseFacts(c)
 	max := showcaseFactsMax
 	// FX: drop the dead rows and the gap note, but KEEP the weekend banner,
 	// gold's COMEX disclosure, the column header and the order note — they
@@ -513,6 +536,9 @@ func exampleFacts(c Card) []string {
 			break
 		}
 		if c.Command == keyNews && narrativeHeaderLine(f) { // a list header is not a data point
+			continue
+		}
+		if showcaseSkipLine(c, f) {
 			continue
 		}
 		if strings.TrimSpace(f) != "" {
