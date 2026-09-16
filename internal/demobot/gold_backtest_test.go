@@ -12,7 +12,8 @@ package demobot
 // adds a conflict line) — plus the day-levels layer.
 //
 // It was built against the verdict wording "Day bias UP/DOWN". That wording is
-// GONE: this run is why. It found no edge over baseline, so the card now
+// GONE: this run is why. It found no edge the sample could detect (it resolves
+// about 12 pp and larger — the report's section 7), so the card now
 // describes the regime ("Daily regime: confirmed UPTREND") instead of calling
 // the day. The run is kept scoring the same underlying state so the claim
 // "describes the period, does not forecast the day" stays checkable, and so a

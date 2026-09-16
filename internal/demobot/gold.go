@@ -175,7 +175,7 @@ const goldSourceNote = "data: Yahoo Finance · COMEX gold futures GC=F, not spot
 //
 // It says "not a forecast" on purpose. The Этап 5 history run found the
 // regime read carries no measurable edge on the NEXT DAY (+0.1 pp over
-// baseline on the out-of-sample half), and a one-bar peek moves the verdict on
+// baseline on the second, check half), and a one-bar peek moves the verdict on
 // only 3.9% of days (measured pairwise by date). The agent describes a
 // regime; it does not forecast a day, and the words a reader sees must not
 // imply otherwise.

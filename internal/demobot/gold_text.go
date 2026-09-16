@@ -103,7 +103,7 @@ func goldCardFrom(in goldInputs) Card {
 		(trend.State == trendDown && in.macro.State == goldSupport)
 
 	// The verdict DESCRIBES the regime; it does not call the day. The Этап 5
-	// run found no next-day edge in the regime read, so no "bias".
+	// run found no next-day edge the sample could detect, so no "bias".
 	switch {
 	case !in.hasPx:
 		c.Emoji = emojiNeutral
@@ -145,9 +145,10 @@ func goldCardFrom(in goldInputs) Card {
 
 	// 4. What invalidates the regime — confirmed states only: under a header
 	// that claims no direction there is nothing to invalidate.
-	inv := ""
+	inv, invLevel, invSide := "", (*float64)(nil), ""
 	if lv, ok := trend.Levels.(TrendLevels); ok && confirmed && lv.Invalidation != nil && *lv.Invalidation > 0 {
 		inv = goldInvalidationLine(trend.State, *lv.Invalidation, lv.InvalidationSide, in.px)
+		invLevel, invSide = lv.Invalidation, lv.InvalidationSide
 		c.Facts = append(c.Facts, inv)
 		c.Levels = lv
 	}
@@ -168,6 +169,12 @@ func goldCardFrom(in goldInputs) Card {
 		c.Facts = append(c.Facts, "Volatility: "+in.vol)
 	}
 
+	// 6. The setup structure closes the card: the same numbers said as one
+	// shape, plus the line that says what the history run measured. It is
+	// added AFTER the facts above, never instead of any of them.
+	idea, ideaLines := goldIdeaOf(in, confirmed, invLevel, invSide)
+	c.Facts = append(c.Facts, ideaLines...)
+
 	// The weekend notice leads, as on every Yahoo card. KNOWN LIMITATION:
 	// weekend only — COMEX holidays and the daily break are not modelled (no
 	// calendar source), so the price line's own date and the stale flag are
@@ -177,7 +184,8 @@ func goldCardFrom(in goldInputs) Card {
 	}
 
 	c.Gold = goldReadoutOf(in, confirmed, stale, pos)
-	if in.hasPx { // a degraded card carries no blocks
+	c.Gold.Idea = idea // null whenever the card named no structure
+	if in.hasPx {      // a degraded card carries no blocks
 		c.Blocks = goldBlocksOf(in, scenarios, inv, pos, stale)
 	}
 	return c
@@ -256,12 +264,7 @@ func (d goldDayLevels) scenarios(px float64, hasPx bool) []string {
 func goldInvalidationLine(state string, inv float64, side string, px float64) string {
 	s := fmt.Sprintf("A closed %s candle %s %s invalidates the daily %s reading",
 		goldDailySpec.Interval, side, goldPx(inv), dirNoun(state))
-	// Compared as PRINTED (goldPx, then parsed back): two numbers that print the
-	// same are never worded as one beyond the other — math.Round and "%.2f"
-	// disagree on exact half-cents, so the comparison uses the print itself.
-	pc, _ := strconv.ParseFloat(goldPx(px), 64)
-	ic, _ := strconv.ParseFloat(goldPx(inv), 64)
-	if (side == "below" && pc < ic) || (side == "above" && pc > ic) {
+	if goldBeyond(px, inv, side) {
 		return s + "; last 1h close already " + side + " it" // worst case 106 runes
 	}
 	prep := "under"
@@ -269,6 +272,126 @@ func goldInvalidationLine(state string, inv float64, side string, px float64) st
 		prep = "over"
 	}
 	return s + " (1 ATR " + prep + " the EMA cluster)"
+}
+
+// goldBeyond reports whether a price is STRICTLY beyond a level on the given
+// side. Compared as PRINTED (goldPx, then parsed back): two numbers that print
+// the same are never worded — or counted — as one beyond the other, because
+// math.Round and "%.2f" disagree on exact half-cents. Sitting exactly on a
+// level is not beyond it, as everywhere else on this card.
+func goldBeyond(px, level float64, side string) bool {
+	pc, _ := strconv.ParseFloat(goldPx(px), 64)
+	lc, _ := strconv.ParseFloat(goldPx(level), 64)
+	return (side == dayBelow && pc < lc) || (side == dayAbove && pc > lc)
+}
+
+// ── the setup structure (stage 2, 2026-09-16) ────────────────────────────────
+//
+// Nothing below is a new rule or a new number. The trigger is the day range
+// edge the scenarios already classify against, the invalidation level is the
+// trend card's own (EMA cluster ± 1 ATR), the reference level is the S/R
+// clusterizer's nearest level on the other side of price. The block only says
+// which level stands against which — the SHAPE of the setup.
+//
+// It is deliberately not a call to act. The Этап 5 history run found no edge
+// this sample could detect in this read (Отчёт_прогона_золотой_агент.md) — a
+// limit of the measurement, not a finding about the market — so the block
+// carries that sentence at that strength on the card itself, and the
+// banned-word test keeps trade vocabulary out of every path.
+
+// Machine values of gold.idea.state.
+const (
+	goldIdeaArmed      = "armed"                // no level taken by the last 1h close
+	goldIdeaTriggerHit = "trigger_reached"      // that close is already beyond the trigger
+	goldIdeaInvalidHit = "invalidation_reached" // that close is already beyond the invalidation level
+)
+
+// Machine values of gold.idea.*.basis — where each level comes from.
+const (
+	goldBasisRangeHigh = "day_range_high"
+	goldBasisRangeLow  = "day_range_low"
+	goldBasisEMAATR    = "ema_cluster_atr"
+)
+
+// goldIdeaDisclaimer states the measurement the block rests on, and states it
+// as the WEAK claim on purpose: the ten-year run (Отчёт_прогона_золотой_агент,
+// section 7) resolves effects of about 12 pp and larger, so what it found is
+// "no edge this sample could detect" — never a proof that no edge exists.
+//
+// "…showed no edge over the baseline" was the earlier wording and is wrong in
+// the flattering direction: it turns a limit of the measurement into a
+// finding about the market. The per-half numbers and the resolution limit are
+// in the docs; the card carries the claim only at the strength it was earned.
+const goldIdeaDisclaimer = "Structure, not a forecast: 10 years of history showed no edge this sample could detect"
+
+// Why the card names no structure. An unconfirmed regime never grows one out
+// of thin air: rule 1 and 2 of the conflict priority hold here too.
+const (
+	goldNoIdeaUnconfirmed = "No setup structure without a confirmed regime and a last closed 1h price"
+	goldNoIdeaNoRange     = "No setup structure: no day range to trigger against"
+	goldNoIdeaNoInv       = "No setup structure: this regime read carries no invalidation level"
+)
+
+// goldIdeaOf builds the structure and the lines that word it. inv/invSide are
+// the trend card's own invalidation level, already filtered by goldCardFrom to
+// a confirmed regime — passed in rather than recomputed so the block and the
+// invalidation line can never print two different numbers.
+func goldIdeaOf(in goldInputs, confirmed bool, inv *float64, invSide string) (*GoldIdea, []string) {
+	switch {
+	case !confirmed:
+		return nil, []string{goldNoIdeaUnconfirmed}
+	case !in.levels.Defined:
+		return nil, []string{goldNoIdeaNoRange}
+	case inv == nil || *inv <= 0 || invSide == "":
+		return nil, []string{goldNoIdeaNoInv}
+	}
+	// The trigger is the edge on the side the regime reads; the reference
+	// level is then the nearest cluster on the other side of price. Confirmed
+	// means trendUp or trendDown, so the two branches are the whole space.
+	trigger := GoldIdeaLevel{Level: in.levels.Low, Side: dayBelow, Basis: goldBasisRangeLow}
+	edge, ref, kind, refSide := "day range low", in.res, "resistance", dayAbove
+	if in.trend.State == trendUp {
+		trigger = GoldIdeaLevel{Level: in.levels.High, Side: dayAbove, Basis: goldBasisRangeHigh}
+		edge, ref, kind, refSide = "day range high", in.sup, "support", dayBelow
+	}
+	idea := &GoldIdea{
+		State:        goldIdeaArmed,
+		Trigger:      trigger,
+		Invalidation: GoldIdeaLevel{Level: *inv, Side: invSide, Basis: goldBasisEMAATR},
+	}
+	// The state only mirrors what the card already says elsewhere, and each
+	// branch borrows that line's OWN comparison, so the two can never disagree:
+	// the invalidation level at the printed tick (goldBeyond, like the
+	// invalidation tail), the trigger raw (positionOf, like the stage-1
+	// scenario tail — a close 0.004 above an edge that prints identically is
+	// already above it there, and is trigger_reached here). Invalidation is
+	// checked first: it ends the reading the trigger belongs to.
+	switch {
+	case goldBeyond(in.px, *inv, invSide):
+		idea.State = goldIdeaInvalidHit
+	case in.levels.positionOf(in.px) == trigger.Side:
+		idea.State = goldIdeaTriggerHit
+	}
+
+	// The reference level is the nearest cluster on the other side OF PRICE, so
+	// the words say "below price" / "above price" and never "opposite the
+	// trigger": once price has taken the trigger edge, the nearest cluster on
+	// its far side can sit beyond the trigger too (uptrend, range 4293.00 –
+	// 4396.80, last close 4400.10, support 4398.00 — above the trigger). An
+	// absent level is stated, never padded with the day range, which is a
+	// different thing measured a different way.
+	second := fmt.Sprintf("Invalidated by a closed %s candle %s %s; ", goldDailySpec.Interval, invSide, goldPx(*inv))
+	if ref == nil {
+		second += "nothing clustered " + refSide + " price"
+	} else {
+		idea.ReferenceLevel = &GoldIdeaRef{Level: ref.Raw, Kind: kind, Class: srClassKey(srClassOf(ref.Touches))}
+		second += "nearest level " + refSide + " price: " + kind + " " + goldPx(ref.Raw) // worst case 96 runes
+	}
+	return idea, []string{
+		fmt.Sprintf("Setup structure: a daily close %s %s (%s) is the trigger", trigger.Side, goldPx(trigger.Level), edge),
+		second,
+		goldIdeaDisclaimer,
+	}
 }
 
 // goldLampCounts counts the VOTING lamps of the gold macro model by their

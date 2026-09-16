@@ -34,7 +34,7 @@ Telegram.
 | `GET /agents/sr` | `?asset=` optional (default `btc`) | Support/resistance swing clusters: class, reactions/breaks counts, last touch, content `blocks` |
 | `GET /agents/vol` | `?asset=` optional (default `btc`) | ATR(14) against its 30-bar baseline: compressed / normal / elevated, machine readout in `levels`, content `blocks` (see [volatility card](#volatility-card-and-content-blocks)) |
 | `GET /agents/fx` | — | Forex overview: EURUSD, GBPUSD, USDJPY and gold (COMEX GC=F futures) — price, change, place in range, per-row freshness (see [FX card](#fx-card)) |
-| `GET /agents/gold` | — | Gold Agent on COMEX GC=F futures (`asset` stays `XAUUSD`): daily regime, the day range and two conditional day scenarios, the last closed 1h price with its own stamp, invalidation in a confirmed regime, macro / S/R / volatility background, machine readout in `gold`, content `blocks` (see [gold card](#gold-card-and-content-blocks)) |
+| `GET /agents/gold` | — | Gold Agent on COMEX GC=F futures (`asset` stays `XAUUSD`): daily regime, the day range and two conditional day scenarios, the last closed 1h price with its own stamp, invalidation in a confirmed regime, macro / S/R / volatility background, the setup structure with its own honesty line, machine readout in `gold` (`idea` included), content `blocks` (see [gold card](#gold-card-and-content-blocks)) |
 | `GET /agents/news` | — | Narrative radar: RSS items and Reddit posts matching a theme's keywords in the last 24h (growth vs the previous 24h), the leader's activity score from 5 matched items, machine readout in `narrative`, content `blocks` (see [narrative card](#narrative-card-and-content-blocks)) |
 | `GET /agents/risk` | `?balance=&risk=&entry=&stop=` all required | Risk sizing formula `(balance × risk%) ÷ \|entry − stop\|` in **abstract units**, valid under one stated condition; machine readout in `risk`, no content `blocks`, reads no market data (see [risk card](#risk-card)) |
 | `GET /agents/digest` | — | All agents in one sweep, prioritized; AI brief in `ai_text`, one-liners in `sections` |
@@ -1456,6 +1456,69 @@ with its reason: `Regime: grey zone · 1d — trend forming, not confirmed`.
 - Every line — verdict, facts, each `blocks` field — fits ≤ 110 characters.
   `asset` stays `XAUUSD`; the human label is `GOLD · COMEX GC=F`.
 
+### Stage 2: the setup structure (2026-09-16)
+
+> ⚠️ **Additive only.** The `verdict` values, the stage-1 `facts` and every
+> `blocks` field are unchanged. The card grew a tail of lines, and `gold` grew
+> one nullable field, `idea`. A client that ignores both still reads stage 1;
+> a client that pins the NUMBER of facts must stop doing that.
+
+The card closes with the shape of the setup — which level stands against which
+— built from numbers it has already printed:
+
+```
+• Setup structure: a daily close above 4396.80 (day range high) is the trigger
+• Invalidated by a closed 1d candle below 4040.00; nearest level below price: support 4329.20
+• Structure, not a forecast: 10 years of history showed no edge this sample could detect
+```
+
+- **No new rule and no new number.** The trigger is the day range edge the
+  scenarios already classify against (the high in a confirmed uptrend, the low
+  in a confirmed downtrend); the invalidation level is the trend card's own
+  (EMA cluster ± 1 ATR), the same number the invalidation line prints; the
+  reference level is the nearest clustered S/R level on the other side of
+  **price** — below price in a confirmed uptrend, above it in a downtrend —
+  worded `nearest level below price: support 4329.20`, or `nothing clustered
+  below price`. It is chosen relative to price, **not** to the trigger: once
+  price has taken the trigger edge that level can sit beyond the trigger too
+  (uptrend, range 4293.00 – 4396.80, last close 4400.10, support 4398.00), so
+  the card never calls it the side opposite the trigger. The state machine,
+  thresholds, `dayUnwindCap`, the S/R clusterizer and the macro model are
+  untouched.
+- **A structure, not a call.** No word a reader could act on (`buy`, `sell`,
+  `long`, `short`, `entry`, `profit`, `reward`), no price target, no
+  probability, no horizon — a test bans that vocabulary on every path, and the
+  up and down wordings are each other's mirror. The third line is on the card
+  by design, and it is deliberately the **weak** claim: the ten-year run found
+  no edge *this sample could detect* — a limit of the measurement, never a
+  proof that no edge exists. The card must not say "no edge over the baseline"
+  flat, and no test, fixture or field does.
+- **The numbers behind that line**, from the run's report
+  (`Отчёт_прогона_золотой_агент.md`, sections 2, 4 and 7). Second (check) half
+  of the sample, conditional against its **complement** (the days the agent did
+  not name that side), intervals widened for autocorrelation: upside **+0.1 pp** on both
+  checks (±13.8 range / ±14.6 close); downside **+1.0 pp** (±28.5) and **+3.2
+  pp** (±32.1). Every one sits inside its own noise band, and the downside
+  sample is 113 days in ten years — it states nothing at all. After the
+  autocorrelation correction the run distinguishes effects of about **12 pp and
+  larger**: anything smaller is invisible to it. So the honest reading is "if
+  an effect exists it is below what ten years of daily gold can show" — which
+  rules out promising a forecast **and** rules out claiming none is possible.
+- **That half is a stability check, not a hold-out.** The agent has nothing to
+  tune, so the split only tests whether the result holds across periods; it is
+  not a train/test split and must not be called out-of-sample. Two decisions
+  (`dayUnwindCap = 3` and the structure-gate variant) were taken after looking
+  at history that **overlaps** this run's sample — the report says so, and
+  notes the overlap weakens a positive finding, not this null one.
+- **No structure without a confirmed regime**, and never one invented out of an
+  unconfirmed one. Unconfirmed, or with no 1h price: `No setup structure
+  without a confirmed regime and a last closed 1h price`, `gold.idea: null`.
+  Confirmed but no day range: `No setup structure: no day range to trigger
+  against`. Confirmed with no invalidation level in the trend read: `No setup
+  structure: this regime read carries no invalidation level`.
+- The tail is card text like any other: each line fits ≤ 110 characters, on
+  every path including five-digit prices and the already-beyond wordings.
+
 `gold` (additive; gold envelopes only):
 
 | Field | Meaning |
@@ -1471,6 +1534,7 @@ with its reason: `Regime: grey zone · 1d — trend forming, not confirmed`.
 | `macro_as_of` | Oldest `as_of` among the voting macro lamps — the stalest input of the read; `null` without a read |
 | `macro_backdrop` | `support` \| `pressure` \| `neutral` (the card words `neutral` as "mixed"); `null` without a read |
 | `macro_lamps` | `{for, neutral, against}` — voting lamps by contribution; `null` without a read |
+| `idea` | **Added 2026-09-16.** The setup structure, or `null` when the card names none (unconfirmed regime, no 1h price, no day range, no invalidation level): `{state, trigger {level, side, basis}, invalidation {level, side, basis}, reference_level}`. `state` = `armed` \| `trigger_reached` \| `invalidation_reached` — where the last closed 1h price sits. Each branch uses the comparison its own card line uses, so state and text never disagree: the **invalidation** level at printed tick precision (like the invalidation line — a close that prints the same as the level is not beyond it), the **trigger** raw (like the stage-1 scenario tail — a close 0.004 above an edge that prints identically is already beyond it, and the state says `trigger_reached`). The invalidation level is checked first. `side` = the side a **closed 1d candle** must be on (`above` \| `below`); `basis` = `day_range_high` \| `day_range_low` \| `ema_cluster_atr`. `reference_level` = `{level, kind, class}` — the nearest cluster on the other side of **price** (below price in an uptrend, above it in a downtrend), which can sit beyond the trigger once price has taken that edge; `kind` `support` \| `resistance`, `class` `established` \| `candidate` \| `single_swing` as on the S/R card; `null` when nothing clustered there. Not a recommendation: see [stage 2](#stage-2-the-setup-structure-2026-09-16) |
 
 **`data_as_of` decision.** It stays the daily close — the part the verdict,
 the regime and the day range come from — and is not the freshness of the

@@ -84,6 +84,9 @@ func TestGoldCardGoldenTexts(t *testing.T) {
 			"Macro backdrop: mixed for gold (lamps: 1 for, 1 neutral, 2 against)",
 			"Nearest levels: support 4329.20 (single swing, 1 pivot) · resistance 4364.50 (candidate, 2 pivots)",
 			"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+			"Setup structure: a daily close above 4396.80 (day range high) is the trigger",
+			"Invalidated by a closed 1d candle below 4040.00; nearest level below price: support 4329.20",
+			"Structure, not a forecast: 10 years of history showed no edge this sample could detect",
 		}},
 		"confirmed down": {goldFixture(trendDown), "Daily regime: confirmed DOWNTREND", []string{
 			"Last closed 1h price 4354.90 at 2026-09-15 03:00 UTC — inside the day range",
@@ -94,6 +97,9 @@ func TestGoldCardGoldenTexts(t *testing.T) {
 			"Macro backdrop: mixed for gold (lamps: 1 for, 1 neutral, 2 against)",
 			"Nearest levels: support 4329.20 (single swing, 1 pivot) · resistance 4364.50 (candidate, 2 pivots)",
 			"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+			"Setup structure: a daily close below 4293.00 (day range low) is the trigger",
+			"Invalidated by a closed 1d candle above 4660.00; nearest level above price: resistance 4364.50",
+			"Structure, not a forecast: 10 years of history showed no edge this sample could detect",
 		}},
 		"not confirmed": {goldFixture(trendGrey), "Daily regime: not confirmed — no direction claimed", []string{
 			"Regime: grey zone · 1d — trend forming, not confirmed",
@@ -104,6 +110,7 @@ func TestGoldCardGoldenTexts(t *testing.T) {
 			"Macro backdrop: mixed for gold (lamps: 1 for, 1 neutral, 2 against)",
 			"Nearest levels: support 4329.20 (single swing, 1 pivot) · resistance 4364.50 (candidate, 2 pivots)",
 			"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+			"No setup structure without a confirmed regime and a last closed 1h price",
 		}},
 		"macro against the regime": {macroConflictUp, "Daily regime: confirmed UPTREND", []string{
 			"Last closed 1h price 4354.90 at 2026-09-15 03:00 UTC — inside the day range",
@@ -115,6 +122,9 @@ func TestGoldCardGoldenTexts(t *testing.T) {
 			"Macro backdrop conflicts with the daily uptrend reading; both stand as read",
 			"Nearest levels: support 4329.20 (single swing, 1 pivot) · resistance 4364.50 (candidate, 2 pivots)",
 			"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+			"Setup structure: a daily close above 4396.80 (day range high) is the trigger",
+			"Invalidated by a closed 1d candle below 4040.00; nearest level below price: support 4329.20",
+			"Structure, not a forecast: 10 years of history showed no edge this sample could detect",
 		}},
 	}
 	for name, tc := range cases {
@@ -246,6 +256,7 @@ func TestGoldCardNoIntradayPrice(t *testing.T) {
 		"A daily close below 4293.00 classifies the day as a downside break",
 		"Macro backdrop: mixed for gold (lamps: 1 for, 1 neutral, 2 against)",
 		"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+		"No setup structure without a confirmed regime and a last closed 1h price",
 	}
 	if strings.Join(c.Facts, "\n") != strings.Join(want, "\n") {
 		t.Errorf("facts:\n%s\nwant:\n%s", strings.Join(c.Facts, "\n"), strings.Join(want, "\n"))
@@ -272,6 +283,7 @@ func TestGoldCardNoMacroAndUndefinedRange(t *testing.T) {
 		"Day range undefined: more than 3 nested inside days, no day levels to give",
 		"Macro backdrop: no gold read available",
 		"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+		"No setup structure without a confirmed regime and a last closed 1h price",
 	}
 	if strings.Join(c.Facts, "\n") != strings.Join(want, "\n") {
 		t.Errorf("facts:\n%s\nwant:\n%s", strings.Join(c.Facts, "\n"), strings.Join(want, "\n"))
@@ -482,6 +494,10 @@ func TestGoldTextBannedWords(t *testing.T) {
 		"BUY", "SELL", "lamps split", "swing pivots)", "1 swing pivot",
 	}
 	nowWord := regexp.MustCompile(`(?i)\bnow\b|\d+h old|\bago\b`)
+	// Stage 2: the setup-structure block must not turn into a trade call. The
+	// words below are what a reader would act on — a side, an order, a payoff.
+	// "forecast" itself stays legal: the card says "not a forecast".
+	trade := regexp.MustCompile(`(?i)\b(buy|sell|long|short|entry|exit|profit|loss|reward|guarantee[sd]?|win|chance|odds|forecasts?\s+(a|the|an)\b)\b`)
 	for key, c := range goldAllCards() {
 		b, err := json.Marshal(c.Blocks)
 		if err != nil {
@@ -497,6 +513,9 @@ func TestGoldTextBannedWords(t *testing.T) {
 		text := strings.ReplaceAll(strings.Join(goldLines(c), "\n"), "stale (over 6h old)", "")
 		if m := nowWord.FindString(text); m != "" {
 			t.Errorf("%s: %q — the price is the last closed 1h bar, never 'now', and no running age:\n%s", key, m, all)
+		}
+		if m := trade.FindString(all); m != "" {
+			t.Errorf("%s: %q — the card describes structure, it never calls a trade:\n%s", key, m, all)
 		}
 	}
 }

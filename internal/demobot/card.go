@@ -326,6 +326,54 @@ type GoldReadout struct {
 	MacroAsOf      *string         `json:"macro_as_of"`     // oldest as_of of the voting macro lamps
 	MacroBackdrop  *string         `json:"macro_backdrop"`  // support | pressure | neutral; null without a read
 	MacroLamps     *GoldMacroLamps `json:"macro_lamps"`     // voting lamps by contribution for gold
+	// Idea is the setup STRUCTURE (stage 2, additive 2026-09-16): which level
+	// stands against which, assembled from the fields above and from the trend
+	// card's invalidation level — no new rule and no new number. null when the
+	// card names no structure: the regime is unconfirmed, there is no 1h
+	// price, no day range, or the regime read carries no invalidation level.
+	//
+	// It is NOT a recommendation. The history run found no edge THIS SAMPLE
+	// COULD DETECT (Отчёт_прогона_золотой_агент.md — it resolves about 12 pp
+	// and larger), the card carries that sentence at that strength, and a test
+	// bans trade vocabulary on every path.
+	Idea *GoldIdea `json:"idea"`
+}
+
+// GoldIdea is the shape of the setup: the trigger the day is classified by,
+// the level that ends the reading, and the nearest clustered level on the
+// other side OF PRICE as the structure's other end.
+type GoldIdea struct {
+	// State is where the last closed 1h price sits against those levels:
+	// armed | trigger_reached | invalidation_reached. Each branch is compared
+	// exactly the way the card words the same thing, so state and text can
+	// never disagree: the invalidation level at PRINTED tick precision (like
+	// the invalidation line), the trigger RAW (like the stage-1 scenario tail
+	// — a close 0.004 above an edge that prints identically is "already above
+	// it" there, and trigger_reached here). Invalidation is checked first.
+	State          string        `json:"state"`
+	Trigger        GoldIdeaLevel `json:"trigger"`
+	Invalidation   GoldIdeaLevel `json:"invalidation"`
+	ReferenceLevel *GoldIdeaRef  `json:"reference_level"` // null when nothing clustered on that side
+}
+
+// GoldIdeaLevel is one level of the structure with the side a CLOSED daily
+// candle must be on and where the number comes from.
+type GoldIdeaLevel struct {
+	Level float64 `json:"level"`
+	Side  string  `json:"side"`  // above | below
+	Basis string  `json:"basis"` // day_range_high | day_range_low | ema_cluster_atr
+}
+
+// GoldIdeaRef is the nearest clustered level on the other side of PRICE —
+// below price in a confirmed uptrend, above it in a downtrend — named the way
+// the S/R card names it. Chosen relative to price, NOT to the trigger: once
+// price has taken the trigger edge this level can sit beyond the trigger as
+// well, which is why the card says "below price" / "above price" and never
+// "opposite the trigger".
+type GoldIdeaRef struct {
+	Level float64 `json:"level"`
+	Kind  string  `json:"kind"`  // support | resistance
+	Class string  `json:"class"` // established | candidate | single_swing
 }
 
 // GoldDayRange is the range the scenarios classify against.
