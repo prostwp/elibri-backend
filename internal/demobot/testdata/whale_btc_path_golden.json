@@ -1,0 +1,312 @@
+{
+  "huge": {
+    "asset": "BTC",
+    "emoji": "⚪",
+    "verdict": "2147483647 BTC transactions ≥ $100K seen by the monitor in 24h — exchange direction not measurable",
+    "short": "2147483647 tx ≥ $100K seen, direction n/a",
+    "facts": [
+      "Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected",
+      "Exchange direction: not measurable (these BTC wallets carry no exchange labels)",
+      "Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen",
+      "Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served",
+      "Largest BTC among the latest 2 monitor records received, not a 24h top · outputs include change",
+      "Outputs total 21000000 BTC ≈ $9990000.00B · detected by the monitor at Sep 15 14:59 UTC, not the block time",
+      "Outputs total 21000000 BTC ≈ $9990000.00B · detected by the monitor at Sep 15 14:58 UTC, not the block time"
+    ],
+    "how_it_works": "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+    "source_note": "data: mempool.space",
+    "blocks": {
+      "what_happened": "The monitor detected 2147483647 BTC transactions ≥ $100K in the 24h to Sep 15 15:00 UTC",
+      "why_level": "No price level: $100K is the monitor's size threshold per transaction, not a market level",
+      "scenarios": null,
+      "invalidates": null,
+      "regime": "",
+      "limitations": "A sample: the 10 newest mempool entries per 10-min poll; outputs include change; no exchange labels",
+      "source": "mempool.space recent-transactions feed, polled by the AlphaVizor backend; USD at Binance BTCUSDT"
+    },
+    "html": "⚪ \u003cb\u003eWhale Flow Agent\u003c/b\u003e · BTC\n\u003cb\u003e2147483647 BTC transactions ≥ $100K seen by the monitor in 24h — exchange direction not measurable\u003c/b\u003e\n• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected\n• Exchange direction: not measurable (these BTC wallets carry no exchange labels)\n• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen\n• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served\n• Largest BTC among the latest 2 monitor records received, not a 24h top · outputs include change\n• Outputs total 21000000 BTC ≈ $9990000.00B · detected by the monitor at Sep 15 14:59 UTC, not the block time\n• Outputs total 21000000 BTC ≈ $9990000.00B · detected by the monitor at Sep 15 14:58 UTC, not the block time\n\n\u003ci\u003eAnalytics, not financial advice · AlphaVizor · 2026-09-15 15:00 UTC · data: mempool.space\u003c/i\u003e",
+    "one_liner": "⚪ \u003cb\u003eWhale\u003c/b\u003e BTC: 2147483647 tx ≥ $100K seen, direction n/a",
+    "conclusion": "This is an activity count, not a forecast: the monitor saw 2147483647 BTC transactions ≥ $100K in 24h in a small sample (the 10 newest mempool entries per poll); it sees neither exchange direction nor price, so it says nothing about where price goes.",
+    "confidence": null,
+    "status": 0
+  },
+  "inflow": {
+    "asset": "BTC",
+    "emoji": "🔴",
+    "verdict": "Net to labeled exchange wallets over 24h · 37 BTC transactions ≥ $100K seen by the monitor",
+    "short": "net to exchanges",
+    "facts": [
+      "Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected",
+      "Net flow 24h: -$18.40M (37 tx ≥ $100K) — partial data, labeled wallets only",
+      "Prior 24h net flow: -$6.20M → +197% change",
+      "Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen",
+      "Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served",
+      "Largest BTC among the latest 2 monitor records received, not a 24h top · outputs include change",
+      "Outputs total 150.50 BTC ≈ $17.00M · from Binance · detected by monitor at Sep 15 14:30 UTC, not block time",
+      "Outputs total 90.10 BTC ≈ $10.00M · to Coinbase · detected by monitor at Sep 15 14:00 UTC, not block time"
+    ],
+    "how_it_works": "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+    "source_note": "data: mempool.space",
+    "blocks": {
+      "what_happened": "The monitor detected 37 BTC transactions ≥ $100K in the 24h to Sep 15 15:00 UTC",
+      "why_level": "No price level: $100K is the monitor's size threshold per transaction, not a market level",
+      "scenarios": null,
+      "invalidates": null,
+      "regime": "",
+      "limitations": "A sample: the 10 newest mempool entries per 10-min poll; outputs include change; no exchange labels",
+      "source": "mempool.space recent-transactions feed, polled by the AlphaVizor backend; USD at Binance BTCUSDT"
+    },
+    "html": "🔴 \u003cb\u003eWhale Flow Agent\u003c/b\u003e · BTC\n\u003cb\u003eNet to labeled exchange wallets over 24h · 37 BTC transactions ≥ $100K seen by the monitor\u003c/b\u003e\n• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected\n• Net flow 24h: -$18.40M (37 tx ≥ $100K) — partial data, labeled wallets only\n• Prior 24h net flow: -$6.20M → +197% change\n• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen\n• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served\n• Largest BTC among the latest 2 monitor records received, not a 24h top · outputs include change\n• Outputs total 150.50 BTC ≈ $17.00M · from Binance · detected by monitor at Sep 15 14:30 UTC, not block time\n• Outputs total 90.10 BTC ≈ $10.00M · to Coinbase · detected by monitor at Sep 15 14:00 UTC, not block time\nConfidence: ■■■□□ 64%\n\n\u003ci\u003eAnalytics, not financial advice · AlphaVizor · 2026-09-15 15:00 UTC · data: mempool.space\u003c/i\u003e",
+    "one_liner": "🔴 \u003cb\u003eWhale\u003c/b\u003e BTC: net to exchanges",
+    "conclusion": "This is a labeled-wallet estimate, not a forecast: the monitor saw 37 BTC transactions ≥ $100K in 24h; it says nothing about where price goes.",
+    "confidence": 64,
+    "status": 0
+  },
+  "live": {
+    "asset": "BTC",
+    "emoji": "⚪",
+    "verdict": "66 BTC transactions ≥ $100K seen by the monitor in 24h — exchange direction not measurable",
+    "short": "66 tx ≥ $100K seen, direction n/a",
+    "facts": [
+      "Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected",
+      "Exchange direction: not measurable (these BTC wallets carry no exchange labels)",
+      "Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen",
+      "Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served",
+      "Largest BTC among the latest 10 monitor records received, not a 24h top · outputs include change",
+      "Outputs total 2465 BTC ≈ $187.02M · detected by the monitor at Sep 15 15:00 UTC, not the block time",
+      "Outputs total 55.60 BTC ≈ $4.38M · detected by the monitor at Sep 15 14:50 UTC, not the block time",
+      "Outputs total 50.36 BTC ≈ $3.93M · detected by the monitor at Sep 15 14:40 UTC, not the block time"
+    ],
+    "how_it_works": "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+    "source_note": "data: mempool.space",
+    "blocks": {
+      "what_happened": "The monitor detected 66 BTC transactions ≥ $100K in the 24h to Sep 15 15:00 UTC",
+      "why_level": "No price level: $100K is the monitor's size threshold per transaction, not a market level",
+      "scenarios": null,
+      "invalidates": null,
+      "regime": "",
+      "limitations": "A sample: the 10 newest mempool entries per 10-min poll; outputs include change; no exchange labels",
+      "source": "mempool.space recent-transactions feed, polled by the AlphaVizor backend; USD at Binance BTCUSDT"
+    },
+    "html": "⚪ \u003cb\u003eWhale Flow Agent\u003c/b\u003e · BTC\n\u003cb\u003e66 BTC transactions ≥ $100K seen by the monitor in 24h — exchange direction not measurable\u003c/b\u003e\n• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected\n• Exchange direction: not measurable (these BTC wallets carry no exchange labels)\n• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen\n• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served\n• Largest BTC among the latest 10 monitor records received, not a 24h top · outputs include change\n• Outputs total 2465 BTC ≈ $187.02M · detected by the monitor at Sep 15 15:00 UTC, not the block time\n• Outputs total 55.60 BTC ≈ $4.38M · detected by the monitor at Sep 15 14:50 UTC, not the block time\n• Outputs total 50.36 BTC ≈ $3.93M · detected by the monitor at Sep 15 14:40 UTC, not the block time\n\n\u003ci\u003eAnalytics, not financial advice · AlphaVizor · 2026-09-15 15:00 UTC · data: mempool.space\u003c/i\u003e",
+    "one_liner": "⚪ \u003cb\u003eWhale\u003c/b\u003e BTC: 66 tx ≥ $100K seen, direction n/a",
+    "conclusion": "This is an activity count, not a forecast: the monitor saw 66 BTC transactions ≥ $100K in 24h in a small sample (the 10 newest mempool entries per poll); it sees neither exchange direction nor price, so it says nothing about where price goes.",
+    "confidence": null,
+    "status": 0
+  },
+  "no_net": {
+    "asset": "BTC",
+    "emoji": "⚪",
+    "verdict": "No net labeled exchange direction over 24h · 66 BTC transactions ≥ $100K seen by the monitor",
+    "short": "no net labeled direction",
+    "facts": [
+      "Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected",
+      "Net flow 24h: $0.00 (66 tx ≥ $100K)",
+      "Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen",
+      "Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served",
+      "Largest BTC among the latest 10 monitor records received, not a 24h top · outputs include change",
+      "Outputs total 2465 BTC ≈ $187.02M · detected by the monitor at Sep 15 15:00 UTC, not the block time",
+      "Outputs total 55.60 BTC ≈ $4.38M · detected by the monitor at Sep 15 14:50 UTC, not the block time",
+      "Outputs total 50.36 BTC ≈ $3.93M · detected by the monitor at Sep 15 14:40 UTC, not the block time"
+    ],
+    "how_it_works": "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+    "source_note": "data: mempool.space",
+    "blocks": {
+      "what_happened": "The monitor detected 66 BTC transactions ≥ $100K in the 24h to Sep 15 15:00 UTC",
+      "why_level": "No price level: $100K is the monitor's size threshold per transaction, not a market level",
+      "scenarios": null,
+      "invalidates": null,
+      "regime": "",
+      "limitations": "A sample: the 10 newest mempool entries per 10-min poll; outputs include change; no exchange labels",
+      "source": "mempool.space recent-transactions feed, polled by the AlphaVizor backend; USD at Binance BTCUSDT"
+    },
+    "html": "⚪ \u003cb\u003eWhale Flow Agent\u003c/b\u003e · BTC\n\u003cb\u003eNo net labeled exchange direction over 24h · 66 BTC transactions ≥ $100K seen by the monitor\u003c/b\u003e\n• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected\n• Net flow 24h: $0.00 (66 tx ≥ $100K)\n• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen\n• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served\n• Largest BTC among the latest 10 monitor records received, not a 24h top · outputs include change\n• Outputs total 2465 BTC ≈ $187.02M · detected by the monitor at Sep 15 15:00 UTC, not the block time\n• Outputs total 55.60 BTC ≈ $4.38M · detected by the monitor at Sep 15 14:50 UTC, not the block time\n• Outputs total 50.36 BTC ≈ $3.93M · detected by the monitor at Sep 15 14:40 UTC, not the block time\n\n\u003ci\u003eAnalytics, not financial advice · AlphaVizor · 2026-09-15 15:00 UTC · data: mempool.space\u003c/i\u003e",
+    "one_liner": "⚪ \u003cb\u003eWhale\u003c/b\u003e BTC: no net labeled direction",
+    "conclusion": "This is a labeled-wallet estimate, not a forecast: the monitor saw 66 BTC transactions ≥ $100K in 24h; it says nothing about where price goes.",
+    "confidence": null,
+    "status": 0
+  },
+  "no_snap": {
+    "asset": "BTC",
+    "emoji": "⚪",
+    "verdict": "No BTC count from the monitor yet",
+    "short": "no data",
+    "facts": [
+      "Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected",
+      "Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen",
+      "Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served"
+    ],
+    "how_it_works": "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+    "source_note": "data: mempool.space",
+    "blocks": null,
+    "html": "⚪ \u003cb\u003eWhale Flow Agent\u003c/b\u003e · BTC\n\u003cb\u003eNo BTC count from the monitor yet\u003c/b\u003e\n• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected\n• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen\n• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served\n\n\u003ci\u003eAnalytics, not financial advice · AlphaVizor · 2026-09-15 23:28 UTC · data: mempool.space\u003c/i\u003e",
+    "one_liner": "⚪ \u003cb\u003eWhale\u003c/b\u003e BTC: no data",
+    "conclusion": "The monitor has no BTC count yet, so there is nothing to read.",
+    "confidence": null,
+    "status": 4
+  },
+  "none_shown": {
+    "asset": "BTC",
+    "emoji": "⚪",
+    "verdict": "5 BTC transactions ≥ $100K seen by the monitor in 24h — exchange direction not measurable",
+    "short": "5 tx ≥ $100K seen, direction n/a",
+    "facts": [
+      "Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected",
+      "Exchange direction: not measurable (these BTC wallets carry no exchange labels)",
+      "Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen",
+      "Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served",
+      "None of the latest 2 monitor records received is a BTC transaction of this 24h window"
+    ],
+    "how_it_works": "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+    "source_note": "data: mempool.space",
+    "blocks": {
+      "what_happened": "The monitor detected 5 BTC transactions ≥ $100K in the 24h to Sep 15 15:00 UTC",
+      "why_level": "No price level: $100K is the monitor's size threshold per transaction, not a market level",
+      "scenarios": null,
+      "invalidates": null,
+      "regime": "",
+      "limitations": "A sample: the 10 newest mempool entries per 10-min poll; outputs include change; no exchange labels",
+      "source": "mempool.space recent-transactions feed, polled by the AlphaVizor backend; USD at Binance BTCUSDT"
+    },
+    "html": "⚪ \u003cb\u003eWhale Flow Agent\u003c/b\u003e · BTC\n\u003cb\u003e5 BTC transactions ≥ $100K seen by the monitor in 24h — exchange direction not measurable\u003c/b\u003e\n• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected\n• Exchange direction: not measurable (these BTC wallets carry no exchange labels)\n• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen\n• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served\n• None of the latest 2 monitor records received is a BTC transaction of this 24h window\n\n\u003ci\u003eAnalytics, not financial advice · AlphaVizor · 2026-09-15 15:00 UTC · data: mempool.space\u003c/i\u003e",
+    "one_liner": "⚪ \u003cb\u003eWhale\u003c/b\u003e BTC: 5 tx ≥ $100K seen, direction n/a",
+    "conclusion": "This is an activity count, not a forecast: the monitor saw 5 BTC transactions ≥ $100K in 24h in a small sample (the 10 newest mempool entries per poll); it sees neither exchange direction nor price, so it says nothing about where price goes.",
+    "confidence": null,
+    "status": 0
+  },
+  "offline": {
+    "asset": "BTC",
+    "emoji": "⚪",
+    "verdict": "Data source offline right now. The team is on it.",
+    "short": "offline",
+    "facts": null,
+    "how_it_works": "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+    "source_note": "",
+    "blocks": null,
+    "html": "⚪ \u003cb\u003eWhale Flow Agent\u003c/b\u003e · BTC\n\u003cb\u003eData source offline right now. The team is on it.\u003c/b\u003e\n\n\u003ci\u003eAnalytics, not financial advice · AlphaVizor · 2026-09-15 23:28 UTC\u003c/i\u003e",
+    "one_liner": "⚪ \u003cb\u003eWhale\u003c/b\u003e BTC: offline",
+    "conclusion": "The monitor's source is offline right now, so there is nothing to read.",
+    "confidence": null,
+    "status": 1
+  },
+  "outflow": {
+    "asset": "BTC",
+    "emoji": "🟢",
+    "verdict": "Net from labeled exchange wallets over 24h · 37 BTC transactions ≥ $100K seen by the monitor",
+    "short": "net from exchanges",
+    "facts": [
+      "Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected",
+      "Net flow 24h: -$18.40M (37 tx ≥ $100K) — partial data, labeled wallets only",
+      "Prior 24h net flow: -$6.20M → +197% change",
+      "Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen",
+      "Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served",
+      "Largest BTC among the latest 2 monitor records received, not a 24h top · outputs include change",
+      "Outputs total 150.50 BTC ≈ $17.00M · from Binance · detected by monitor at Sep 15 14:30 UTC, not block time",
+      "Outputs total 90.10 BTC ≈ $10.00M · to Coinbase · detected by monitor at Sep 15 14:00 UTC, not block time"
+    ],
+    "how_it_works": "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+    "source_note": "data: mempool.space",
+    "blocks": {
+      "what_happened": "The monitor detected 37 BTC transactions ≥ $100K in the 24h to Sep 15 15:00 UTC",
+      "why_level": "No price level: $100K is the monitor's size threshold per transaction, not a market level",
+      "scenarios": null,
+      "invalidates": null,
+      "regime": "",
+      "limitations": "A sample: the 10 newest mempool entries per 10-min poll; outputs include change; no exchange labels",
+      "source": "mempool.space recent-transactions feed, polled by the AlphaVizor backend; USD at Binance BTCUSDT"
+    },
+    "html": "🟢 \u003cb\u003eWhale Flow Agent\u003c/b\u003e · BTC\n\u003cb\u003eNet from labeled exchange wallets over 24h · 37 BTC transactions ≥ $100K seen by the monitor\u003c/b\u003e\n• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected\n• Net flow 24h: -$18.40M (37 tx ≥ $100K) — partial data, labeled wallets only\n• Prior 24h net flow: -$6.20M → +197% change\n• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen\n• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served\n• Largest BTC among the latest 2 monitor records received, not a 24h top · outputs include change\n• Outputs total 150.50 BTC ≈ $17.00M · from Binance · detected by monitor at Sep 15 14:30 UTC, not block time\n• Outputs total 90.10 BTC ≈ $10.00M · to Coinbase · detected by monitor at Sep 15 14:00 UTC, not block time\nConfidence: ■■■□□ 64%\n\n\u003ci\u003eAnalytics, not financial advice · AlphaVizor · 2026-09-15 15:00 UTC · data: mempool.space\u003c/i\u003e",
+    "one_liner": "🟢 \u003cb\u003eWhale\u003c/b\u003e BTC: net from exchanges",
+    "conclusion": "This is a labeled-wallet estimate, not a forecast: the monitor saw 37 BTC transactions ≥ $100K in 24h; it says nothing about where price goes.",
+    "confidence": 64,
+    "status": 0
+  },
+  "showcase_live": {
+    "asset": "BTC",
+    "emoji": "🟢",
+    "verdict": "Net from labeled exchange wallets over 24h · 37 BTC transactions ≥ $100K seen by the monitor",
+    "short": "net from exchanges",
+    "facts": [
+      "Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected",
+      "Net flow 24h: -$18.40M (37 tx ≥ $100K)",
+      "Prior 24h net flow: -$9.00M → -104% change",
+      "Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen",
+      "Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served",
+      "None of the latest 0 monitor records received is a BTC transaction of this 24h window"
+    ],
+    "how_it_works": "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+    "source_note": "data: mempool.space",
+    "blocks": {
+      "what_happened": "The monitor detected 37 BTC transactions ≥ $100K in the 24h to Aug 18 06:00 UTC",
+      "why_level": "No price level: $100K is the monitor's size threshold per transaction, not a market level",
+      "scenarios": null,
+      "invalidates": null,
+      "regime": "",
+      "limitations": "A sample: the 10 newest mempool entries per 10-min poll; outputs include change; no exchange labels",
+      "source": "mempool.space recent-transactions feed, polled by the AlphaVizor backend; USD at Binance BTCUSDT"
+    },
+    "html": "🟢 \u003cb\u003eWhale Flow Agent\u003c/b\u003e · BTC\n\u003cb\u003eNet from labeled exchange wallets over 24h · 37 BTC transactions ≥ $100K seen by the monitor\u003c/b\u003e\n• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected\n• Net flow 24h: -$18.40M (37 tx ≥ $100K)\n• Prior 24h net flow: -$9.00M → -104% change\n• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen\n• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served\n• None of the latest 0 monitor records received is a BTC transaction of this 24h window\nConfidence: ■■■■□ 72%\n\n\u003ci\u003eAnalytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC · data: mempool.space\u003c/i\u003e",
+    "one_liner": "🟢 \u003cb\u003eWhale\u003c/b\u003e BTC: net from exchanges",
+    "conclusion": "This is a labeled-wallet estimate, not a forecast: the monitor saw 37 BTC transactions ≥ $100K in 24h; it says nothing about where price goes.",
+    "confidence": 72,
+    "status": 0
+  },
+  "window": {
+    "asset": "BTC",
+    "emoji": "🟢",
+    "verdict": "Net from labeled exchange wallets over 24h · 37 BTC transactions ≥ $100K seen by the monitor",
+    "short": "net from exchanges",
+    "facts": [
+      "Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected",
+      "Net flow 24h: -$18.40M (37 tx ≥ $100K)",
+      "Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen",
+      "Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served",
+      "Largest BTC among the latest 4 monitor records received, not a 24h top · outputs include change",
+      "Outputs total 12.50 BTC ≈ $800.0K · detected by the monitor at Aug 17 06:00 UTC, not the block time"
+    ],
+    "how_it_works": "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+    "source_note": "data: mempool.space",
+    "blocks": {
+      "what_happened": "The monitor detected 37 BTC transactions ≥ $100K in the 24h to Aug 18 06:00 UTC",
+      "why_level": "No price level: $100K is the monitor's size threshold per transaction, not a market level",
+      "scenarios": null,
+      "invalidates": null,
+      "regime": "",
+      "limitations": "A sample: the 10 newest mempool entries per 10-min poll; outputs include change; no exchange labels",
+      "source": "mempool.space recent-transactions feed, polled by the AlphaVizor backend; USD at Binance BTCUSDT"
+    },
+    "html": "🟢 \u003cb\u003eWhale Flow Agent\u003c/b\u003e · BTC\n\u003cb\u003eNet from labeled exchange wallets over 24h · 37 BTC transactions ≥ $100K seen by the monitor\u003c/b\u003e\n• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected\n• Net flow 24h: -$18.40M (37 tx ≥ $100K)\n• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen\n• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served\n• Largest BTC among the latest 4 monitor records received, not a 24h top · outputs include change\n• Outputs total 12.50 BTC ≈ $800.0K · detected by the monitor at Aug 17 06:00 UTC, not the block time\nConfidence: ■■■■□ 72%\n\n\u003ci\u003eAnalytics, not financial advice · AlphaVizor · 2026-08-18 06:00 UTC · data: mempool.space\u003c/i\u003e",
+    "one_liner": "🟢 \u003cb\u003eWhale\u003c/b\u003e BTC: net from exchanges",
+    "conclusion": "This is a labeled-wallet estimate, not a forecast: the monitor saw 37 BTC transactions ≥ $100K in 24h; it says nothing about where price goes.",
+    "confidence": 72,
+    "status": 0
+  },
+  "zero": {
+    "asset": "BTC",
+    "emoji": "⚪",
+    "verdict": "The monitor registered no BTC transaction ≥ $100K in 24h",
+    "short": "none ≥ $100K registered",
+    "facts": [
+      "Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected",
+      "Exchange direction: not measurable (these BTC wallets carry no exchange labels)",
+      "Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen",
+      "Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served"
+    ],
+    "how_it_works": "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+    "source_note": "data: mempool.space",
+    "blocks": {
+      "what_happened": "The monitor registered no BTC transaction ≥ $100K in the 24h to Sep 15 15:00 UTC",
+      "why_level": "No price level: $100K is the monitor's size threshold per transaction, not a market level",
+      "scenarios": null,
+      "invalidates": null,
+      "regime": "",
+      "limitations": "A sample: the 10 newest mempool entries per 10-min poll; outputs include change; no exchange labels",
+      "source": "mempool.space recent-transactions feed, polled by the AlphaVizor backend; USD at Binance BTCUSDT"
+    },
+    "html": "⚪ \u003cb\u003eWhale Flow Agent\u003c/b\u003e · BTC\n\u003cb\u003eThe monitor registered no BTC transaction ≥ $100K in 24h\u003c/b\u003e\n• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected\n• Exchange direction: not measurable (these BTC wallets carry no exchange labels)\n• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen\n• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served\n\n\u003ci\u003eAnalytics, not financial advice · AlphaVizor · 2026-09-15 15:00 UTC · data: mempool.space\u003c/i\u003e",
+    "one_liner": "⚪ \u003cb\u003eWhale\u003c/b\u003e BTC: none ≥ $100K registered",
+    "conclusion": "This is an activity count, not a forecast: the monitor registered no BTC transaction ≥ $100K in 24h; each poll sees only the 10 newest mempool entries, so that does not mean none happened.",
+    "confidence": null,
+    "status": 0
+  }
+}

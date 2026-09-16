@@ -91,15 +91,26 @@ func (c *BackendClient) Macro(ctx context.Context) (*MacroResp, error) {
 // ── /api/v1/whale-flow ───────────────────────────────────────────────────────
 
 type WhaleFlow struct {
-	Asset         string  `json:"asset"`
-	NetFlowUSD24h float64 `json:"net_flow_usd_24h"`
-	Direction     string  `json:"direction"` // inflow | outflow | neutral
-	InflowUSD24h  float64 `json:"inflow_usd_24h"`
-	OutflowUSD24h float64 `json:"outflow_usd_24h"`
-	TxCount24h    int     `json:"tx_count_24h"`
-	Confidence    int     `json:"confidence"` // 0 = "too little data" sentinel
-	Partial       bool    `json:"partial"`
-	Source        string  `json:"source"`
+	Asset string `json:"asset"`
+	// CapturedAt is THIS snapshot's own tick (whale.Snapshot.CapturedAt, already
+	// on the wire). The response's top-level captured_at is the newest tick
+	// across every asset, so a labeled reading must date itself by its own
+	// snapshot or it would borrow a fresh BTC time for stale numbers. Zero when
+	// the payload omits it.
+	CapturedAt    time.Time `json:"captured_at"`
+	NetFlowUSD24h float64   `json:"net_flow_usd_24h"`
+	Direction     string    `json:"direction"` // inflow | outflow | neutral
+	InflowUSD24h  float64   `json:"inflow_usd_24h"`
+	OutflowUSD24h float64   `json:"outflow_usd_24h"`
+	TxCount24h    int       `json:"tx_count_24h"`
+	Confidence    int       `json:"confidence"` // 0 = "too little data" sentinel
+	Partial       bool      `json:"partial"`
+	Source        string    `json:"source"`
+	// ExchangeBreakdown is the backend's per-exchange transfer count for this
+	// asset (whale.Snapshot.ExchangeBreakdown, already on the wire). It is the
+	// only coverage figure the backend serves: which labeled exchanges were
+	// seen, never which addresses failed to load.
+	ExchangeBreakdown map[string]int `json:"exchange_breakdown"`
 	// Baseline pair — pointers so a payload without them (older snapshots)
 	// is distinguishable from a genuine zero and no fake baseline renders.
 	NetFlowPrev24h *float64 `json:"net_flow_prev_24h"`

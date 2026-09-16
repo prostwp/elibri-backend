@@ -275,7 +275,14 @@ func TestWhaleMachineFields(t *testing.T) {
 		`"top":{"selection":"largest_btc_among_latest_records","records_requested":10,"records_received":10,"transactions":[` +
 		`{"tx_hash":"a1","amount_btc":2465,"amount_usd":187020000,"detected_at":"2026-09-15T15:00:00Z"},` +
 		`{"tx_hash":"a3","amount_btc":55.6,"amount_usd":4380000,"detected_at":"2026-09-15T14:50:00Z"},` +
-		`{"tx_hash":"a5","amount_btc":50.36,"amount_usd":3930000,"detected_at":"2026-09-15T14:40:00Z"}]}}`
+		`{"tx_hash":"a5","amount_btc":50.36,"amount_usd":3930000,"detected_at":"2026-09-15T14:40:00Z"}]},` +
+		// Additive 2026-09-16: which source produced this card, and every asset
+		// the backend served with the source behind it. The BTC monitor names
+		// itself here, so a consumer never has to guess from the prose.
+		`"read_source":"btc_mempool_monitor","flows":[{"asset":"BTC","net_flow_usd_24h":0,` +
+		`"direction":"not_measurable","tx_count":66,"source_kind":"btc_monitor","partial":true}],` +
+		// lead_asset is the single headline COIN; the monitor has none.
+		`"lead_asset":null}`
 	if string(env.Whale) != want {
 		t.Errorf("whale:\n%s\nwant\n%s", env.Whale, want)
 	}
@@ -353,7 +360,10 @@ func whaleAllCards(t *testing.T) map[string]Card {
 		"inflow":     whaleDirectional(t, "inflow"),
 		"outflow":    whaleDirectional(t, "outflow"),
 		"no_net":     whaleCardFrom(whaleResp(t, balanced), whaleAt),
-		"offline":    offlineCard("Whale Flow Agent", "Whale", "BTC", keyWhale, howTexts[keyWhale]),
+		// The offline card carries the monitor's own description, exactly as
+		// main did: with the source unreachable, nothing says a labeled read
+		// was available (agents.go WhaleCard).
+		"offline": offlineCard("Whale Flow Agent", "Whale", "BTC", keyWhale, whaleBTCMonitorHow),
 	}
 }
 
@@ -372,7 +382,7 @@ func whaleLines(c Card) []string {
 }
 
 func TestWhaleLinesFitEveryPath(t *testing.T) {
-	for key, c := range whaleAllCards(t) {
+	for key, c := range whaleEveryCard(t) {
 		for _, l := range whaleLines(c) {
 			if n := utf8.RuneCountInString(l); n > whaleFactMaxRunes {
 				t.Errorf("%s: %d runes > %d: %q", key, n, whaleFactMaxRunes, l)
@@ -388,7 +398,7 @@ func TestWhaleNoFlowOrForecastWords(t *testing.T) {
 	banned := []string{"inflow", "outflow", "accumulat", "dump", "whales", "buying", "selling", "sell pressure",
 		"buy pressure", "bullish", "bearish", "transferred", "large btc transfers", "· seen ", "smart money",
 		" will ", "expect", "likely", "forecast says", "signal"}
-	for key, c := range whaleAllCards(t) {
+	for key, c := range whaleEveryCard(t) {
 		b, err := json.Marshal(c.Blocks)
 		if err != nil {
 			t.Fatal(err)
@@ -412,12 +422,17 @@ func TestWhaleNoFlowOrForecastWords(t *testing.T) {
 	}
 }
 
+// The how-text doubles as the agent's description in the web catalog, above
+// whichever card the visitor is shown — so since 2026-09-16 it must cover both
+// readings, not just the BTC monitor. The monitor's own specifics ("total
+// outputs, change included", "no exchange direction") moved to where they are
+// actually claimed: the card's fact lines, pinned by TestWhaleGoldenLive.
 func TestWhaleHowText(t *testing.T) {
 	h := howTexts[keyWhale]
 	if n := utf8.RuneCountInString(h); n > 200 {
 		t.Errorf("how-text %d > 200 runes: %q", n, h)
 	}
-	for _, want := range []string{"$100K", "mempool.space", "change", "no exchange direction"} {
+	for _, want := range []string{"$100K", "mempool.space", "Etherscan"} {
 		if !strings.Contains(h, want) {
 			t.Errorf("how-text lacks %q: %q", want, h)
 		}

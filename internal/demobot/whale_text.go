@@ -97,6 +97,21 @@ type WhaleReadout struct {
 	Coverage           any      `json:"coverage"`
 	LastSuccessfulPoll *string  `json:"last_successful_poll"`
 	Top                WhaleTop `json:"top"`
+	// ReadSource names which source produced THIS card (additive 2026-09-16):
+	// btc_mempool_monitor (the unlabeled BTC feed) or labeled_exchange_wallets
+	// (Etherscan + the backend's ExchangeRegistry). The words on the card
+	// follow it, so a consumer can tell the two readings apart without
+	// parsing prose.
+	ReadSource string `json:"read_source"`
+	// Flows is every asset the backend served this tick, with the source that
+	// produced it — the labeled assets and the BTC monitor side by side, never
+	// summed together.
+	Flows []WhaleFlowRead `json:"flows"`
+	// LeadAsset is the single asset whose direction the card leads with, always
+	// a COIN (never a stablecoin — see whaleStablecoins) and null when no coin
+	// carried a direction. `asset` in the envelope is composite on the labeled
+	// path, so this is the field to read for the one headline asset.
+	LeadAsset *string `json:"lead_asset"`
 }
 
 // WhaleTop is how the listed transactions were picked.
@@ -107,12 +122,20 @@ type WhaleTop struct {
 	Transactions     []WhaleTx `json:"transactions"`      // the listed ones, largest first; [] when none
 }
 
-// WhaleTx is one listed transaction at raw precision.
+// WhaleTx is one listed transaction at raw precision. The BTC monitor fills
+// AmountBTC (total outputs) and DetectedAt (the poll time); a labeled transfer
+// fills Asset / AmountNative / Exchange / Side instead, and its DetectedAt is
+// the BLOCK time — see the readout's time_kind and amount_kind.
 type WhaleTx struct {
 	TxHash     string  `json:"tx_hash"`
-	AmountBTC  float64 `json:"amount_btc"` // total outputs, change included
+	AmountBTC  float64 `json:"amount_btc,omitempty"` // total outputs, change included
 	AmountUSD  float64 `json:"amount_usd"`
-	DetectedAt string  `json:"detected_at"` // first detected by the monitor, not the block time
+	DetectedAt string  `json:"detected_at"`
+	// Labeled-path fields (additive 2026-09-16); absent on the BTC monitor.
+	Asset        string  `json:"asset,omitempty"`
+	AmountNative float64 `json:"amount_native,omitempty"`
+	Exchange     string  `json:"exchange,omitempty"`
+	Side         string  `json:"side,omitempty"` // to | from (the exchange wallet)
 }
 
 const (
@@ -210,11 +233,14 @@ func whaleAIFacts(facts []string) []string {
 // ends at the request clock, as before).
 func whaleCardFrom(w *WhaleResp, now time.Time) Card {
 	c := Card{
-		Agent:      "Whale Flow Agent",
-		ShortName:  "Whale",
-		Asset:      "BTC",
-		Command:    keyWhale,
-		HowItWorks: howTexts[keyWhale],
+		Agent:     "Whale Flow Agent",
+		ShortName: "Whale",
+		Asset:     "BTC",
+		Command:   keyWhale,
+		// The monitor's OWN description: the catalog line (howTexts[keyWhale])
+		// covers both sources, which would describe this card by labeled flows
+		// it does not show.
+		HowItWorks: whaleBTCMonitorHow,
 		DataTime:   parseWhen(w.CapturedAt),
 		SourceNote: "data: mempool.space",
 		// No validator, ever: the transfers come from the backend's live table
@@ -239,6 +265,33 @@ func whaleCardFrom(w *WhaleResp, now time.Time) Card {
 		ro.WindowEnd = &end
 	}
 
+	ro.ReadSource = whaleReadBTCMonitor
+	ro.Flows = whaleReadFlows(w.Flows)
+
+	// A labeled reading (Etherscan + the backend's ExchangeRegistry) is shown
+	// when the backend served one, and only then; BTC is never labeled, so the
+	// monitor below keeps every word it had. Two things can send a labeled
+	// payload back to the monitor:
+	//
+	//   - every labeled snapshot is empty. A total Etherscan failure is
+	//     indistinguishable in the data from a quiet day (tx 0, net 0, badge
+	//     present), so neither is asserted: the monitor is shown and the
+	//     silence is disclosed as a line.
+	//   - there is no window end anywhere — no snapshot stamp of its own and no
+	//     parseable response captured_at — so a 24h reading could not be dated.
+	labeledFlows := whaleLabeledFlowsOf(w.Flows)
+	labeledSilent := len(labeledFlows) > 0 && whaleLabeledAllEmpty(labeledFlows)
+	if len(labeledFlows) > 0 && !labeledSilent &&
+		(capErr == nil || whaleLabeledAnyStamp(labeledFlows)) {
+		respEnd := windowEnd
+		if capErr != nil {
+			respEnd = time.Time{}
+		}
+		lc := whaleLabeledCardFrom(w, ro, respEnd)
+		lc.Whale = ro
+		return lc
+	}
+
 	var btc *WhaleFlow
 	for i := range w.Flows {
 		if w.Flows[i].Asset == "BTC" {
@@ -253,6 +306,9 @@ func whaleCardFrom(w *WhaleResp, now time.Time) Card {
 		c.Emoji, c.Verdict, c.Short = emojiNeutral, "No BTC count from the monitor yet", "no data"
 		c.Status = statusNoData // upstream alive, nothing to read yet
 		c.Facts = append(c.Facts, whaleLineThreshold, whaleLineSample, whaleLineGaps)
+		if labeledSilent {
+			c.Facts = append(c.Facts, whaleLineLabeledSilent)
+		}
 		return c
 	}
 
@@ -331,6 +387,13 @@ func whaleCardFrom(w *WhaleResp, now time.Time) Card {
 			whaleRecords(len(w.Transfers))))
 	}
 
+	// The labeled source answered with nothing at all: disclosed here, as an
+	// addendum to the monitor's own reading, so the BTC lines above keep the
+	// order and wording they had.
+	if labeledSilent {
+		c.Facts = append(c.Facts, whaleLineLabeledSilent)
+	}
+
 	c.Blocks = whaleBlocks(n, dir, ro.WindowEnd != nil, windowEnd)
 	return c
 }
@@ -394,6 +457,9 @@ func whaleConclusion(c Card) string {
 	ro := c.Whale
 	if ro == nil {
 		return "The monitor's source is offline right now, so there is nothing to read."
+	}
+	if ro.ReadSource == whaleReadLabeled {
+		return whaleLabeledConclusion(ro)
 	}
 	if ro.State == whaleStateNoSnapshot || ro.Count == nil || ro.Direction == nil {
 		return "The monitor has no BTC count yet, so there is nothing to read."

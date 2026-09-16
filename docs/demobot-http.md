@@ -1652,6 +1652,31 @@ activity, never a direction.
 > `whale.count` / `whale.state`. `verdict`, `facts` and the digest line are
 > display text and may change again.
 
+> ⚠️ **Whale gained a second reading 2026-09-16 — check `whale.read_source`.**
+> When the backend reads a LABELED source (Etherscan + its exchange registry:
+> ETH, USDT, USDC), the card is a different card.
+>
+> **For the frontend, two rules:** branch on `whale.read_source`
+> (`btc_mempool_monitor` | `labeled_exchange_wallets`), never on the prose; and
+> on the labeled path the envelope's `asset` is **composite** — `ETH/USDT`,
+> every labeled asset carrying a flow, the lead coin first — not a single
+> ticker and never `BTC`. The one headline asset is `whale.lead_asset`: always
+> a **coin**, `null` when no coin carried a direction.
+>
+> The verdict format changes (`Net from labeled exchange wallets over 24h: ETH
+> $20.09M (77 transfers)`), and `whale.source` / `time_kind` / `amount_kind` /
+> `top.selection` change with it, as does the **meaning** of
+> `whale.threshold_usd` (same `100000`, but per labeled transfer rather than
+> per BTC transaction's total outputs).
+>
+> **One format change, not an addition:** `amount_btc` is now **omitted** from
+> `whale.top.transactions[]` on the labeled path — those rows carry `asset` +
+> `amount_native` instead. A BTC-monitor row still always carries it.
+>
+> Without `ETHERSCAN_API_KEY` the backend serves no labeled snapshot and the
+> card is byte-for-byte the BTC monitor documented above, `how_it_works`
+> included.
+
 Stage 1: honest words and states only. The rules are **unchanged**: the
 backend polls the mempool.space recent-transactions list
 (`/api/mempool/recent`) every 10 minutes (the whale worker's interval in the
@@ -1717,19 +1742,18 @@ with no `whale` object):
 | `no_observations` | `The monitor registered no BTC transaction ≥ $100K in 24h` + the method lines | `true` / `null` — a reading of the monitor, not of the network |
 | `no_snapshot` | `No BTC count from the monitor yet` + the method lines, no transaction list (there is no count to sit beside, and no window end) | `false` / `no_data` |
 
-A labeled source would carry a direction (`net_to_exchanges` 🔴,
-`net_from_exchanges` 🟢, `no_net_direction` ⚪); the mempool feed never does.
-Those branches are unreachable today (the worker marks every BTC snapshot
-partial), and every source wording on the card — the footer, `blocks.source`,
-`whale.source`, the sample and threshold lines — names mempool.space and
-Binance: a labeled BTC source needs its own wording before those branches
-can ship.
-Those cards read `Net to labeled exchange wallets over 24h · N BTC
-transactions ≥ $100K seen by the monitor` with the net flow line; the
-semaphore rule is the old one. `no_net_direction` reads `No net labeled
-exchange direction over 24h · …`: the backend's neutral covers both a net
-inside its neutral band and no labeled flows at all, so the card claims no
-balance.
+A **BTC** snapshot can still carry a direction (`net_to_exchanges` 🔴,
+`net_from_exchanges` 🟢, `no_net_direction` ⚪) in the payload; the mempool
+feed never produces one, because BTC is deliberately absent from the backend's
+exchange registry. Those BTC branches are unchanged and keep the mempool
+wording: `Net to labeled exchange wallets over 24h · N BTC transactions ≥
+$100K seen by the monitor` with the net flow line, and `no_net_direction`
+reads `No net labeled exchange direction over 24h · …` — the backend's
+neutral covers both a net inside its neutral band and no labeled flows at
+all, so the card claims no balance.
+
+A genuinely **labeled** reading (ETH-chain assets via Etherscan) is a
+different card with its own wording — see *Whale: the labeled source* below.
 
 `whale` (additive; absent on the `503`):
 
@@ -1738,12 +1762,14 @@ balance.
 | `state` | `activity_observed` \| `no_observations` \| `no_snapshot` |
 | `count` | `tx_count_24h` of the BTC snapshot; `null` on `no_snapshot` |
 | `threshold_usd` | `100000` — per transaction, total outputs at the spot when detected |
-| `window` / `window_end` | `"24h"` / the backend's `captured_at` (RFC3339; `null` when missing). The backend serves one `captured_at` for the whole answer — the **newest** snapshot time across every asset, not the BTC snapshot's own (the BTC flow carries none); all assets are written on the same worker tick, so they normally coincide |
+| `window` / `window_end` | `"24h"` / the backend's `captured_at` (RFC3339; `null` when missing). The backend serves one `captured_at` for the whole answer — the **newest** snapshot time across every asset, not the BTC snapshot's own (the BTC flow carries none); all assets are written on the same worker tick, so they normally coincide. On the labeled path `window_end` is instead the LEAD labeled snapshot's own `captured_at` (see *Whale: the labeled source*) |
 | `source` | `"mempool.space"` |
 | `direction` | `not_measurable` \| `net_to_exchanges` \| `net_from_exchanges` \| `no_net_direction`; `null` on `no_snapshot` |
 | `time_kind` / `amount_kind` | Always `"first_detected_by_monitor"` / `"total_outputs_incl_change"` |
 | `coverage` / `last_successful_poll` | Always `null`: not served by the backend |
 | `top` | `{"selection": "largest_btc_among_latest_records", "records_requested": 10, "records_received", "transactions": [{"tx_hash", "amount_btc", "amount_usd", "detected_at"}]}` — the listed ones, largest first, `[]` when none |
+| `read_source` | **Additive 2026-09-16.** Which source produced THIS card: `btc_mempool_monitor` \| `labeled_exchange_wallets`. Every wording on the card follows it |
+| `flows` | **Additive 2026-09-16.** Every asset the backend served this tick, in its own order: `[{"asset", "net_flow_usd_24h", "direction", "tx_count", "source_kind", "partial"}]`. `source_kind` is `labeled` \| `btc_monitor`, so the labeled assets and the BTC monitor are readable side by side and are never summed together. `direction` uses the card's vocabulary (`net_to_exchanges` \| `net_from_exchanges` \| `no_net_direction` \| `not_measurable`), not the backend's raw enum |
 
 `data_as_of` is that `captured_at` — the worker tick, not the last
 successful poll.
@@ -1769,6 +1795,225 @@ and no regime:
 
 Every line (verdict, facts, digest line, each `blocks` field) is at most 110
 characters. The AI payload drops the detection times.
+
+## Whale: the labeled source
+
+Stage 2 (2026-09-16). When the backend reads exchange flow from a **labeled**
+source, the card reports that flow instead of the BTC activity count. The
+rules are **unchanged** and all of them live in the backend: the $100K floor,
+the 24h window, which source runs (`ETHERSCAN_API_KEY` in the server config),
+the neutral band that decides whether a net counts as a direction, and the
+semaphore. Only the words are new.
+
+**When it applies.** The backend scores one snapshot per watched asset and
+stamps each with the source that produced it. A snapshot counts as labeled
+when it is **not BTC** and carries the labeled source badge (`etherscan`) —
+its transfers were attributed to an exchange by looking the counterparty up in
+the backend's registry of exchange hot wallets. The badge is a **necessary**
+condition, not a hint: an unbadged snapshot was never attributed to exchange
+wallets, so however large its counts and net are, it is not a labeled reading
+and the card stays the monitor. BTC is never labeled: that registry holds
+ETH-chain addresses only, by design.
+
+Two further things send a labeled payload back to the monitor:
+
+- **The labeled source returned nothing at all.** A total Etherscan failure
+  looks exactly like a quiet day in the data — `tx_count_24h` 0, net 0, badge
+  present — so neither is asserted. The card shows the BTC monitor and
+  discloses the silence on its own line, `The labeled source returned nothing
+  this tick; address coverage is not reported`, with `read_source` staying
+  `btc_mempool_monitor`. A dead source is not a measurement, and must never
+  render as `No labeled exchange transfer recorded in 24h`.
+- **Nothing to date the window with**: no snapshot stamp of its own and no
+  parseable response `captured_at`.
+
+With no `ETHERSCAN_API_KEY` no snapshot carries the badge, so the card is
+exactly the BTC monitor above.
+
+**The window is the LEAD snapshot's own `captured_at`.** The response's
+top-level `captured_at` is the newest tick across every asset, so a stale
+Etherscan read sitting beside a fresh BTC tick would otherwise stamp day-old
+labeled numbers with a current time. The card takes the lead labeled
+snapshot's own `captured_at` (`flows[].captured_at`) for `data_as_of`,
+`whale.window_end` and the 24h transfer window. When the lead snapshot carries
+no time of its own, `whale.window_end` is `null` and `blocks.what_happened`
+says `in the last 24h` instead of naming a time that does not belong to it.
+
+**Assets come from the response**, never from a hardcoded list: whatever the
+backend watches (ETH, USDT, USDC today) is what the card names. Stablecoins
+are named as themselves — a USDT flow is a stablecoin flow, not "crypto".
+
+A **coin** carries the direction (`whale.lead_asset`, semaphore 🟢):
+
+```
+🟢 Whale Flow Agent · ETH/USDT
+Net from labeled exchange wallets over 24h: ETH $20.09M (77 transfers)
+• Read from labeled exchange wallets via Etherscan · assets: USDT, ETH, USDC
+• USDT: net to exchanges $61.10M over 24h · 123 transfers
+• ETH: net from exchanges $20.09M over 24h · 77 transfers
+• USDC: no labeled transfer in 24h
+• An estimate over the wallets in our registry, not the whole market: unlisted wallets are invisible
+• Address coverage is not reported: a labeled address that failed to load lowers these numbers unmarked
+• Exchanges in the reported breakdown: Binance, Coinbase, Kraken
+• Threshold: $100K per transfer at the price when recorded · window: the 24h to the snapshot
+• BTC monitor, separate and unlabeled: 72 transactions ≥ $100K seen in 24h, no exchange direction
+• Largest labeled transfers among the latest 10 records received, not a 24h top
+• 25000000 USDT ≈ $25.00M · to Binance · block time Sep 15 23:10 UTC
+• 4200 ETH ≈ $18.90M · from Kraken · block time Sep 15 23:00 UTC
+• 9000000 USDC ≈ $9.00M · to Coinbase · block time Sep 15 22:50 UTC
+Confidence: ■■■■■ 100%
+```
+
+Only a **stablecoin** moved, or no coin reached the band — the numbers are
+reported, the card stays ⚪ and `lead_asset` is `null`. This is the shape the
+live payload of 2026-09-15 23:24 actually had:
+
+```
+⚪ Whale Flow Agent · USDT/ETH
+Stablecoin flow to labeled exchange wallets over 24h: USDT $61.10M (123 transfers) · no coin direction
+• Read from labeled exchange wallets via Etherscan · assets: USDT, ETH, USDC
+• USDT: net to exchanges $61.10M over 24h · 123 transfers
+• ETH: net $10.09M away from exchanges over 24h, under the 10% of gross flow needed to name it · 77 transfers
+• USDC: no labeled transfer in 24h
+• An estimate over the wallets in our registry, not the whole market: unlisted wallets are invisible
+• Address coverage is not reported: a labeled address that failed to load lowers these numbers unmarked
+• Exchanges in the reported breakdown: Binance, Coinbase, Kraken
+• Threshold: $100K per transfer at the price when recorded · window: the 24h to the snapshot
+• BTC monitor, separate and unlabeled: 72 transactions ≥ $100K seen in 24h, no exchange direction
+• Largest labeled transfers among the latest 10 records received, not a 24h top
+• 25000000 USDT ≈ $25.00M · to Binance · block time Sep 15 23:10 UTC
+• 4200 ETH ≈ $18.90M · from Kraken · block time Sep 15 23:00 UTC
+• 9000000 USDC ≈ $9.00M · to Coinbase · block time Sep 15 22:50 UTC
+```
+
+The labeled source answered with nothing at all (Etherscan down): the BTC
+monitor is shown unchanged and the silence is the last line —
+`read_source` is `btc_mempool_monitor`, `asset` is `BTC`:
+
+```
+⚪ Whale Flow Agent · BTC
+72 BTC transactions ≥ $100K seen by the monitor in 24h — exchange direction not measurable
+• Threshold: $100K per transaction, priced at the Binance BTCUSDT price when detected
+• Exchange direction: not measurable (these BTC wallets carry no exchange labels)
+• Each 10-minute poll sees only the 10 newest mempool.space entries; most transactions ≥ $100K are never seen
+• Missed polls or a missing BTC price lower this count unmarked: poll coverage is not served
+• Largest BTC among the latest 1 monitor record received, not a 24h top · outputs include change
+• Outputs total 30.00 BTC ≈ $2.28M · detected by the monitor at Sep 15 23:20 UTC, not the block time
+• The labeled source returned nothing this tick; address coverage is not reported
+```
+
+What the card claims, and what it refuses to:
+
+- **Estimate, not the market.** The backend marks every free-tier snapshot
+  partial, so the net flow is a sum over the wallets in our registry only:
+  `An estimate over the wallets in our registry, not the whole market:
+  unlisted wallets are invisible`. It is never called the market's exchange
+  flow.
+- **A flow, never a price call.** A direction says coins moved toward or away
+  from exchange wallets. No forecast, no advice. The semaphore is the backend's
+  existing rule and is untouched: net **to** exchanges 🔴, net **from**
+  exchanges 🟢, no net direction ⚪.
+- **Only a COIN may lead the card or colour it.** The backend's rule was
+  written for coins: coins arriving on an exchange read as supply arriving,
+  coins leaving as supply locked away. A **stablecoin** deposit is the opposite
+  kind of event — dollars arriving on an exchange are conventionally read as
+  buying power — so painting a card red because $61M of USDT landed on
+  exchanges would tell the reader the opposite of what most of the market would
+  take from it. Stablecoin flows are therefore reported with their full
+  numbers, but never set the headline, `whale.lead_asset`, the confidence or
+  the semaphore. When only stablecoins moved, the verdict names that flow with
+  no colour and no direction claim: `Stablecoin flow to labeled exchange
+  wallets over 24h: USDT $61.10M (123 transfers) · no coin direction`,
+  semaphore ⚪, `lead_asset` `null`. The backend's rule is untouched — only
+  what the card promotes to the headline and the colour changes. The stablecoin
+  set is explicit in `internal/demobot/whale_labeled.go` (`whaleStablecoins`)
+  and covers the two the backend values at ≈$1 (USDT, USDC) plus the common
+  others, so adding one upstream cannot silently promote a dollar token.
+- **A non-zero net that the backend still calls neutral is NOT a direction —
+  but it still leans, and the card names which way.** This is the normal case,
+  not an edge: `ETH: net $10.09M away from exchanges over 24h, under the 10% of
+  gross flow needed to name it · 77 transfers`. The side (`toward` /
+  `away from` exchanges) follows the backend's own sign convention — a positive
+  `net_flow_usd_24h` is flow TO exchanges — and is stated because the amount is
+  printed unsigned, so `net $10.09M` alone would leave the reader guessing.
+  The band clause appears **only when the arithmetic agrees**: the card
+  computes |net| / (`inflow_usd_24h` + `outflow_usd_24h`) from the gross the
+  backend served and prints the 10% reason only when the share really is under
+  it. When the gross is absent (older payloads) or the share is at or above the
+  band, the line reads `the source named no direction` instead of offering a
+  reason it cannot verify. The 10% itself is the backend's neutral band, pinned
+  against it by a test; the card does not re-implement the rule. When the full
+  clause will not fit in 110 characters the line keeps the side and drops only
+  `of gross flow`. Such a reading is never called an outflow, and never
+  "balanced".
+- **Address coverage is a known gap.** The backend logs per-address fetch
+  failures but serves none of them, so a labeled address that failed to load
+  silently lowers these numbers. The card says so —
+  `Address coverage is not reported: a labeled address that failed to load
+  lowers these numbers unmarked` — the same way the BTC card discloses missed
+  polls. `exchange_breakdown` is the only coverage figure served, and it names
+  which exchanges were seen, not which addresses were missed. **To remove this
+  line the backend would have to serve per-tick address coverage** (addresses
+  attempted / succeeded, or the failing labels).
+- **Time and size mean different things here.** Etherscan stamps the **block
+  time**, so a listed transfer reads `block time Sep 15 23:10 UTC`, not the
+  monitor's detection time; the amount is the transfer amount, not a UTXO
+  output total with change. Hence `time_kind: "block_time"` and
+  `amount_kind: "transfer_amount"`.
+- **The BTC monitor is never mixed in.** When the backend serves both, the
+  labeled reading leads and BTC keeps one separate line with its own numbers:
+  `BTC monitor, separate and unlabeled: 72 transactions ≥ $100K seen in 24h,
+  no exchange direction`. No BTC figure enters the labeled verdict and no
+  labeled figure enters that line. With no BTC snapshot the line is absent.
+- **No mempool wording.** The poll sampling, the total-outputs-with-change
+  note and the BTC price line belong to the monitor and never appear here.
+
+States on this path (the source being unavailable is still the standard `503`
+`source_offline` with no `whale` object):
+
+| `whale.state` | Card | `ok` |
+|---|---|---|
+| `activity_observed` | a coin-directional verdict, a stablecoin-flow verdict (⚪), or `No net direction at labeled exchange wallets over 24h · N labeled transfers` when no asset reached the band | `true` |
+| `no_observations` | `No labeled exchange transfer recorded in 24h (ETH, USDT)` — reachable only when some labeled asset still reports a net while every count is zero; the registry saw nothing, which is not a claim that nothing moved on the market | `true` |
+
+There is deliberately **no labeled state for "the source is down"**: when every
+labeled snapshot is empty the card is the BTC monitor with the silence line, so
+this path never reports a labeled zero it cannot stand behind.
+
+What changes in the envelope on this path:
+
+| Field | BTC monitor | Labeled source |
+|---|---|---|
+| `asset` | `BTC` | **composite**: every labeled asset carrying a flow, lead coin first, `/`-joined (`ETH/USDT`, `USDT/ETH`, `USDT`) |
+| `whale.lead_asset` | `null` | the single headline **coin** (`ETH`); `null` when no coin carried a direction (e.g. a stablecoin-only reading) |
+| `whale.read_source` | `btc_mempool_monitor` | `labeled_exchange_wallets` |
+| `whale.source` | `mempool.space` | `etherscan labeled exchange wallets` |
+| `whale.count` | the BTC 24h count | labeled transfers across all labeled assets in 24h |
+| `whale.threshold_usd` | `100000` per BTC transaction, total outputs at the spot when detected | the same `100000`, but **per labeled transfer** to or from a labeled wallet, at the price when recorded |
+| `whale.window_end` | the response `captured_at` | the **lead labeled snapshot's own** `captured_at`; `null` when it carries none |
+| `whale.time_kind` | `first_detected_by_monitor` | `block_time` |
+| `whale.amount_kind` | `total_outputs_incl_change` | `transfer_amount` |
+| `whale.top.selection` | `largest_btc_among_latest_records` | `largest_labeled_among_latest_records` |
+| `whale.top.transactions[]` | `tx_hash`, `amount_btc`, `amount_usd`, `detected_at` | `tx_hash`, `asset`, `amount_native`, `amount_usd`, `exchange`, `side` (`to`/`from`), `detected_at` (the block time). **`amount_btc` is omitted here** — a format change, not an addition |
+| `how_it_works` | the monitor's own description, unchanged since 2026-09-15 | the labeled reading's own description |
+| `blocks.source` | the mempool feed | `Etherscan labeled exchange-wallet transfers, polled by the AlphaVizor backend; ETH at Binance ETHUSDT` |
+
+`how_it_works` is per **card**; the catalog list (`/agents`) and the Telegram
+[ℹ️ How it works] button are per **agent** and carry a dual-source description
+naming both readings, since either can be the card behind them.
+
+`whale.flows` is served on **both** paths and is the honest way to read the
+whole answer: every asset with the source behind it.
+
+The `/showcase/example` conclusion stays a flow, never a price direction —
+with a coin lead: `This is an estimate over labeled wallets, not a forecast:
+$20.09M ETH moved from exchange wallets in 24h, measured over the wallets in
+our registry only; it says nothing about where price goes.` With a stablecoin
+only: `… $61.10M of USDT, a stablecoin, moved to exchange wallets in 24h while
+no coin carried a net direction; it says nothing about where price goes.`
+
+Every line is at most 110 characters on this path too, and `/agents/whale`
+still serves no `Last-Modified`.
 
 ## Macro card and content blocks
 

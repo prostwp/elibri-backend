@@ -204,7 +204,7 @@ func insufficientCard(spec assetSpec, agent, shortName, command, how, what strin
 // at 200 characters — keep every entry under that.
 var howTexts = map[string]string{
 	keyMacro:    "Fixed rules score 5 tradfin lamps (DXY, US 10Y, VIX, S&P 500, Gold) into a 0-100 rule score: above 65 risk-on, below 35 risk-off. A backdrop, not a forecast. RISK-OFF tops the digest.",
-	keyWhale:    "Counts BTC transactions of $100K+ that backend polls of the mempool.space recent feed detected in 24h. Sizes are total outputs, change included; no exchange direction.",
+	keyWhale:    "Transfers of $100K+ in 24h: flows between whale and labeled exchange wallets (ETH, USDT, USDC via Etherscan), an estimate over listed wallets; plus an unlabeled BTC monitor (mempool.space).",
 	keyFunding:  "Last perp funding rate of 5 Binance majors vs the agent's thresholds: +0.03% or above, -0.01% or below. Shows the coin with the largest rate ÷ its own side's threshold, plus 1h liquidations.",
 	keyMomentum: "RSI(14) + MACD histogram. RSI 55+ with positive MACD = bullish; RSI 45- with negative = bearish; else neutral. Crypto on 4h bars, FX and gold on 1h; a 1d scan is available.",
 	keyTrend:    "State machine on 4h bars (1h for FX/gold): ADX<20 flat, 20-25 grey zone, ADX 25+ with price and EMA50/200 aligned = confirmed unless swing structure disagrees; else conflict.",
@@ -286,7 +286,10 @@ func macroCardFrom(m *MacroResp) (Card, string) {
 func (a *Agents) WhaleCard(ctx context.Context) Card {
 	w, err := a.api.WhaleFlow(ctx, whaleFeedLimit)
 	if err != nil {
-		return offlineCard("Whale Flow Agent", "Whale", "BTC", keyWhale, howTexts[keyWhale])
+		// The monitor's own description: with the source unreachable nothing
+		// says a labeled read was available, and this keeps the offline card
+		// exactly what main shipped.
+		return offlineCard("Whale Flow Agent", "Whale", "BTC", keyWhale, whaleBTCMonitorHow)
 	}
 	return whaleCardFrom(w, a.clock())
 }
