@@ -49,6 +49,20 @@ const (
 	// three or four lines, not a whole card.
 	showcaseFactsMax = 4
 
+	// showcaseFactsMaxFX is the FX block's cap. FX is the one card whose data
+	// block must spend slots on captions — the column header and the order
+	// note, without which its values are unlabelled and its cut-down list
+	// reads as a ranking (fxExampleLines). At four the captions ate the rows:
+	// two pairs instead of three, and gold's COMEX disclosure — the one this
+	// block exists to keep — could never be reached while any pair was alive.
+	//
+	// Five buys that back on a weekday. On a WEEKEND the banner takes a third
+	// caption slot and the block is back to two pairs with no gold section:
+	// the disclosure is not missing there, the row it would disclose is not
+	// quoted either. Six would buy the weekend too, at the price of a block
+	// half made of captions; the weekend block stays honest without it.
+	showcaseFactsMaxFX = 5
+
 	showcaseLive     = "live"
 	showcaseDegraded = "degraded"
 )
@@ -452,15 +466,23 @@ func detectedSentence(c Card) string {
 // the clock, not the reading it sits above. On the FX card so are the rows of
 // instruments that produced no reading and the gold section header (a
 // disclosure, not a reading) — the card itself keeps its order.
+//
+// A caption is skipped, never the thing it discloses: this line stands alone
+// (it is the example's `explained`, above the data block), so when the
+// leading row IS the gold row, the row carries the contract in it — a lone
+// "GOLD · 4320.7 · …" would read as spot XAUUSD (fxNamedRow).
 func strongestFact(c Card) string {
 	for _, f := range c.Facts {
-		if f == fxClosedBanner || (c.Command == keyFX && (fxUnreadLine(f) || f == fxGoldHeader)) {
+		if f == fxClosedBanner || (c.Command == keyFX && (fxUnreadLine(f) || fxCaptionLine(f))) {
 			continue
 		}
 		if c.Command == keyNews && narrativeHeaderLine(f) { // a list header, not a reading
 			continue
 		}
 		if strings.TrimSpace(f) != "" {
+			if c.Command == keyFX {
+				return endSentence(fxNamedRow(f))
+			}
 			return endSentence(f)
 		}
 	}
@@ -476,12 +498,19 @@ func strongestFact(c Card) string {
 // a nicer-looking three.
 func exampleFacts(c Card) []string {
 	out := []string{}
-	for _, f := range c.Facts {
-		if len(out) == showcaseFactsMax {
+	facts := c.Facts
+	max := showcaseFactsMax
+	// FX: drop the dead rows and the gap note, but KEEP the weekend banner,
+	// gold's COMEX disclosure, the column header and the order note — they
+	// qualify the values quoted beside them (fxExampleLines), and they need a
+	// slot each, so the FX block gets one more.
+	if c.Command == keyFX {
+		max = showcaseFactsMaxFX
+		facts = fxExampleLines(facts, max)
+	}
+	for _, f := range facts {
+		if len(out) == max {
 			break
-		}
-		if c.Command == keyFX && fxUnreadLine(f) { // a dead row is not a data point
-			continue
 		}
 		if c.Command == keyNews && narrativeHeaderLine(f) { // a list header is not a data point
 			continue
@@ -519,6 +548,9 @@ func conclusionFor(c Card) string {
 	}
 	if c.Command == keyNews {
 		return narrativeConclusion(c) // news activity, never a direction
+	}
+	if c.Command == keyFX {
+		return fxConclusion() // a comparison, never one verdict over the pairs
 	}
 	subject := c.Asset
 	if subject == "" {

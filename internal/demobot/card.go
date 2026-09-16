@@ -238,6 +238,17 @@ type AssetResult struct {
 	ChangeFrom       string   `json:"change_from,omitempty"`
 	EMARelation      string   `json:"ema_relation,omitempty"`
 	RangePositionPct *float64 `json:"range_position_pct,omitempty"`
+	// FX rows only (additive, 2026-09-16 — FX stage 2, the comparison table):
+	// the row's 1-based place in the shown table, the section it sits in
+	// (`pairs` | `gold`) and the label the row prints (`EURUSD`, `GOLD` —
+	// `asset` keeps gold's full `GOLD · COMEX GC=F`). Present on every row of a
+	// card that RENDERS the table, one without a reading included; absent on a
+	// degraded card, which renders no table and so has no place to describe.
+	// The order is by the size of the 24h change, ties by the registry order —
+	// a reading aid, never a ranking.
+	Row     int    `json:"row,omitempty"`
+	Section string `json:"section,omitempty"`
+	Label   string `json:"label,omitempty"`
 	// Funding rows only (additive, 2026-09-15 — see fundingResults): the
 	// symbol, its last funding rate, the threshold of the rate's own side
 	// (+0.0003 at or above zero, -0.0001 below), whether the rate is past

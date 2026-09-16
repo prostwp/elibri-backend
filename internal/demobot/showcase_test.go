@@ -404,8 +404,15 @@ func TestShowcaseExampleNarrativeFields(t *testing.T) {
 			t.Errorf("%s must not be empty: %s", name, body)
 		}
 	}
-	if len(ex.Data) == 0 || len(ex.Data) > showcaseFactsMax {
-		t.Errorf("data has %d lines, want 1..%d: %v", len(ex.Data), showcaseFactsMax, ex.Data)
+	// The cap is per card, not global: FX spends two slots on captions and
+	// gets one more line for them. This test does not choose the example
+	// agent, so it must read the cap off the one it got.
+	max := showcaseFactsMax
+	if ex.Slug == keyFX {
+		max = showcaseFactsMaxFX
+	}
+	if len(ex.Data) == 0 || len(ex.Data) > max {
+		t.Errorf("%s data has %d lines, want 1..%d: %v", ex.Slug, len(ex.Data), max, ex.Data)
 	}
 	for _, d := range ex.Data {
 		if strings.TrimSpace(d) == "" {

@@ -2,6 +2,7 @@ package demobot
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -213,6 +214,23 @@ const fxOfflineVerdict = "FX data source unavailable right now"
 //     COMEX GC=F futures with hours the service does not know, so it is
 //     judged by bar age alone and never told the market is closed;
 //   - every line fits fxLineMaxRunes.
+//
+// FX stage 2 (2026-09-16) changes the PRESENTATION again, and only that: the
+// card is the one place the instruments are COMPARED. Every number above keeps
+// its rule; what changed is the shape.
+//
+//   - one row per instrument under one column header (fxTableHeader), so the
+//     same fact sits in the same place on every row and the percentages — the
+//     24h change and the place in the range — read against each other as they
+//     are. No normalisation to USD and no dollar-strength claim: that is a NEW
+//     rule (stage 3) and needs its own decision;
+//   - the row order is deterministic and signed (fxOrderNote): by the SIZE of
+//     the 24h change, ties by the registry order. It is not a ranking — there
+//     is no leader, no best pair and no recommendation on this card;
+//   - a row whose bar is not fresh states the bar's age (fxRowFlag) and sinks
+//     below the fresh ones, so a dead instrument is visible without ever
+//     topping the table;
+//   - gold keeps its own section under the COMEX disclosure.
 
 // fxLineMaxRunes is the readability budget for one line of FX text.
 const fxLineMaxRunes = 110
@@ -244,6 +262,343 @@ const fxGoldMaxAge = 3 * time.Hour
 
 // fxGoldHeader opens the gold section.
 const fxGoldHeader = "Gold: COMEX GC=F futures, not spot XAUUSD; Forex hours and the weekend banner do not apply"
+
+// ── the comparison table (stage 2) ───────────────────────────────────────────
+
+// fxTableHeader names the columns once so a row can carry values only — that
+// is what makes four instruments comparable at a glance instead of eight
+// prose lines. "UTC" belongs to the bar column: every time on this card is UTC.
+const fxTableHeader = "Pair · price · 24h change · place in 24h range · EMA50 vs EMA200 · RSI(1h) · last bar UTC"
+
+// fxOrderNote signs the row order AND says what it is not. The order is a
+// reading aid — the biggest move is the easiest row to find — never a ranking:
+// the card has no leader and gives no recommendation.
+const fxOrderNote = "Ordered by 24h change size, not by importance · rows without a fresh bar last"
+
+// fxGapNote explains the rows whose change is measured from a named close
+// (after the weekend or a session gap) — printed once, only when such a row is
+// shown, so the change and range columns are never read as plain 24h numbers.
+const fxGapNote = "After a session gap the change and the range are measured from the named close"
+
+// fxCaptionLine reports whether a card fact is a caption rather than an
+// instrument row: the weekend banner, the column header, the order and gap
+// notes, the gold disclosure. It answers "is this a reading?", which is what
+// the leading-fact pick needs (strongestFact); the landing's data block keeps
+// the captions that qualify the values it quotes — see fxExampleLines.
+func fxCaptionLine(f string) bool {
+	switch f {
+	case fxClosedBanner, fxTableHeader, fxOrderNote, fxGapNote, fxGoldHeader:
+		return true
+	}
+	return false
+}
+
+// fxExampleLines is the landing's data block: the head of the card's table,
+// capped, with the dead rows taken out of the middle. It shows fewer rows than
+// the card does — and a cut-down list carries every way of being misread that
+// the full table carries. So the lines that qualify the values stay, and only
+// the gap note goes.
+//
+// What must survive the filter, because it qualifies the numbers beside it:
+//   - the weekend banner: without it Friday's prices read as today's;
+//   - gold's COMEX disclosure: without it a futures price reads as spot
+//     XAUUSD, which the card is not allowed to imply anywhere;
+//   - the column header: the landing shows values only, so without it
+//     "91% · below · 62.9" reaches the reader unlabelled;
+//   - the order note: the rows are sorted by the size of the 24h move, and
+//     the block keeps only the first of them. An unsigned list cut at the top
+//     of a sort reads as a ranking — the one reading this card refuses. It
+//     costs a row, and a row is the cheaper loss.
+//
+// Dropped: the dead rows (not readings) and the gap note — the change cell of
+// such a row names the close it is measured from ("+0.31% since Sep 11
+// 22:00"), so the value qualifies itself where a 24h number would not.
+//
+// The disclosure takes a slot only while the gold row it discloses still fits
+// under it (nothing but gold rows follows it), and never trails alone.
+func fxExampleLines(facts []string, max int) []string {
+	out := make([]string, 0, max)
+	for _, f := range facts {
+		if len(out) >= max {
+			break
+		}
+		if f == fxGapNote || fxUnreadLine(f) || strings.TrimSpace(f) == "" {
+			continue
+		}
+		if f == fxGoldHeader && len(out)+2 > max {
+			break
+		}
+		out = append(out, f)
+	}
+	if n := len(out); n > 0 && out[n-1] == fxGoldHeader {
+		out = out[:n-1]
+	}
+	return out
+}
+
+// fxConclusion words the FX card for a trader. The generic wording did not
+// fit it twice over: it read the neutral semaphore as "nothing leans either
+// way on the broader market" — the combined verdict over the pairs this card
+// refuses to give, and it gave it while a row showed +0.32% at 91% of its
+// day's range — and it pointed at "level structure", which this card has no
+// levels for. So the FX card says what it is instead.
+func fxConclusion() string {
+	return "For a trader this is the pairs side by side, not one verdict over them: " +
+		"each row holds for as long as its own numbers do, the order is by the size " +
+		"of the 24h move rather than importance, and nothing here is added up into " +
+		"one read across them."
+}
+
+// fxGoldContract is what a gold row has to carry when it is quoted away from
+// the section header that discloses it (fxNamedRow, fxAILine). ASCII, so its
+// byte length is its rune length — fxQuotedMaxRunes counts on that, and a
+// test pins it.
+const fxGoldContract = " (COMEX GC=F futures)"
+
+// fxQuotedMaxRunes bounds a card row quoted ON ITS OWN — the landing's
+// `explained`, the one line that leaves the table. fxLineMaxRunes keeps the
+// card's rows aligned inside a table and this line is not in one, so it is
+// allowed past that budget by exactly two things and no others: the contract
+// a gold row must carry out of its section, and the full stop endSentence
+// puts on a quoted fragment. A wrapped line is the smaller cost against a
+// futures price read as spot.
+const fxQuotedMaxRunes = fxLineMaxRunes + len(fxGoldContract) + 1
+
+// fxNamedRow names the contract inside a gold row, for the one place a row is
+// quoted away from its section header (the landing's `explained`). The card
+// and the digest keep the header above the row and are not touched. The same
+// constant fxAILine uses, for the same reason: on its own, "GOLD" reads as
+// spot XAUUSD — and the two disclosures of one contract must not drift apart.
+func fxNamedRow(f string) string {
+	const gold = "GOLD · "
+	if strings.HasPrefix(f, gold) {
+		return "GOLD" + fxGoldContract + " · " + strings.TrimPrefix(f, gold)
+	}
+	return f
+}
+
+// fxSectionName is a row's section in results[]: the comparable pairs, or the
+// COMEX contract that is shown apart from them.
+func fxSectionName(r fxRead) string {
+	if r.spec.isGold() {
+		return "gold"
+	}
+	return "pairs"
+}
+
+// fxAgeWords is a bar's age in the coarsest unit that is still honest: whole
+// hours below two days, whole days above. Capped at ">99d" so a long outage
+// cannot push a row past the line budget.
+func fxAgeWords(d time.Duration) string {
+	h := int(d / time.Hour)
+	switch {
+	case h < 1:
+		return "<1h"
+	case h < 48:
+		return fmt.Sprintf("%dh", h)
+	}
+	if days := h / 24; days <= 99 {
+		return fmt.Sprintf("%dd", days)
+	}
+	return ">99d"
+}
+
+// fxRowFlag is a row's last column: empty while the bar is fresh (and on a
+// weekend, where the banner dates the pairs' data), otherwise the state AND
+// the bar's age — a row the reader must discount says how far behind it is
+// instead of only that it is behind. The bounds are the stage-1 ones
+// (fxFreshness): two bars for the pairs, fxGoldMaxAge for gold.
+func fxRowFlag(r fxRead, now time.Time) string {
+	age := fxAgeWords(now.Sub(r.CloseAt))
+	switch fxFreshness(r, now) {
+	case momentumDataDelayed:
+		return "delayed, bar " + age + " old"
+	case fxNoRecentBar:
+		return "no recent bar, " + age + " old"
+	}
+	return ""
+}
+
+// fxChangeCell is the change column: the percentage, and after a session gap
+// the close it is measured from (fxGapNote carries the explanation, so the
+// cell stays short enough for the budget). Without a reference bar the cell
+// says so rather than printing a 0.00%.
+func fxChangeCell(r fxRead) string {
+	if !r.HasDay {
+		return "no 24h reference"
+	}
+	s := fmt.Sprintf("%+.2f%%", r.DayChangePct)
+	if r.SinceClose {
+		s += " since " + r.RefAt.UTC().Format("Jan 2 15:04")
+	}
+	return s
+}
+
+// fxRangeCell is the place-in-range column: 0% at the low, 100% at the high,
+// "no range" on a degenerate high-low window (nothing to place price inside).
+func fxRangeCell(r fxRead) string {
+	if !r.HasRange {
+		return "no range"
+	}
+	return fmt.Sprintf("%.0f%%", r.DayPos*100)
+}
+
+// fxTableRow is one instrument's row under fxTableHeader. An instrument
+// without a reading keeps its row and states which of the two absences it is
+// — it must be visible in the comparison, not dropped from it.
+func fxTableRow(r fxRead, now time.Time) string {
+	label := fxLabel(r)
+	switch {
+	case r.Insufficient:
+		return label + " · insufficient history for EMA50/EMA200/RSI(14) on " + r.interval() + " bars"
+	case !r.OK:
+		return label + " · data unavailable right now"
+	}
+	cells := []string{
+		label, fxPrice(r), fxChangeCell(r), fxRangeCell(r),
+		fxEMARelation(r.Dir), fmt.Sprintf("%.1f", r.RSI),
+		r.CloseAt.UTC().Format("Jan 2 15:04"),
+	}
+	if flag := fxRowFlag(r, now); flag != "" {
+		cells = append(cells, flag)
+	}
+	return strings.Join(cells, " · ")
+}
+
+// fxRowRank buckets a row for the order: a reading with a fresh bar, then a
+// reading whose bar is behind, then too little history, then an instrument
+// that answered with nothing. A pair inside the weekend window is NOT behind —
+// the banner dates it — so the weekend does not reshuffle the table.
+func fxRowRank(r fxRead, now time.Time) int {
+	switch {
+	case r.OK:
+		switch fxFreshness(r, now) {
+		case momentumDataDelayed, fxNoRecentBar:
+			return 1
+		}
+		return 0
+	case r.Insufficient:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// fxSortChange is the ordering key inside a bucket: the SIZE of the change,
+// direction ignored (a -0.40% and a +0.40% move are equally worth a look, and
+// the raw signs of different pairs cannot be compared anyway). A reading
+// without a reference close has no key and follows the rows that have one.
+func fxSortChange(r fxRead) float64 {
+	if !r.OK || !r.HasDay {
+		return -1
+	}
+	return math.Abs(r.DayChangePct)
+}
+
+// fxRegistryOrder is each instrument's place in the registry sweep (fxPairs).
+// It is the tie-break, so the order depends on the DATA only and never on the
+// order the concurrent sweep happens to return reads in. An instrument outside
+// the registry (hand-built reads) sorts last among ties.
+var fxRegistryOrder = func() map[string]int {
+	m := make(map[string]int, len(fxPairs))
+	for i, key := range fxPairs {
+		m[assetTable[key].Display] = i
+	}
+	return m
+}()
+
+func fxRegistryIndex(r fxRead) int {
+	if i, ok := fxRegistryOrder[r.spec.Display]; ok {
+		return i
+	}
+	return len(fxRegistryOrder)
+}
+
+// fxOrdered is the table's row order, deterministic by construction: bucket,
+// then change size, then the registry order for ties — two reads of the same
+// data can never swap rows, whatever order the concurrent sweep returns.
+func fxOrdered(reads []fxRead, now time.Time) []fxRead {
+	idx := make([]int, len(reads))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		ra, rb := reads[idx[a]], reads[idx[b]]
+		if ka, kb := fxRowRank(ra, now), fxRowRank(rb, now); ka != kb {
+			return ka < kb
+		}
+		if ka, kb := fxSortChange(ra), fxSortChange(rb); ka != kb {
+			return ka > kb
+		}
+		return fxRegistryIndex(ra) < fxRegistryIndex(rb)
+	})
+	out := make([]fxRead, 0, len(reads))
+	for _, i := range idx {
+		out = append(out, reads[i])
+	}
+	return out
+}
+
+// fxTable is the table the card and the digest both show: the captions, the
+// pair rows, the gold rows, the reads in shown order (pairs, then gold — so a
+// caller can pair a row with its results[] entry) and the oldest bar behind
+// them.
+type fxTable struct {
+	caption  []string
+	pairRows []string
+	goldRows []string
+	shown    []fxRead
+	oldest   time.Time
+}
+
+// lines is the whole table as text, captions first — the digest's FX block.
+func (t fxTable) lines() []string {
+	out := append([]string{}, t.caption...)
+	out = append(out, t.pairRows...)
+	return append(out, t.goldRows...)
+}
+
+// fxTableOf builds the table from reads with at least one reading. The order
+// note is omitted with a single row (one row is not an order) and the gap note
+// only when a shown row is measured from a named close.
+func fxTableOf(reads []fxRead, now time.Time) fxTable {
+	var t fxTable
+	var pairs, gold []fxRead
+	for _, r := range reads {
+		if r.spec.isGold() {
+			gold = append(gold, r)
+		} else {
+			pairs = append(pairs, r)
+		}
+	}
+	gap := false
+	for _, section := range [][]fxRead{fxOrdered(pairs, now), fxOrdered(gold, now)} {
+		for _, r := range section {
+			row := fxTableRow(r, now)
+			if r.spec.isGold() {
+				t.goldRows = append(t.goldRows, row)
+			} else {
+				t.pairRows = append(t.pairRows, row)
+			}
+			t.shown = append(t.shown, r)
+			if !r.OK {
+				continue
+			}
+			gap = gap || r.SinceClose
+			if !r.CloseAt.IsZero() && (t.oldest.IsZero() || r.CloseAt.Before(t.oldest)) {
+				t.oldest = r.CloseAt
+			}
+		}
+	}
+	t.caption = []string{fxTableHeader}
+	if len(t.shown) > 1 {
+		t.caption = append(t.caption, fxOrderNote)
+	}
+	if gap {
+		t.caption = append(t.caption, fxGapNote)
+	}
+	return t
+}
 
 // fxRead is one instrument's computed snapshot for the overview.
 type fxRead struct {
@@ -368,16 +723,30 @@ func fxEMARelation(dir string) string {
 	return "equal"
 }
 
-// fxResult is one row's machine outcome (results[]).
-func fxResult(r fxRead, now time.Time) AssetResult {
+// fxResult is one row's machine outcome (results[]). row is the row's 1-based
+// place in the shown table: stage 2 serves it beside the row's section and the
+// label the row prints, so a site redraws the exact table without parsing
+// facts. Present on every row of a card that RENDERS the table, a row without
+// a reading included — it has a place in the comparison too.
+//
+// row <= 0 means the caller renders NO table (no instrument produced a
+// reading): there is then no place to describe, and the three fields stay
+// absent rather than describing rows the reader never sees.
+func fxResult(r fxRead, now time.Time, row int) AssetResult {
+	res := assetResult(r.Pair, statusOK)
 	switch {
 	case r.OK:
 	case r.Insufficient:
-		return assetResult(r.Pair, statusInsufficientHistory)
+		res = assetResult(r.Pair, statusInsufficientHistory)
 	default:
-		return assetResult(r.Pair, statusSourceOffline)
+		res = assetResult(r.Pair, statusSourceOffline)
 	}
-	res := assetResult(r.Pair, statusOK)
+	if row > 0 {
+		res.Row, res.Section, res.Label = row, fxSectionName(r), fxLabel(r)
+	}
+	if !r.OK {
+		return res
+	}
 	price, rsi := r.Price, r.RSI
 	res.Timeframe = r.interval()
 	if !r.CloseAt.IsZero() {
@@ -520,26 +889,12 @@ func fxPairsWord(ok, total int) string {
 // direction: "FX overview · 1h · 3 pairs + gold read[ · N short
 // history][ · N unavailable][ · N data delayed][ · gold: no recent bar]"
 // ("1h", not "1h bars": the worst case of every part at once must still fit
-// fxLineMaxRunes). Facts: the weekend banner (pairs only), two lines per read
-// pair (one per failed one), then the gold section.
+// fxLineMaxRunes). Facts (stage 2): the weekend banner (pairs only), the table
+// captions, one row per pair, then the gold section under its disclosure.
 func fxOverviewCard(reads []fxRead, now time.Time) Card {
-	var oldest time.Time
-	var pairFacts, goldFacts []string
-	for _, r := range reads {
-		lines := []string{fxMarketLine(r, now)}
-		if r.OK {
-			if !r.CloseAt.IsZero() && (oldest.IsZero() || r.CloseAt.Before(oldest)) {
-				oldest = r.CloseAt
-			}
-			lines = append(lines, fxContextLine(r))
-		}
-		if r.spec.isGold() {
-			goldFacts = append(goldFacts, lines...)
-		} else {
-			pairFacts = append(pairFacts, lines...)
-		}
-	}
+	table := fxTableOf(reads, now)
 	coverage := fxCoverage(reads, now)
+	oldest := table.oldest
 	if oldest.IsZero() {
 		oldest = now
 	}
@@ -559,13 +914,16 @@ func fxOverviewCard(reads []fxRead, now time.Time) Card {
 	if fxPairsRead(reads) > 0 && !isForexOpen(now) {
 		c.Facts = append(c.Facts, fxClosedBanner)
 	}
-	c.Facts = append(c.Facts, pairFacts...)
-	if len(goldFacts) > 0 {
+	c.Facts = append(c.Facts, table.caption...)
+	c.Facts = append(c.Facts, table.pairRows...)
+	if len(table.goldRows) > 0 {
 		c.Facts = append(c.Facts, fxGoldHeader)
-		c.Facts = append(c.Facts, goldFacts...)
+		c.Facts = append(c.Facts, table.goldRows...)
 	}
-	for _, r := range reads {
-		c.Results = append(c.Results, fxResult(r, now))
+	// results[] follows the shown rows one-to-one, so row N of the JSON is
+	// row N of the card.
+	for i, r := range table.shown {
+		c.Results = append(c.Results, fxResult(r, now, i+1))
 	}
 	return c
 }
@@ -586,32 +944,9 @@ func fxDigestTitle(now, asOf time.Time, pairsRead bool) string {
 	return "<b>FX</b> <i>(" + strings.Join(notes, " · ") + ")</i>"
 }
 
-// fxDigestNewerLine names the rows whose last bar is newer than the block's
-// "as of" (the market lines carry no time), grouped by bar time:
-// "Newer bars: GBPUSD, GOLD Sep 15 08:00 UTC". "" when every read shares it.
-func fxDigestNewerLine(reads []fxRead, asOf time.Time) string {
-	var times []time.Time
-	names := map[time.Time][]string{}
-	for _, r := range reads {
-		if !r.OK || r.CloseAt.IsZero() || !r.CloseAt.After(asOf) {
-			continue
-		}
-		t := r.CloseAt.UTC()
-		if _, seen := names[t]; !seen {
-			times = append(times, t)
-		}
-		names[t] = append(names[t], fxLabel(r))
-	}
-	if len(times) == 0 {
-		return ""
-	}
-	sort.Slice(times, func(i, j int) bool { return times[i].Before(times[j]) })
-	var groups []string
-	for _, t := range times {
-		groups = append(groups, strings.Join(names[t], ", ")+" "+t.Format("Jan 2 15:04"))
-	}
-	return "Newer bars: " + strings.Join(groups, " · ") + " UTC"
-}
+// Stage 2 dropped fxDigestNewerLine: the block shows the same table as the
+// card and every row carries its own bar time, so there is nothing left for a
+// separate "Newer bars:" line to disclose.
 
 // fxAILine is a row for the AI payload: the card's market line and
 // indicators, with gold named as the futures contract it is (the model sees
@@ -619,7 +954,7 @@ func fxDigestNewerLine(reads []fxRead, asOf time.Time) string {
 func fxAILine(r fxRead, now time.Time) string {
 	line := fxMarketLine(r, now) + " · " + fxIndicators(r)
 	if r.spec.isGold() {
-		line = "GOLD (COMEX GC=F futures)" + strings.TrimPrefix(line, fxLabel(r))
+		line = "GOLD" + fxGoldContract + strings.TrimPrefix(line, fxLabel(r))
 	}
 	return line
 }
@@ -627,6 +962,8 @@ func fxAILine(r fxRead, now time.Time) string {
 // fxUnreadLine marks a row of an instrument that produced no reading
 // (unavailable or short history) — the landing example never quotes one as
 // the card's fact.
+// It matches both shapes the two paths print: the stage-1 "<label>: …" of the
+// degraded card and the stage-2 table row "<label> · …".
 func fxUnreadLine(f string) bool {
-	return strings.HasSuffix(f, ": data unavailable right now") || strings.Contains(f, ": insufficient history for ")
+	return strings.HasSuffix(f, "data unavailable right now") || strings.Contains(f, "insufficient history for ")
 }

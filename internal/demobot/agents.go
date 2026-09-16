@@ -814,7 +814,9 @@ func fxCardFromReads(reads []fxRead, now time.Time) Card {
 		anyShort := false
 		for _, r := range reads {
 			anyShort = anyShort || r.Insufficient
-			c.Results = append(c.Results, fxResult(r, now))
+			// row 0: this card renders no table, so its rows serve no place
+			// in one (fxResult).
+			c.Results = append(c.Results, fxResult(r, now, 0))
 		}
 		if st == statusInsufficientHistory {
 			c.Verdict = "Insufficient history on 1h bars — no FX overview"

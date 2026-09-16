@@ -668,21 +668,17 @@ func digestSections(g gathered, winner string, now time.Time) []digestSection {
 		out = append(out, s)
 	}
 	// Compact FX block (informational — FX does not compete for the top slot).
-	// The lines are the /fx card's market lines, verbatim (fxMarketLine).
-	// The title carries the oldest bar ("as of"); rows with a newer bar are
-	// named on one extra line, so no row passes for fresher than it is.
+	// Stage 2: the lines are the /fx card's own comparison table, verbatim —
+	// the column header, the order note and one row per instrument, each row
+	// naming its own bar. The title carries the oldest bar ("as of").
 	fx := digestSection{key: keyFX, status: statusSourceOffline}
 	switch {
 	case g.fxAnyOK:
 		fx.status = statusOK
-		for _, r := range g.fx {
-			fx.lines = append(fx.lines, fxMarketLine(r, now))
-			if r.OK && !r.CloseAt.IsZero() && (fx.asOf.IsZero() || r.CloseAt.Before(fx.asOf)) {
-				fx.asOf = r.CloseAt.UTC()
-			}
-		}
-		if l := fxDigestNewerLine(g.fx, fx.asOf); l != "" {
-			fx.lines = append(fx.lines, l)
+		table := fxTableOf(g.fx, now)
+		fx.lines = table.lines()
+		if !table.oldest.IsZero() {
+			fx.asOf = table.oldest.UTC()
 		}
 	case fxStatus(g.fx) == statusInsufficientHistory:
 		fx.status = statusInsufficientHistory

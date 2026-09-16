@@ -281,25 +281,42 @@ is not finite degrades the asset to `insufficient_history`.
 > `/showcase` `digest_status` do **not** change: the block was degraded
 > before and still is.
 
-What changed 2026-09-15: presentation and honesty only. The rule is
-**unchanged** — per instrument, on closed 1h Yahoo bars: EMA50 vs EMA200,
-RSI(14), the last close against the latest bar at least 24h older, and the
-last close's place inside the trailing-24h high-low range. Every line is at
-most 110 characters.
+> ⚠️ **FX `facts` became a table 2026-09-16 — do not parse them either.**
+> `verdict`, `short`, `reason` and the meaning of every `results[]` number are
+> **unchanged**; what changed is the card's shape. Each instrument used to get
+> two prose lines (`EURUSD 1.1543 · 24h -0.05% · 43% of the 24h range` and
+> `EURUSD: EMA50 below EMA200 · RSI(1h) 40.8 · last bar Sep 15 08:00 UTC`) and
+> now gets **one row of values** under one column header, ordered by the size
+> of the 24h change. `results[]` additionally carries `row`, `section` and
+> `label` (below) — parse those, not the text. The digest's FX block follows
+> the card and no longer emits the `Newer bars: …` line: every row names its
+> own bar.
+
+What changed 2026-09-15 and again 2026-09-16: presentation and honesty only.
+The rule is **unchanged** — per instrument, on closed 1h Yahoo bars: EMA50 vs
+EMA200, RSI(14), the last close against the latest bar at least 24h older, and
+the last close's place inside the trailing-24h high-low range. The 2026-09-16
+pass reimagined the card as what it is read for: a **comparison of the
+instruments in one place**. Every line is at most 110 characters.
 
 ```
 ⚪ FX Agent
 FX overview · 1h · 3 pairs + gold read
-• EURUSD 1.1537 · 24h -0.05% · 23% of the 24h range
-• EURUSD: EMA50 below EMA200 · RSI(1h) 36.3 · last bar Sep 15 09:00 UTC
-• GBPUSD 1.3475 · 24h -0.07% · 20% of the 24h range
-• GBPUSD: EMA50 below EMA200 · RSI(1h) 38.6 · last bar Sep 15 09:00 UTC
-• USDJPY 155.00 · 24h +0.28% · 81% of the 24h range
-• USDJPY: EMA50 below EMA200 · RSI(1h) 65.6 · last bar Sep 15 09:00 UTC
+• Pair · price · 24h change · place in 24h range · EMA50 vs EMA200 · RSI(1h) · last bar UTC
+• Ordered by 24h change size, not by importance · rows without a fresh bar last
+• USDJPY · 155.00 · +0.28% · 81% · below · 65.6 · Sep 15 09:00
+• GBPUSD · 1.3475 · -0.07% · 20% · below · 38.6 · Sep 15 09:00
+• EURUSD · 1.1537 · -0.05% · 23% · below · 36.3 · Sep 15 09:00
 • Gold: COMEX GC=F futures, not spot XAUUSD; Forex hours and the weekend banner do not apply
-• GOLD 4302.8 · 24h -1.01% · 15% of the 24h range
-• GOLD: EMA50 below EMA200 · RSI(1h) 35.6 · last bar Sep 15 09:00 UTC
+• GOLD · 4302.8 · -1.01% · 15% · below · 35.6 · Sep 15 09:00
 ```
+
+**What the table does NOT do.** The 24h change and the place in the range are
+percentages and compare between pairs as they are; the card stops there. It
+does not normalise the moves to USD, does not compute a dollar index and never
+says which pair is "leading" — a rising USDJPY is a stronger USD and a rising
+EURUSD a weaker one, so that sum is a NEW rule, not a presentation choice. It
+is on the stage-3 list and needs its own decision before any of it appears.
 
 - **No combined verdict, neutral semaphore.** Raw pair directions cannot be
   added up (a rising USDJPY is a stronger USD, a rising EURUSD a weaker
@@ -310,23 +327,41 @@ FX overview · 1h · 3 pairs + gold read
   near its day high). The fact is stated as it is — `EMA50 below EMA200` —
   never as a "trend" (that is the [Trend agent's](#trend-card-and-content-blocks)
   state machine).
-- **Two lines per instrument.** The market line (price = close of the last
-  closed bar at the S/R card's precision, change, place in range, a freshness
-  flag when due) and the indicator line (EMA50 vs EMA200, RSI, the row's own
-  last-bar time). A failed instrument gets one line: `data unavailable right
-  now` or `insufficient history for EMA50/EMA200/RSI(14) on 1h bars`.
+- **One row per instrument, one column header.** Columns, in order: label,
+  price (close of the last closed bar at the S/R card's precision), 24h
+  change, place in the range, EMA50 vs EMA200, RSI, the row's own last-bar
+  time (UTC), and a staleness flag when due. Same fact in the same place on
+  every row — that is what makes the instruments comparable. A failed
+  instrument keeps its row and states which absence it is: `EURUSD · data
+  unavailable right now` or `EURUSD · insufficient history for
+  EMA50/EMA200/RSI(14) on 1h bars`.
+- **Row order: by the size of the 24h change, ties by the registry order**
+  (`EURUSD, GBPUSD, USDJPY`, then gold's own section). Signed on the card —
+  `Ordered by 24h change size, not by importance · rows without a fresh bar
+  last` — because an order is read as a ranking unless it says otherwise.
+  The direction of the change is ignored in the key: the raw signs of
+  different pairs cannot be compared. Rows whose bar is not fresh sort below
+  the fresh ones and rows without a reading below those, so a dead instrument
+  is always visible and never on top. A pair inside the weekend window is not
+  "not fresh": the banner dates it. The order is a function of the data only —
+  the concurrent sweep's return order cannot move a row.
+- **Captions.** The column header always; the order note from two rows up; and
+  `After a session gap the change and the range are measured from the named
+  close` only when a row shown is measured from one.
 - **Change window.** `24h ±x%` only when the reference bar's close is 24h to
   **26h** back (tolerance 2h: one or two missing Yahoo hourly bars, or the
   daily COMEX break — one missing GC=F bar; its UTC hour moves with daylight
   saving). Further back the
   reference is the last close before a session gap — after a weekend,
-  Friday's — and the line names it: `since Sep 11 22:00 UTC close -0.35%`;
-  the range then reads `% of the range since then` (every bar after that
-  close is inside the trailing-24h window, so it is exactly the range since
-  the reopen). Same calculation as before; only the label is honest now.
-- **Place in range as a number**: `43% of the 24h range` (0% = the low, 100%
-  = the high). It replaces `near day low / mid-range / near day high`, which
-  were the same value bucketed at 20/80.
+  Friday's — and the cell names it: `-0.35% since Sep 11 22:00`. The range
+  column is then the range since that close too (every bar after it is inside
+  the trailing-24h window), which the gap caption states once for the whole
+  table. Same calculation as before; only the label is honest now.
+- **Place in range as a number**: `43%` under the `place in 24h range` column
+  (0% = the low, 100% = the high). It replaces `near day low / mid-range /
+  near day high`, which were the same value bucketed at 20/80.
+- **A row without a piece says so** instead of printing a zero: `no 24h
+  reference` (no reference bar) and `no range` (degenerate high-low window).
 - **Data time** (`data_as_of`, footer) = the **oldest** last bar among the
   rows shown (it used to be the newest, so one fresh pair hid a lagging one).
   Each row prints its own bar time and serves it as `results[].data_as_of`.
@@ -348,9 +383,9 @@ line):
 |---|---|---|---|
 | pairs | `on_time` | — | the Momentum rule, so a pair never reads differently on two cards |
 | pairs | `market_closed` | the `⏸ Forex market closed` banner above the pairs | inside the fixed weekend window (Friday 21:00 → Sunday 21:00 UTC) |
-| pairs | `data_delayed` | `data delayed`, counted in the header | the last closed bar is older than two bars while the market has been open for those two bars |
+| pairs | `data_delayed` | `delayed, bar 3h old` at the end of the row, counted in the header | the last closed bar is older than two bars while the market has been open for those two bars |
 | gold | `on_time` | — | last closed bar at most 3h old |
-| gold | `no_recent_bar` | `no bar in the last 3h`, and `gold: no recent bar` in the header | older than 3h: the pairs' two bars plus one for the daily COMEX break (one GC=F bar is missing every day). Hypothesis, not measured: Yahoo may also publish GC=F bars late, and a 2h bound would then flag gold after the break for nothing. The service has no COMEX calendar, so it states the bar age only — never `market closed`, never `delayed`. On a weekend this is the expected state |
+| gold | `no_recent_bar` | `no recent bar, 3h old` at the end of the row, and `gold: no recent bar` in the header | older than 3h: the pairs' two bars plus one for the daily COMEX break (one GC=F bar is missing every day). Hypothesis, not measured: Yahoo may also publish GC=F bars late, and a 2h bound would then flag gold after the break for nothing. The service has no COMEX calendar, so it states the bar age only — never `market closed`, never `delayed`. On a weekend this is the expected state |
 
 The weekend banner applies to the pairs only, and only when at least one
 pair was read (it dates the pairs' data; with every pair down there is
@@ -376,7 +411,9 @@ edge exists on the Momentum card, which shares the rule). The digest block's
 `as of` (below) shows the Friday bar time in that interval.
 
 **`results[]`** (one entry per instrument, in card order; additive to
-`{asset, ok, reason}`, present on `ok` rows only):
+`{asset, ok, reason}`. The reading fields below are present on `ok` rows only;
+`row`/`section`/`label`, added later, follow their own rule — see under the
+table):
 
 | Field | Meaning |
 |---|---|
@@ -395,16 +432,69 @@ edge exists on the Momentum card, which shares the rule). The digest block's
 Absent on a row when not computable: `change_*` without a reference bar,
 `range_position_pct` on a flat range.
 
-**Digest.** The FX block shows each instrument's market line verbatim, in
-card order, under a title with the oldest bar shown: `FX (as of Sep 15 07:00
-UTC · gold = COMEX GC=F futures)`; on a weekend `FX (forex closed: pairs show
-Friday data · as of Sep 11 21:00 UTC · gold = COMEX GC=F futures)`. The
-market lines carry no bar time, so rows whose last bar is newer than that
-`as of` are named on one extra line, grouped by bar: `Newer bars: EURUSD,
-GOLD Sep 15 08:00 UTC` (absent when every row shares one bar). Its
-`data_as_of` is the oldest bar, as on the card. A sweep where every
-instrument lacks history counts the block as `insufficient_history`, not
-`source_offline`.
+**Additive 2026-09-16, present on every row of a card that RENDERS the table
+— a row without a reading included — so a site redraws the exact table without
+parsing text. A degraded card shows no table (no instrument produced a
+reading), and its rows carry none of the three: there is no place in a table
+to describe, and an absent field is honest where `row: 1` would not be:**
+
+| Field | Meaning |
+|---|---|
+| `row` | the row's 1-based place in the shown table; `results[]` is in shown order, so `row` N is the card's N-th row |
+| `section` | `pairs` \| `gold` — the COMEX contract is shown apart from the comparable pairs |
+| `label` | the label the row prints: `EURUSD`, `GBPUSD`, `USDJPY`, `GOLD` (`asset` keeps gold's full `GOLD · COMEX GC=F`) |
+
+The rows' order changed with them: `results[]` used to follow the registry
+(`EURUSD, GBPUSD, USDJPY, XAUUSD`) and now follows the card — by the size of
+the 24h change, not-fresh rows after the fresh ones, gold last. Read `asset`
+or `label`, never a fixed index.
+
+**Digest.** The FX block shows the card's table verbatim — the column header,
+the order note and one row per instrument, in card order — under a title with
+the oldest bar shown: `FX (as of Sep 15 07:00 UTC · gold = COMEX GC=F
+futures)`; on a weekend `FX (forex closed: pairs show Friday data · as of
+Sep 11 21:00 UTC · gold = COMEX GC=F futures)`. Since 2026-09-16 every row
+names its own bar, so the separate `Newer bars: …` line is gone. Its
+`data_as_of` is the oldest bar, as on the card. A sweep where every instrument
+lacks history counts the block as `insufficient_history`, not `source_offline`.
+
+**Landing example** (`/showcase/example`, when FX is the example card).
+
+`data[]` is the head of the card's table, so it shows fewer rows than the card
+does — and a cut-down list carries every way of being misread that the full
+table carries. Removed: the dead rows (not readings) and the gap note, whose
+row already names the close it is measured from (`+0.31% since Sep 11 22:00`).
+Kept, because each one qualifies the values quoted beside it:
+
+| Line | Without it |
+|---|---|
+| `⏸ Forex market closed (weekend)` | Friday's prices read as today's |
+| `Gold: COMEX GC=F futures, not spot XAUUSD` | a futures price reads as spot (served only when the gold row itself fits under it, never trailing alone) |
+| the column header | `91% · below · 62.9` reaches the reader unlabelled |
+| `Ordered by 24h change size, not by importance` | a list cut at the top of a sort reads as a ranking |
+
+⚠️ **The FX block is capped at five lines, not four** — the only agent for
+which that is so. Two of its slots go to captions (the column header and the
+order note), and at four the captions ate the rows: two pairs instead of
+three, and gold's disclosure could never be reached while any pair was alive.
+On a weekend the banner takes a third caption slot, so the block is two pairs
+and no gold section there — the disclosure is not missing, the row it would
+disclose is not quoted either.
+
+`explained` is a single line quoted away from the table, so a leading gold row
+carries the contract inside it there: `GOLD (COMEX GC=F futures) · 4320.7 · …`.
+The card and the digest keep the section header above the row instead and are
+unchanged. This is also the one line allowed past the card's 110-rune row
+budget: the budget keeps the card's rows aligned in a table and this line is
+not in one, so a wrapped line is the smaller cost against a futures price read
+as spot. It may exceed 110 by exactly two things — the ` (COMEX GC=F futures)`
+a gold row carries out of its section, and the full stop a quoted fragment is
+closed with (132 runes worst case; a pair quote costs only the full stop).
+
+`conclusion` is FX-specific: the shared wording read a neutral card as
+"nothing leans either way on the broader market" — the combined verdict over
+the pairs this card refuses to give — and pointed at a "level structure" the
+card has no levels for.
 
 **AI brief input.** The FX rows sent to the model are the market line plus
 the indicators; gold is named `GOLD (COMEX GC=F futures)` there, since the
@@ -860,7 +950,7 @@ whale top-3 window now hangs off the snapshot's `captured_at`.
 | `/agents/macro`, `?asset=btc`, `?asset=gold` | **no** | The backend's `captured_at` is its request time at one-second resolution, so two different payloads can share it; no lamp stamp versions the body either (a lamp value moves during its session under the same `as_of`) |
 | `/showcase` | yes | The sweep time (`generated_at`): the body is fixed for the life of the memoized sweep (up to 60 s) |
 | `/agents/gold` | **no** | Daily bars, the hourly price, the macro payload, and two clock rules: the price's `stale` flag (older than 6h at answer time) and the weekend banner. The body is not a function of any one stamp, so a `Last-Modified` from any part would let a client keep a `304` after another part changed. `data_as_of` stays the daily close; each part's own stamp is in `gold` (`daily_as_of`, `price_as_of`, `macro_as_of`) |
-| `/agents/fx` | **no** | Four series plus clock-driven wording (the banner, `data delayed`, gold's `no bar in the last 3h`): a pair can update, drop out or recover while the oldest close (`data_as_of`) stays put |
+| `/agents/fx` | **no** | Four series plus clock-driven wording (the banner, a row's `delayed, bar 3h old`, gold's `no recent bar, 3h old`, and the row order that follows them): a pair can update, drop out or recover while the oldest close (`data_as_of`) stays put |
 | `/agents/funding` | **no** | Point-in-time reads (rates, the cluster's position against the mark price, the liquidation feed, a 1h window from the request time). The request time is not a version of that body |
 | `/agents/momentum` without params, `?tf=` alone, `?assets=` with two or more assets | **no** | Composite: the oldest bar (`data_as_of`) can stay put while another asset, the ETH-vs-BTC read, an asset's freshness (`market closed` / `data delayed`) or a source failure/recovery changes the body |
 | `/agents/digest`, `/agents/top`, `/showcase/example` | **no** | The digest re-sweeps per request; `/top` and the example add per-request AI text that reads the whole sweep |

@@ -117,7 +117,7 @@ func TestFXOverviewCardClosedBannerFirst(t *testing.T) {
 	if bannerIdx < 0 || firstPairIdx < 0 || bannerIdx > firstPairIdx {
 		t.Fatalf("banner must precede pair lines:\n%s", got)
 	}
-	for _, want := range []string{"EURUSD 1.1543 · 24h -0.05%", "EURUSD: EMA50 below EMA200", "GOLD 4320.7"} {
+	for _, want := range []string{"EURUSD · 1.1543 · -0.05% · 43% · below · 40.8", "GOLD · 4320.7 · -0.69%"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("closed card missing %q:\n%s", want, got)
 		}

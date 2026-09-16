@@ -49,24 +49,11 @@ func liveFXReads() []fxRead {
 	}
 }
 
-func TestFXCardGoldenLive(t *testing.T) {
-	c := fxCardFromReads(liveFXReads(), fxNow)
-	want := "⚪ <b>FX Agent</b>\n" +
-		"<b>FX overview · 1h · 3 pairs + gold read</b>\n" +
-		"• EURUSD 1.1543 · 24h -0.05% · 43% of the 24h range\n" +
-		"• EURUSD: EMA50 below EMA200 · RSI(1h) 40.8 · last bar Sep 15 08:00 UTC\n" +
-		"• GBPUSD 1.3480 · 24h -0.09% · 55% of the 24h range\n" +
-		"• GBPUSD: EMA50 below EMA200 · RSI(1h) 41.2 · last bar Sep 15 08:00 UTC\n" +
-		"• USDJPY 154.88 · 24h +0.32% · 91% of the 24h range\n" +
-		"• USDJPY: EMA50 below EMA200 · RSI(1h) 62.9 · last bar Sep 15 07:00 UTC\n" +
-		"• " + fxGoldHeader + "\n" +
-		"• GOLD 4320.7 · 24h -0.69% · 38% of the 24h range\n" +
-		"• GOLD: EMA50 below EMA200 · RSI(1h) 40.6 · last bar Sep 15 08:00 UTC\n" +
-		"\n<i>Analytics, not financial advice · AlphaVizor · 2026-09-15 07:00 UTC · data: Yahoo Finance</i>"
-	if got := c.RenderHTML(); got != want {
-		t.Fatalf("fx live golden mismatch:\ngot:\n%s\nwant:\n%s", got, want)
-	}
-	if c.Short != "3 pairs + gold read" {
+// The whole-card golden moved to fx_overview_test.go (TestFXTableGoldenLive)
+// when stage 2 turned the rows into one comparison table; the coverage header
+// it asserted is pinned there too (TestFXNonTableLinesUnchanged).
+func TestFXCardShortIsTheCoverage(t *testing.T) {
+	if c := fxCardFromReads(liveFXReads(), fxNow); c.Short != "3 pairs + gold read" {
 		t.Errorf("short %q", c.Short)
 	}
 }
@@ -95,14 +82,14 @@ func TestFXPairDataDelayed(t *testing.T) {
 	reads := liveFXReads()
 	reads[0].CloseAt = fxAt(15, 5) // 3.5h old at 08:30, market open since Sunday
 	c := fxCardFromReads(reads, fxNow)
-	if c.Facts[0] != "EURUSD 1.1543 · 24h -0.05% · 43% of the 24h range · data delayed" {
-		t.Errorf("delayed line: %q", c.Facts[0])
+	if got := fxRowFor(c, "EURUSD"); got != "EURUSD · 1.1543 · -0.05% · 43% · below · 40.8 · Sep 15 05:00 · delayed, bar 3h old" {
+		t.Errorf("delayed row: %q", got)
 	}
 	if c.Verdict != "FX overview · 1h · 3 pairs + gold read · 1 data delayed" {
 		t.Errorf("verdict %q", c.Verdict)
 	}
-	if c.Results[0].Freshness != "data_delayed" || c.Results[1].Freshness != "on_time" {
-		t.Errorf("freshness %q / %q", c.Results[0].Freshness, c.Results[1].Freshness)
+	if f, o := fxResultFor(c, "EURUSD").Freshness, fxResultFor(c, "GBPUSD").Freshness; f != "data_delayed" || o != "on_time" {
+		t.Errorf("freshness %q / %q", f, o)
 	}
 	// Right after the Sunday reopen a missing bar is not yet due.
 	sun := time.Date(2026, 9, 13, 22, 30, 0, 0, time.UTC)
@@ -131,7 +118,7 @@ func TestFXGoldSectionWeekend(t *testing.T) {
 			gi = i
 		}
 	}
-	if gi < 0 || gi != len(c.Facts)-3 {
+	if gi < 0 || gi != len(c.Facts)-2 {
 		t.Fatalf("gold header must open the last section:\n%s", strings.Join(c.Facts, "\n"))
 	}
 	for _, f := range c.Facts[gi:] {
@@ -144,14 +131,14 @@ func TestFXGoldSectionWeekend(t *testing.T) {
 	rendered := strings.Split(c.RenderHTML(), "\n")
 	named := false
 	for i, l := range rendered {
-		if strings.HasPrefix(l, "• GOLD 3650.4 ") && i > 0 {
+		if strings.HasPrefix(l, "• GOLD · 3650.4 ") && i > 0 {
 			named = strings.Contains(rendered[i-1], "COMEX GC=F futures, not spot XAUUSD")
 		}
 	}
 	if !named {
 		t.Errorf("the line above the gold row must name the contract:\n%s", strings.Join(rendered, "\n"))
 	}
-	if c.Facts[gi+1] != "GOLD 3650.4 · 24h +0.90% · 95% of the 24h range · no bar in the last 3h" {
+	if c.Facts[gi+1] != "GOLD · 3650.4 · +0.90% · 95% · above · 61.0 · Sep 11 21:00 · no recent bar, 15h old" {
 		t.Errorf("gold weekend line: %q", c.Facts[gi+1])
 	}
 	byAsset := map[string]AssetResult{}
@@ -191,8 +178,8 @@ func TestFXInsufficientHistoryNotNoData(t *testing.T) {
 	}
 	joined := strings.Join(c.Facts, "\n")
 	for _, want := range []string{
-		"USDJPY: insufficient history for EMA50/EMA200/RSI(14) on 1h bars",
-		"GOLD: data unavailable right now",
+		"USDJPY · insufficient history for EMA50/EMA200/RSI(14) on 1h bars",
+		"GOLD · data unavailable right now",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q:\n%s", want, joined)
@@ -354,7 +341,11 @@ func TestFXResultsJSON(t *testing.T) {
 	if len(got.Results) != 4 {
 		t.Fatalf("results: %d, want one per instrument", len(got.Results))
 	}
-	eur := got.Results[0]
+	byAsset := map[string]map[string]any{}
+	for _, r := range got.Results {
+		byAsset[r["asset"].(string)] = r
+	}
+	eur := byAsset["EURUSD"]
 	want := map[string]any{
 		"asset": "EURUSD", "ok": true, "timeframe": "1h", "price": 1.154334545,
 		"change_pct": -0.05, "change_window": "24h", "change_from": "2026-09-14T08:00:00Z",
@@ -375,17 +366,17 @@ func TestFXResultsJSON(t *testing.T) {
 	if eur["reason"] != nil {
 		t.Errorf("ok row reason %v", eur["reason"])
 	}
-	jpy := got.Results[2]
+	jpy := byAsset["USDJPY"]
 	if jpy["ok"] != false || jpy["reason"] != "insufficient_history" || jpy["price"] != nil {
 		t.Errorf("short-history row: %v", jpy)
 	}
-	if g := got.Results[3]; g["asset"] != "GOLD · COMEX GC=F" || g["ema_relation"] != "below" {
+	if g := byAsset["GOLD · COMEX GC=F"]; g == nil || g["ema_relation"] != "below" {
 		t.Errorf("gold row: %v", g)
 	}
 	// Since-previous-close rows say so.
 	r := liveFXReads()
 	r[0].SinceClose, r[0].RefAt = true, fxAt(11, 22)
-	res := fxCardFromReads(r, fxNow).Results[0]
+	res := fxResultFor(fxCardFromReads(r, fxNow), "EURUSD")
 	if res.ChangeWindow != "since_previous_close" || res.ChangeFrom != "2026-09-11T22:00:00Z" {
 		t.Errorf("since-close row: %q %q", res.ChangeWindow, res.ChangeFrom)
 	}
@@ -403,13 +394,13 @@ func fxDigestBlock(t *testing.T, g gathered, now time.Time) digestSection {
 	return digestSection{}
 }
 
-// fxCardMarketLines is what the /fx card itself shows as each instrument's
-// first line, in card order: its facts minus the weekend banner, the gold
-// header and the indicator lines ("<label>: EMA50 …").
+// fxCardMarketLines is the table the /fx card itself shows, in card order:
+// its facts minus the weekend banner and the gold section header (stage 2 —
+// the captions and the instrument rows).
 func fxCardMarketLines(c Card) []string {
 	var out []string
 	for _, f := range c.Facts {
-		if f == fxClosedBanner || f == fxGoldHeader || strings.Contains(f, ": EMA50 ") {
+		if f == fxClosedBanner || f == fxGoldHeader {
 			continue
 		}
 		out = append(out, f)
@@ -429,19 +420,16 @@ func TestFXDigestSectionMatchesCard(t *testing.T) {
 	fx := fxDigestBlock(t, g, fxNow)
 	card := fxCardFromReads(reads, fxNow)
 	want := fxCardMarketLines(card)
-	if len(want) != len(reads) || len(fx.lines) != len(want)+1 {
-		t.Fatalf("digest lines:\n%s\ncard market lines:\n%s", strings.Join(fx.lines, "\n"), strings.Join(want, "\n"))
+	if len(fx.lines) != len(want) {
+		t.Fatalf("digest lines:\n%s\ncard table:\n%s", strings.Join(fx.lines, "\n"), strings.Join(want, "\n"))
 	}
-	if got := strings.Join(fx.lines[:len(want)], "\n"); got != strings.Join(want, "\n") {
-		t.Errorf("digest rows != the card's market lines\n%s\n--\n%s", got, strings.Join(want, "\n"))
-	}
-	if got := fx.lines[len(want)]; got != "Newer bars: EURUSD, GOLD Sep 15 08:00 UTC" {
-		t.Errorf("newer-bar line %q", got)
+	if got := strings.Join(fx.lines, "\n"); got != strings.Join(want, "\n") {
+		t.Errorf("digest rows != the card's table\n%s\n--\n%s", got, strings.Join(want, "\n"))
 	}
 	facts := strings.Join(card.Facts, "\n")
 	for _, row := range []struct{ label, at string }{{"EURUSD", "Sep 15 08:00"}, {"GOLD", "Sep 15 08:00"}, {"USDJPY", "Sep 15 07:00"}} {
-		if !fxFactHasBar(card, row.label, row.at) {
-			t.Errorf("card row %s must print last bar %s UTC:\n%s", row.label, row.at, facts)
+		if !strings.HasSuffix(fxRowFor(card, row.label), " · "+row.at) {
+			t.Errorf("card row %s must end with its last bar %s:\n%s", row.label, row.at, facts)
 		}
 	}
 	if got := htmlToPlain(fx.title); got != "FX (as of Sep 15 07:00 UTC · gold = COMEX GC=F futures)" {
@@ -514,20 +502,11 @@ func TestFXLineBudget(t *testing.T) {
 	}
 }
 
-// fxFactHasBar: the card's indicator line for label names the bar at.
-func fxFactHasBar(c Card, label, at string) bool {
-	for _, f := range c.Facts {
-		if strings.HasPrefix(f, label+": EMA50 ") && strings.HasSuffix(f, " · last bar "+at+" UTC") {
-			return true
-		}
-	}
-	return false
-}
-
 // Sunday after the fixed-window reopen (21:00 UTC) Yahoo still serves
 // Friday's pair bars (its first Sunday bar comes later), so the title says
 // nothing about a closed market: the block's "as of" is what tells the reader
-// the rows are Friday's. Gold, back earlier, is named with its newer bar.
+// the rows are Friday's. Gold, back earlier, carries its newer bar on its own
+// row — stage 2 needs no separate "newer bars" line for that.
 func TestFXDigestSundayReopenShowsBarTime(t *testing.T) {
 	fri := fxAt(11, 21)
 	base := []fxRead{
@@ -538,11 +517,11 @@ func TestFXDigestSundayReopenShowsBarTime(t *testing.T) {
 	}
 	cases := []struct {
 		now, goldAt time.Time
-		newer       string
+		goldBar     string
 	}{
-		{fxAt(13, 21).Add(30 * time.Minute), fri, ""},
-		{fxAt(13, 23).Add(30 * time.Minute), fxAt(13, 23), "Newer bars: GOLD Sep 13 23:00 UTC"},
-		{fxAt(14, 0).Add(10 * time.Minute), fxAt(14, 0), "Newer bars: GOLD Sep 14 00:00 UTC"},
+		{fxAt(13, 21).Add(30 * time.Minute), fri, "Sep 11 21:00"},
+		{fxAt(13, 23).Add(30 * time.Minute), fxAt(13, 23), "Sep 13 23:00"},
+		{fxAt(14, 0).Add(10 * time.Minute), fxAt(14, 0), "Sep 14 00:00"},
 	}
 	for _, tc := range cases {
 		if !isForexOpen(tc.now) {
@@ -555,14 +534,17 @@ func TestFXDigestSundayReopenShowsBarTime(t *testing.T) {
 		if strings.Contains(title, "closed") || !strings.Contains(title, "as of Sep 11 21:00 UTC") {
 			t.Errorf("%s: title %q", tc.now.Format("Mon 15:04"), title)
 		}
-		var newer string
+		var gold string
 		for _, l := range fx.lines {
+			if strings.HasPrefix(l, "GOLD · ") {
+				gold = l
+			}
 			if strings.HasPrefix(l, "Newer bars:") {
-				newer = l
+				t.Errorf("%s: rows carry their own bar now: %q", tc.now.Format("Mon 15:04"), l)
 			}
 		}
-		if newer != tc.newer {
-			t.Errorf("%s: newer-bar line %q, want %q", tc.now.Format("Mon 15:04"), newer, tc.newer)
+		if !strings.Contains(gold, " · "+tc.goldBar) {
+			t.Errorf("%s: gold row %q must name its bar %s", tc.now.Format("Mon 15:04"), gold, tc.goldBar)
 		}
 		for _, l := range append([]string{title}, fx.lines...) {
 			if n := utf8.RuneCountInString(l); n > fxLineMaxRunes {
@@ -570,15 +552,23 @@ func TestFXDigestSundayReopenShowsBarTime(t *testing.T) {
 			}
 		}
 	}
-	// Four rows on four different bars still fit one line.
+	// Four rows on four different bars: each row names its own, and each fits.
 	spread := liveFXReads()
 	for i := range spread {
 		spread[i].CloseAt = fxAt(15, 5+i)
 	}
 	fx := fxDigestBlock(t, gathered{fx: spread, fxAnyOK: true, cards: map[string]Card{}}, fxNow)
-	last := fx.lines[len(fx.lines)-1]
-	if last != "Newer bars: GBPUSD Sep 15 06:00 · USDJPY Sep 15 07:00 · GOLD Sep 15 08:00 UTC" || utf8.RuneCountInString(last) > fxLineMaxRunes {
-		t.Errorf("spread newer-bar line %q", last)
+	for i, label := range []string{"EURUSD", "GBPUSD", "USDJPY", "GOLD"} {
+		want := " · " + fxAt(15, 5+i).Format("Jan 2 15:04")
+		var row string
+		for _, l := range fx.lines {
+			if strings.HasPrefix(l, label+" · ") {
+				row = l
+			}
+		}
+		if !strings.Contains(row, want) || utf8.RuneCountInString(row) > fxLineMaxRunes {
+			t.Errorf("%s row %q must carry%s", label, row, want)
+		}
 	}
 }
 
@@ -626,10 +616,12 @@ func TestFXShowcaseExampleSkipsUnreadRows(t *testing.T) {
 			reads[i] = dead(reads[i])
 		}
 		c := fxCardFromReads(reads, fxNow)
-		if !fxUnreadLine(c.Facts[0]) || !strings.HasPrefix(c.Facts[0], "EURUSD: ") {
-			t.Errorf("card order changed: first fact %q", c.Facts[0])
+		if first := fxFirstRow(c); !fxUnreadLine(first) || !strings.HasPrefix(first, "EURUSD · ") {
+			t.Errorf("card order changed: first row %q", first)
 		}
-		if got := strongestFact(c); !strings.HasPrefix(got, "GOLD 4320.7 · 24h -0.69% · 38% of the 24h range") {
+		// Since 2026-09-16 a leading gold row names its contract: quoted away
+		// from the section header, a bare "GOLD" reads as spot XAUUSD.
+		if got := strongestFact(c); !strings.HasPrefix(got, "GOLD (COMEX GC=F futures) · 4320.7 · -0.69% · 38% · below · 40.6") {
 			t.Errorf("strongest fact %q", got)
 		}
 		ex := exampleFacts(c)
@@ -642,7 +634,7 @@ func TestFXShowcaseExampleSkipsUnreadRows(t *testing.T) {
 			}
 		}
 	}
-	if got := strongestFact(fxCardFromReads(liveFXReads(), fxNow)); !strings.HasPrefix(got, "EURUSD 1.1543 · 24h") {
+	if got := strongestFact(fxCardFromReads(liveFXReads(), fxNow)); !strings.HasPrefix(got, "USDJPY · 154.88 · +0.32%") {
 		t.Errorf("live card strongest fact %q", got)
 	}
 }
