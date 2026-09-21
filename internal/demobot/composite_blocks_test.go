@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // blockForbidden: the words a block may never use — a recommendation, a
@@ -514,7 +515,7 @@ func TestCompositeBlocksAbsentWithoutALiveReading(t *testing.T) {
 // Their caveats used to sink into the numbered facts list because the block
 // was empty. The block now carries the card's OWN line, verbatim — nothing new
 // is claimed.
-func TestTrendSRMacroLimitationsComeFromTheCard(t *testing.T) {
+func TestTrendLimitationsComesFromTheCard(t *testing.T) {
 	up := trendView{r: trendRead{State: trendUp, ADX: 31.4, EMA20: 4400, EMA50: 4380, EMA200: 4200, Last: 4450, ATR: 60}, tf: "4h", atr: 60, inv: 4320, invSide: "below"}
 	if got := up.blocks("confirmed uptrend").Limitations; got != up.holdsLine() {
 		t.Errorf("confirmed trend limitations %q, card line %q", got, up.holdsLine())
@@ -540,21 +541,87 @@ func TestTrendSRMacroLimitationsComeFromTheCard(t *testing.T) {
 	}
 }
 
-func TestSRLimitationsIsTheWindowLine(t *testing.T) {
+// The S/R limitation says what a level and its counts are NOT, in words a
+// reader can use. It used to be the method line verbatim ("Window: 249 closed
+// 4h candles · test = a close within 0.25 ATR…") — true, and it still closes
+// facts[], but the site shows limitations in its most prominent box, where
+// that line was jargon. So it must not be the method line, must name the
+// card's own timeframe, and must describe counts as past tests.
+func TestSRLimitationsIsPlainWords(t *testing.T) {
 	sup := []SRLevel{{Level: 2400, Raw: 2400, Touches: 7, Strength: 7}}
 	res := []SRLevel{{Level: 2531, Raw: 2531, Touches: 7, Strength: 7}}
 	c := srCardFrom(btcSpec, sup, res, 2516.4, 200, time.Date(2026, 9, 15, 8, 0, 0, 0, time.UTC), nil)
 	if c.Blocks == nil || c.Blocks.Limitations == "" {
 		t.Fatal("the S/R card must carry limitations")
 	}
-	found := false
+	lim := c.Blocks.Limitations
+	if want := "A level is the mean of past 4h swing pivots; reaction and break counts describe past tests, not the next one"; lim != want {
+		t.Errorf("limitations\n got %q\nwant %q", lim, want)
+	}
+	for _, jargon := range []string{"Window:", "ATR", "resolved within"} {
+		if strings.Contains(lim, jargon) {
+			t.Errorf("limitations carries method jargon %q: %q", jargon, lim)
+		}
+	}
 	for _, f := range c.Facts {
-		found = found || f == c.Blocks.Limitations
+		if f == lim {
+			t.Errorf("limitations must not repeat a facts line: %q", lim)
+		}
 	}
-	if !found {
-		t.Errorf("S/R limitations %q is not one of the card's own facts %v", c.Blocks.Limitations, c.Facts)
+	if n := utf8.RuneCountInString(lim); n > 110 {
+		t.Errorf("limitations %d runes: %q", n, lim)
 	}
-	assertNoForbidden(t, "sr limitations", c.Blocks.Limitations)
+	// 1h instruments (FX and gold) get the same sentence with their own
+	// timeframe: the 4h path alone was pinned, and the margin is 2 runes.
+	for _, tc := range []struct {
+		spec           assetSpec
+		sup, res, last float64
+	}{
+		{assetTable["eurusd"], 1.1, 1.2, 1.15},
+		{assetTable["xauusd"], 4300, 4400, 4350},
+	} {
+		spec := tc.spec
+		c1h := srCardFrom(spec,
+			[]SRLevel{{Level: int(tc.sup), Raw: tc.sup, Touches: 7, Strength: 7}},
+			[]SRLevel{{Level: int(tc.res), Raw: tc.res, Touches: 7, Strength: 7}},
+			tc.last, 200, time.Date(2026, 9, 15, 8, 0, 0, 0, time.UTC), nil)
+		lim1h := c1h.Blocks.Limitations
+		if want := "A level is the mean of past 1h swing pivots; reaction and break counts describe past tests, not the next one"; lim1h != want {
+			t.Errorf("%s limitations\n got %q\nwant %q", spec.Display, lim1h, want)
+		}
+		if n := utf8.RuneCountInString(lim1h); n > srFactMaxRunes {
+			t.Errorf("%s limitations %d runes, cap %d", spec.Display, n, srFactMaxRunes)
+		}
+	}
+
+	// The method line has not gone anywhere: it still closes facts[].
+	if last := c.Facts[len(c.Facts)-1]; !strings.HasPrefix(last, "Window: ") {
+		t.Errorf("the method line must still close facts[]: %q", last)
+	}
+	assertNoForbidden(t, "sr limitations", lim)
+}
+
+// With levels on both sides the regime names both nearest distances — the
+// asymmetry — instead of repeating the nearest level a fourth time; with one
+// side only it keeps saying which side is empty.
+func TestSRRegimeNamesBothSides(t *testing.T) {
+	at := time.Date(2026, 9, 15, 8, 0, 0, 0, time.UTC)
+	both := srCardFrom(btcSpec,
+		[]SRLevel{{Level: 65279, Raw: 65279, Touches: 4, Strength: 4}},
+		[]SRLevel{{Level: 76407, Raw: 76407, Touches: 8, Strength: 8}},
+		75767, 249, at, nil)
+	if want := "Nearest shown on each side: resistance +0.8% · support -13.8% · 4h"; both.Blocks.Regime != want {
+		t.Errorf("both sides\n got %q\nwant %q", both.Blocks.Regime, want)
+	}
+	if strings.Contains(both.Blocks.Regime, "away") {
+		t.Errorf("regime repeats the verdict's single distance: %q", both.Blocks.Regime)
+	}
+	resOnly := srCardFrom(btcSpec, nil,
+		[]SRLevel{{Level: 76407, Raw: 76407, Touches: 8, Strength: 8}},
+		75767, 249, at, nil)
+	if !strings.HasPrefix(resOnly.Blocks.Regime, "Resistance only, none below price") {
+		t.Errorf("one side: %q", resOnly.Blocks.Regime)
+	}
 }
 
 // Review 2026-09-16, point 3: the macro limitation is assembled from phrases

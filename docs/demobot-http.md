@@ -1333,7 +1333,8 @@ are about the nearest shown level:
 | `why_level` | What the level is made of: `"2531.0 = mean of 7 pivots · 5 reactions / 1 break in 6 resolved tests · last touch Sep 14"` |
 | `scenarios` | Exactly two market events, worded from the side of price the level is on now: `"If a 4h close tests 2531.0 and a close within 3 candles exits its band below, the level holds as resistance"` / `"If a 4h candle closes above 2531.0's band, the level is broken and moves below price"` (mirrored for a support below price). No counts, no targets, no probabilities, no forecast |
 | `invalidates` | What makes the level no longer this side: `"A closed 4h candle above 2531.0 puts it below price: it no longer reads as resistance"` |
-| `regime` | Local level context only (not macro, not trend): `"Levels on both sides · nearest shown: resistance, 0.6% away · 4h"`, or `"Resistance only, none below price · nearest shown 0.7% away · 1h"` |
+| `regime` | Local level context only (not macro, not trend). ⚠️ Text changed 2026-09-21. With levels on both sides it names the nearest distance on EACH side, so the asymmetry is visible: `"Nearest shown on each side: resistance +0.6% · support -3.2% · 4h"` (was `"Levels on both sides · nearest shown: resistance, 0.6% away · 4h"`, which repeated the verdict's single distance). One side only is unchanged: `"Resistance only, none below price · nearest shown 0.7% away · 1h"` |
+| `limitations` | Additive 2026-09-16, ⚠️ text changed 2026-09-21. What a level and its counts are not, in plain words: `"A level is the mean of past 4h swing pivots; reaction and break counts describe past tests, not the next one"`. It was first the method line verbatim (`"Window: 200 closed 4h candles · test = a close within 0.25 ATR of a level, resolved within 3 candles"`); that line still closes `facts[]` |
 
 ## Volatility card and content blocks
 

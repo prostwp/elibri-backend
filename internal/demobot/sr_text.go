@@ -444,10 +444,12 @@ func (v srView) blocks() *ContentBlocks {
 	return &ContentBlocks{
 		WhatHappened: what,
 		WhyLevel:     why,
-		// limitations (additive 2026-09-16): the card's own window/method line,
-		// verbatim — it is what the levels are and are not measured over, and
-		// it already closes facts[].
-		Limitations: v.methodLine(),
+		// limitations (additive 2026-09-16): what a level and its counts are
+		// NOT. The site renders this in its most prominent box, and the first
+		// version put the method line here verbatim ("Window: 249 closed 4h
+		// candles · test = a close within 0.25 ATR…") — true, but jargon a
+		// reader cannot use. The method line stays in facts[] and how-it-works.
+		Limitations: v.limitations(),
 		// "its band" = ±0.25 ATR around the level (the window line and the
 		// how-it-works text define it). Both events are worded from the level's
 		// CURRENT side of price (side comes from the card's own split), so they
@@ -461,13 +463,28 @@ func (v srView) blocks() *ContentBlocks {
 				tf, side.toward, lv, side.away),
 		},
 		Invalidates: &inv,
-		Regime:      v.regime(l, side),
+		Regime:      v.regime(l),
 	}
 }
 
+// limitations — what a shown level and its test counts are not, in plain
+// words: a level is the mean of a cluster of past swing pivots on closed
+// candles (why_level prints "76407 = mean of 8 pivots"), and reactions and
+// breaks count tests that already happened.
+func (v srView) limitations() string {
+	return fmt.Sprintf("A level is the mean of past %s swing pivots; reaction and break counts describe past tests, not the next one",
+		candleWord(v.tf))
+}
+
 // regime — local level context only: which sides carry shown levels and how
-// far the nearest one is. Not macro, not trend.
-func (v srView) regime(l SRLevel, side srSide) string {
+// far the nearest one is on each. Not macro, not trend.
+//
+// With levels on both sides it names BOTH distances (the same numbers as the
+// "Nearest shown levels" fact): the verdict and what_happened already give
+// the nearest level, so repeating it here said the same thing a fourth time,
+// while the asymmetry — resistance close above, support far below — was
+// visible nowhere a reader looks first.
+func (v srView) regime(l SRLevel) string {
 	d := v.dist(l)
 	if d == "" {
 		d = "at price"
@@ -477,7 +494,7 @@ func (v srView) regime(l SRLevel, side srSide) string {
 	tf := candleWord(v.tf)
 	switch {
 	case len(v.sup) > 0 && len(v.res) > 0:
-		return fmt.Sprintf("Levels on both sides · nearest shown: %s, %s · %s", side.noun, d, tf)
+		return fmt.Sprintf("Nearest shown on each side: %s · %s", v.nearestSides(), tf)
 	case len(v.res) > 0:
 		return fmt.Sprintf("Resistance only, none below price · nearest shown %s · %s", d, tf)
 	default:

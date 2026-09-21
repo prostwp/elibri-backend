@@ -77,7 +77,11 @@ func srFullVolOf(sides ...[]SRLevel) map[float64]bool {
 func srTexts(c Card) []string {
 	out := append([]string{c.Verdict, c.Short}, c.Facts...)
 	if b := c.Blocks; b != nil {
-		out = append(out, b.WhatHappened, b.WhyLevel, b.Regime)
+		// limitations is in the list since 2026-09-21: it used to be the
+		// method line, covered transitively through facts[]; now it is its
+		// own sentence and the site's most prominent box, so it must sit
+		// under the same budget, banned-word and number checks as the rest.
+		out = append(out, b.WhatHappened, b.WhyLevel, b.Regime, b.Limitations)
 		out = append(out, b.Scenarios...)
 		if b.Invalidates != nil {
 			out = append(out, *b.Invalidates)
@@ -350,7 +354,7 @@ func TestSRBlocksContract(t *testing.T) {
 		b.Scenarios[0]: "If a 4h close tests 2531.0 and a close within 3 candles exits its band below, the level holds as resistance",
 		b.Scenarios[1]: "If a 4h candle closes above 2531.0's band, the level is broken and moves below price",
 		*b.Invalidates: "A closed 4h candle above 2531.0 puts it below price: it no longer reads as resistance",
-		b.Regime:       "Levels on both sides · nearest shown: resistance, 0.6% away · 4h",
+		b.Regime:       "Nearest shown on each side: resistance +0.6% · support -3.2% · 4h",
 	} {
 		if got != want {
 			t.Errorf("\n got %q\nwant %q", got, want)
