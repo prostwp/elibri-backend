@@ -1243,11 +1243,23 @@ func TestHookNormalizeMasks(t *testing.T) {
 	mm["freshness"].(map[string]any)["captured_at"] = "2030-01-01T00:00:00Z"
 	if fg, ok := mm["fear_greed"].(map[string]any); ok {
 		fg["age_hours"] = 123.45
+		// The backend's re-request clock for the index: on prod it was the
+		// one field left moving the macro hash every few minutes.
+		fg["fetched_at"] = "2030-01-01T00:03:00Z"
 	} else {
 		t.Fatal("fixture must carry fear_greed")
 	}
 	if hashOf(t, keyMacro, mb, zero, zero) != hashOf(t, keyMacro, encode(m), zero, zero) {
-		t.Error("macro: captured_at / age_hours must not change the hash")
+		t.Error("macro: captured_at / age_hours / fear_greed.fetched_at must not change the hash")
+	}
+	// ...but the index itself is data: a new value or a new publication time
+	// is a real change and must still move the hash.
+	for field, v := range map[string]any{"value": 12, "as_of": "2030-01-01T00:00:00Z", "label": "Extreme Fear"} {
+		mx := decode(mb)
+		mx["macro"].(map[string]any)["fear_greed"].(map[string]any)[field] = v
+		if hashOf(t, keyMacro, mb, zero, zero) == hashOf(t, keyMacro, encode(mx), zero, zero) {
+			t.Errorf("macro: a changed fear_greed.%s must change the hash", field)
+		}
 	}
 	mm["rule_score"] = 12
 	if hashOf(t, keyMacro, mb, zero, zero) == hashOf(t, keyMacro, encode(m), zero, zero) {

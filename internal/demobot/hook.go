@@ -579,8 +579,9 @@ func (n hookNormalizer) maskIfRequestTime(m map[string]any, key string) {
 //   - macro, whale, news, digest, top: data_as_of and the footer stamp when
 //     they fall inside the call window (fallbacks to now);
 //   - any "macro" object (macro cards, and digest/top with a macro winner):
-//     freshness.captured_at (backend request time) and fear_greed.age_hours
-//     (counted to it);
+//     freshness.captured_at (backend request time), fear_greed.age_hours
+//     (counted to it) and fear_greed.fetched_at (the backend's re-request
+//     clock, not the index's as_of);
 //   - macro only: every lamp's quote is hashed BUCKETED, not masked —
 //     macro.lamps[].value and .delta_pct, and the readings the card prints in
 //     facts[] and card_html (a live quote under a session stamp — see "macro:
@@ -619,6 +620,12 @@ func (n hookNormalizer) envelope(env map[string]any) {
 		}
 		if fg, ok := m["fear_greed"].(map[string]any); ok {
 			delete(fg, "age_hours")
+			// fetched_at is when the backend last re-requested the index,
+			// not when the index was published (that is as_of, kept). It
+			// moves every few minutes on its own — on prod 2026-09-23 it was
+			// the one field left moving the macro hash after lamp quotes
+			// were bucketed (10:05:49 -> 10:08:49 under one as_of).
+			delete(fg, "fetched_at")
 		}
 		// A lamp's quote moves under a session stamp, so it is hashed
 		// bucketed, in the readout and everywhere the card prints it. Macro
