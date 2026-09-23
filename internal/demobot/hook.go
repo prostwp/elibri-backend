@@ -215,6 +215,330 @@ var (
 // cannot describe different things.
 const hookPPNum = `(?:>\+999|<-999|[+-]\d+\.\d)`
 
+// ── macro: a live quote under a session stamp ────────────────────────────────
+//
+// A macro lamp's as_of stamps a SESSION, not a close, so the quote behind it
+// keeps moving under one stamp — and the card prints that quote to two
+// decimals, so every tick of the last digit used to mint an event. Prod
+// 2026-09-21 sent the macro address 480 events in a day, one every three
+// minutes, all under the same data_as_of. Two bodies 200 s apart differed in
+// exactly one character — "Gold -0.48% (fell) → +5.0" became
+// "Gold -0.47% (fell) → +5.0" — while the rule score (68), its unrounded form
+// (67.5), every contribution and every as_of stood still.
+//
+// How long a stamp stands still depends on the PROVIDER, and only the
+// fallback holds it for a whole session:
+//   - yahoo (the fallback): AsOf is the daily bar's opening instant
+//     (yahoo.go, yahooBar.Start → Quote.AsOf), so it is the session start and
+//     does not move until the next session;
+//   - stooq (the primary, macro/source.go defaultSourceOrder): the CSV is
+//     requested as f=sd2t2ohlcv — date AND time — and ParseStooqCSV puts the
+//     parsed date+time of the quote into AsOf (worker.go), so a stooq-fed
+//     lamp's as_of moves inside the session with the quote.
+//
+// On a stooq-fed lamp the body therefore changes anyway, through the as_of,
+// and this mask hides nothing there: it only ever drops a digit while every
+// stamp stands still. The 480-event measurement was taken with every lamp on
+// `source: "yahoo"`, i.e. on the fallback — the shape of the noise on a
+// stooq day is not measured (docs "What counts as a change").
+//
+// ── the buckets ──
+//
+// The numbers are not dropped, they are COARSENED: the hash is taken over a
+// rounded reading, so a move too small to be a reading disappears and a move
+// large enough to be one survives. Dropping them outright lost a real change:
+// on the gold view the gold lamp is the SUBJECT of the card, not an input to
+// the rule — lampSelfLine prints it with no rule condition and no
+// contribution — so with its number gone nothing about it could change, and
+// gold walking 12% in a session reached no one.
+//
+//   - a session change (delta_pct, and the "%" a card prints) → 0.1
+//     percentage points. The card prints two decimals, so the last printed
+//     digit alone can no longer mint an event, while the 0.08% → 3.10% of a
+//     real move still does;
+//   - a price level (value, and the level a card prints) → three significant
+//     digits. Gold 4391.9 → 4392.4 and DXY 100.294 → 100.270, the two ticks
+//     measured on prod, land in one bucket; gold walking to 4865 does not.
+//
+// Honest limit: a reading sitting ON a bucket edge still ping-pongs — 0.449 /
+// 0.451 are two buckets. That is the same effect one order of magnitude
+// rarer (a 0.1 pp bucket against a 0.01 pp print, three digits against five),
+// and it is left as it is.
+//
+// ── what is never bucketed ──
+//
+// Everything the rule READS off a lamp stays in the hash byte for byte and
+// still fires an event: the contribution and its sign ("→ +5.0", "→ neutral,
+// 0"), the side the lamp is filed under ("Positive for rule score:"), the
+// rule condition it met ("(<18)", "(fell)", "(0 to +0.5%)") which is its
+// status worded, rule_score and rule_score_unrounded, the reading, the
+// voting and live counts, each lamp's as_of, and a lamp appearing, dying
+// ("— no data"), losing its session change or leaving the set. A crossed
+// threshold therefore always shows: the condition and the contribution move
+// with it. A null value or a null delta_pct is never bucketed — that is the
+// lamp losing its reading, not a digit moving.
+var (
+	// hookMacroLampRe matches one printed lamp reading — the three renderings
+	// of macro_text.go — and captures ONLY its numbers:
+	//   lampFull:     "DXY 99.61, session +0.13% (0 to +0.5%)" · "US 10Y 4.9610 (no session change)"
+	//   lampSelfLine: "Gold (GC=F futures) 4344, session +0.08% — the asset itself…"
+	//   lampCause:    "VIX 17.10 (<18)" · "Gold -0.48% (fell)"
+	// The longer renderings come first: RE2 prefers the earlier alternative,
+	// so "DXY 99.61, session +0.13%" is never read as a bare level.
+	//
+	// Spelled out rendering by rendering, like the momentum RS line above: a
+	// pattern that ran to the end of the line would swallow the contribution
+	// and the rule condition. The names are the five the rule knows
+	// (macroShortNames); a payload carrying some other lamp key keeps its
+	// printed number in the hash — never bucketed wrongly.
+	// The bare-number form of lampCause has two shapes: a session change,
+	// which any lamp can print, and a bare level, which only VIX prints
+	// (vixShown). The VIX shape is therefore tied to the VIX name instead of
+	// riding the shared name alternation: as a free alternative its
+	// `-?\d+\.\d\d` matched the first two decimals of ANY lamp's level and
+	// left the rest of the digits behind ("Gold 4343.7001953125" →
+	// "Gold 4.34e+0301953125"), which is both wrong and not idempotent.
+	// Unreachable through today's renderers — sessionPctShown always prints
+	// two decimals or a clamp, so the first alternative always wins — but a
+	// stray tail could collapse two different levels into one hash.
+	// Group order is unchanged: the VIX level stays the sixth group.
+	hookMacroLampRe = regexp.MustCompile(`(?:` +
+		hookMacroLampName() + ` ` + `(?:` +
+		`(` + hookMacroLevel + `), session (` + hookMacroPct + `)(?: \((?:` + hookMacroCond() + `)\))?` + `|` +
+		`(` + hookMacroLevel + `) ` + hookHTMLAlt("(no session change)") +
+		`)` + `|` +
+		hookMacroGoldName() + ` ` + `(` + hookMacroLevel + `) ` + hookHTMLAlt("— the asset itself") + `|` +
+		hookMacroLampName() + ` ` + `(` + hookMacroPct + `)(?: \((?:` + hookMacroCond() + `)\))?` + `|` +
+		hookHTMLAlt(macroShortNames["vix"]) + ` ` + `(` + hookMacroVIX + `)(?: \((?:` + hookMacroCond() + `)\))?` +
+		`)`)
+
+	// hookMacroLampBuckets is the bucket of each capture group of
+	// hookMacroLampRe, in group order: the level and the session change of
+	// the lampFull line, the level of its no-session-change form, the level
+	// of lampSelfLine, then lampCause's session change and VIX level.
+	// hookMacroLampGroupsMatch (hook_macro_noise_test.go) pins the length
+	// against the pattern, so a new alternative cannot land unbucketed.
+	hookMacroLampBuckets = []func(float64) string{
+		hookMacroLevelBucket, hookMacroPctBucket,
+		hookMacroLevelBucket,
+		hookMacroLevelBucket,
+		hookMacroPctBucket, hookMacroLevelBucket,
+	}
+)
+
+// The printed number forms of macro_text.go, with their clamps:
+// sessionPctShown ("%+.2f%%"), vixShown ("%.2f") and lampValueShown
+// (trimFloat: 0 / 2 / 4 decimals by magnitude). "<" and ">" also match their
+// card_html escaping (hookHTMLAlt). A clamp (">+999%", "n/a") is not a
+// number and is left exactly as printed: moving in or out of one is a real
+// change.
+// hookMacroVIX ends its number on a word boundary. Without it the pattern
+// bit into a longer level on a SECOND pass: the first pass buckets a session
+// change to "0.0%", which carries no sign, so the lampFull form no longer
+// matches, and "-?\d+\.\d\d" then took the first digits of "0.0001" and left
+// "001" behind — hookMacroLampText was not idempotent on 342 of ~163k swept
+// renderings (TestHookMacroLampTextIsIdempotent). None were ones a real
+// renderer prints, but a chewed tail can collapse two levels into one hash.
+var (
+	hookMacroPct   = `(?:` + hookHTMLGT + `\+999%|` + hookHTMLLT + `-999%|n/a|[+-]\d+\.\d\d%)`
+	hookMacroVIX   = `(?:` + hookHTMLGT + `999|` + hookHTMLLT + `-999|n/a|-?\d+\.\d\d\b)`
+	hookMacroLevel = `(?:` + hookHTMLGT + `9999999|` + hookHTMLLT + `-9999999|n/a|-?\d+(?:\.\d+)?)`
+)
+
+const (
+	hookHTMLGT = `(?:>|&gt;)`
+	hookHTMLLT = `(?:<|&lt;)`
+)
+
+// hookMacroPctBucket rounds a session change to 0.1 percentage points — one
+// tenth of what the card prints. "-0.0" is written "0.0": a move of zero has
+// one spelling.
+func hookMacroPctBucket(v float64) string {
+	x := math.Round(v*10) / 10
+	if x == 0 {
+		x = 0
+	}
+	return strconv.FormatFloat(x, 'f', 1, 64)
+}
+
+// hookMacroLevelBucket keeps three significant digits of a price level, the
+// resolution at which two reads are the same quote (%g, so 4343.7 and 4344
+// both write "4.34e+03").
+func hookMacroLevelBucket(v float64) string {
+	if v == 0 {
+		return "0"
+	}
+	return strconv.FormatFloat(v, 'g', 3, 64)
+}
+
+// hookHTMLAlt quotes a literal so it matches both in facts[] and in
+// card_html, where Card.RenderHTML has escaped <, > and &.
+func hookHTMLAlt(lit string) string {
+	var b strings.Builder
+	for _, r := range lit {
+		switch r {
+		case '<':
+			b.WriteString(hookHTMLLT)
+		case '>':
+			b.WriteString(hookHTMLGT)
+		case '&':
+			b.WriteString(`(?:&|&amp;)`)
+		default:
+			b.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	return b.String()
+}
+
+// hookMacroGoldName is gold's printed name with the instrument lampFull and
+// lampSelfLine may add. "— the asset itself" is lampSelfLine, which macro_text
+// renders for gold only, so the alternative carrying it is tied to this name
+// rather than riding the shared one — it describes only what a renderer
+// prints. (It is NOT what makes hookMacroLampText idempotent: that was the VIX
+// bare-level pattern, see hookMacroVIX.)
+func hookMacroGoldName() string {
+	return hookHTMLAlt(macroShortNames["gold"]) +
+		`(?: ` + hookHTMLAlt("("+goldInstrument("yahoo")+")") +
+		`| ` + hookHTMLAlt("("+goldInstrument("stooq")+")") + `)?`
+}
+
+// hookMacroLampName is the lamp name as the cards print it (lampShort), gold
+// optionally carrying the instrument lampFull/lampSelfLine add.
+func hookMacroLampName() string {
+	alts := make([]string, 0, len(macroLampKeys))
+	for _, k := range macroLampKeys {
+		n := hookHTMLAlt(macroShortNames[k])
+		if k == "gold" {
+			n += `(?: ` + hookHTMLAlt("("+goldInstrument("yahoo")+")") +
+				`| ` + hookHTMLAlt("("+goldInstrument("stooq")+")") + `)?`
+		}
+		alts = append(alts, n)
+	}
+	return `(?:` + strings.Join(alts, "|") + `)`
+}
+
+// hookMacroCond is every rule condition lampCondition can word, longest
+// first. Built from the renderer, so a changed threshold cannot leave the
+// pattern describing a condition the card no longer prints.
+func hookMacroCond() string {
+	seen := map[string]bool{}
+	var out []string
+	for _, k := range macroLampKeys {
+		for _, st := range []string{"tailwind", "neutral", "headwind"} {
+			c := lampCondition(k, st)
+			if c == "" || seen[c] {
+				continue
+			}
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i]) != len(out[j]) {
+			return len(out[i]) > len(out[j])
+		}
+		return out[i] < out[j]
+	})
+	for i, c := range out {
+		out[i] = hookHTMLAlt(c)
+	}
+	return strings.Join(out, "|")
+}
+
+// macroLampKeys is the render order of the lamps (macroShortNames, as a
+// deterministic list for the patterns above).
+var macroLampKeys = []string{"dxy", "rates", "vix", "spx", "gold"}
+
+// hookMacroLampText replaces the printed lamp numbers of one string with
+// their buckets, leaving every other character — the name, the rule
+// condition, the contribution and the text around them — in the hash. A
+// token that is not a number (a clamp, "n/a") is left as printed.
+func hookMacroLampText(s string) string {
+	locs := hookMacroLampRe.FindAllStringSubmatchIndex(s, -1)
+	if locs == nil {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range locs {
+		for g := 1; 2*g+1 < len(m) && g <= len(hookMacroLampBuckets); g++ {
+			if m[2*g] < 0 {
+				continue // a group of another alternative
+			}
+			tok, ok := hookMacroBucketToken(s[m[2*g]:m[2*g+1]], hookMacroLampBuckets[g-1])
+			if !ok {
+				continue
+			}
+			b.WriteString(s[last:m[2*g]])
+			b.WriteString(tok)
+			last = m[2*g+1]
+		}
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// hookMacroBucketToken buckets one printed token, keeping the trailing "%" a
+// session change carries. ok=false when the token is not a number the card
+// computed (a clamp, "n/a") — it stays exactly as printed.
+func hookMacroBucketToken(tok string, bucket func(float64) string) (string, bool) {
+	num, pct := strings.TrimSuffix(tok, "%"), strings.HasSuffix(tok, "%")
+	v, err := strconv.ParseFloat(num, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return "", false
+	}
+	out := bucket(v)
+	if pct {
+		out += "%"
+	}
+	return out, true
+}
+
+// hookMacroLampFields buckets the machine readout of a macro card: every
+// lamp's value and session change. A null (or a missing key) is left as it
+// is — a lamp losing its value or its session change is a real change and
+// must still be sent.
+func hookMacroLampFields(m map[string]any) {
+	for _, l := range asAnySlice(m["lamps"]) {
+		lm, ok := l.(map[string]any)
+		if !ok {
+			continue
+		}
+		hookBucketNumber(lm, "value", hookMacroLevelBucket)
+		hookBucketNumber(lm, "delta_pct", hookMacroPctBucket)
+	}
+}
+
+// hookMacroLampStrings buckets the lamp readings a macro card PRINTS. Only
+// the fields that are card renderings: facts[] and card_html. Free prose
+// (ai_text, reason, the upper blocks) is left alone — a sentence naming a
+// lamp beside a number is not a lamp reading, and rewriting it would hide a
+// regenerated text.
+func hookMacroLampStrings(env map[string]any) {
+	if s, ok := env["card_html"].(string); ok {
+		env["card_html"] = hookMacroLampText(s)
+	}
+	for i, f := range asAnySlice(env["facts"]) {
+		if s, ok := f.(string); ok {
+			env["facts"].([]any)[i] = hookMacroLampText(s)
+		}
+	}
+}
+
+// hookBucketNumber replaces a JSON number with its bucket; a null, a missing
+// key and a non-finite value are left untouched.
+func hookBucketNumber(m map[string]any, key string, bucket func(float64) string) {
+	n, ok := m[key].(json.Number)
+	if !ok {
+		return
+	}
+	v, err := n.Float64()
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return
+	}
+	m[key] = bucket(v)
+}
+
 // hookRequestStampAgents may carry a request-time stamp where a data time
 // belongs (parseWhen / offlineCard / oldestData fall back to now; macro's
 // captured_at is the backend's request time; a funding card inside
@@ -257,6 +581,11 @@ func (n hookNormalizer) maskIfRequestTime(m map[string]any, key string) {
 //   - any "macro" object (macro cards, and digest/top with a macro winner):
 //     freshness.captured_at (backend request time) and fear_greed.age_hours
 //     (counted to it);
+//   - macro only: every lamp's quote is hashed BUCKETED, not masked —
+//     macro.lamps[].value and .delta_pct, and the readings the card prints in
+//     facts[] and card_html (a live quote under a session stamp — see "macro:
+//     a live quote under a session stamp"). Only on the macro addresses: a
+//     macro object inside digest/top keeps its numbers, as it did;
 //   - digest: digest.generated_at (sweep clock); highlight_data_as_of,
 //     candidates[].data_as_of and sections[].data_as_of inside the window
 //     (the funding entries always are);
@@ -290,6 +619,14 @@ func (n hookNormalizer) envelope(env map[string]any) {
 		}
 		if fg, ok := m["fear_greed"].(map[string]any); ok {
 			delete(fg, "age_hours")
+		}
+		// A lamp's quote moves under a session stamp, so it is hashed
+		// bucketed, in the readout and everywhere the card prints it. Macro
+		// addresses only: a macro winner inside digest/top is another
+		// agent's card and keeps its numbers, as it did.
+		if n.agent == keyMacro {
+			hookMacroLampFields(m)
+			hookMacroLampStrings(env)
 		}
 	}
 	if d, ok := env["digest"].(map[string]any); ok {

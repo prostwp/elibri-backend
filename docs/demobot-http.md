@@ -2699,14 +2699,17 @@ anything else is a bug in the address list and is logged, not sent.
 ### What counts as a change
 
 An address is sent when the sha256 of its **normalized** body differs from the
-last one sent for it. Normalization masks only what follows the request clock
-or the response build, derived from the card builders:
+last one sent for it. Normalization masks what follows the request clock or
+the response build, and rounds the one reading a card publishes before its
+own stamp closes (a macro lamp's quote). Both lists are derived from the card
+builders:
 
-| Where | Masked | Why |
+| Where | Masked or rounded | Why |
 |---|---|---|
 | `funding` | `data_as_of` and the `card_html` footer stamp, always | the card is stamped with the request time (`as of request time`) |
 | `macro`, `whale`, `news`, `digest`, `top` | `data_as_of` and the footer stamp when they fall inside the call | fallbacks to the request time: macro `UNKNOWN` card (backend `captured_at`), whale without a snapshot, news without `captured_at`, all-offline digest, a funding or offline winner on `top` |
 | any `macro` object (macro cards; digest/top with a macro winner) | `freshness.captured_at`, `fear_greed.age_hours` | the backend's response time and the age counted to it |
+| `macro` only (`/agents/macro` and its `?asset=` views) — **rounded, not masked** | every lamp's quote is hashed at a coarser resolution: a session change (`macro.lamps[].delta_pct`, and the `%` a card prints) to **0.1 percentage points**, a price level (`macro.lamps[].value`, and the level a card prints) to **three significant digits**. In the machine readout for every lamp the payload carries; in the text only where a card renders a lamp — `facts[]` and `card_html` (`DXY 99.6, session 0.1% (0 to +0.5%) → neutral, 0` · `VIX 17.1 (<18) → +12.5`), and there only for the five lamps the rule knows (`DXY`, `US 10Y`, `VIX`, `S&P 500`, `Gold`). Free prose — `ai_text`, `reason`, the upper `blocks` — keeps its numbers | a lamp's `as_of` stamps a SESSION, not a close, so the quote behind it moves under one stamp, and the card prints it to two decimals. Prod 2026-09-21: 480 events in a day on the macro address, one every three minutes, all under one `data_as_of` — two bodies 200 s apart differed in a single character (`Gold -0.48% (fell) → +5.0` → `-0.47%`) while the rule score (68), its unrounded form (67.5) and every contribution stood still. **Rounded rather than dropped**, because dropping loses a real change: on the gold view the gold lamp is the SUBJECT of the card and not an input to the rule (`lampSelfLine` prints it with no rule condition and no contribution, and the gold model gives it no weight), so with its number gone nothing about it could change and gold walking 12% in a session reached no one. Rounding also catches what a status word cannot: VIX 12 → 17.9 is one `(<18)` all the way, and two buckets apart. Never rounded: `rule_score` and `rule_score_unrounded`, the contribution beside a lamp and its sign, the side it is filed under, the rule condition it met, the reading, the voting and live counts, each lamp's `as_of`, and a lamp appearing, dying (`— no data`), losing its session change or leaving the set — so a crossed threshold always fires. A `null` value or `delta_pct` is never rounded: that is the lamp losing its reading. A clamp (`>+999%`, `n/a`) is not a number and is left as printed. Macro addresses only: a macro winner inside `digest`/`top` keeps its numbers, as before. The raw quotes are in the event's `data` — only the change hash rounds them |
 | `digest` | `digest.generated_at`; `selection.highlight_data_as_of`, `selection.candidates[].data_as_of`, `sections[].data_as_of` when inside the call | the sweep clock; the funding entries are request-time stamps |
 | any text | the age in the stale Fear & Greed fact (`(52h ago)`) | counted to the request time. Gold prints no running age since 2026-09-15: its `stale (over 6h old)` is a fixed threshold, so a gold event fires when the flag flips, never on the hour |
 | any text | the **numbers** of momentum's RS context line (`… incl. today, 7d * pp · 30d * pp`) | the backend anchors both sides on the still-forming UTC day, so the gap follows live prices while the card's `data_as_of` is the oldest closed bar. At 0.1 pp it crosses a rounding boundary back and forth (prod, 2026-09-16: eight moves in 14 reads 40 s apart, three of them back to a value already seen, on one bar). The numbers only: the line keeps its shape, so a window the backend stops serving (`rs_7d` nil on short history) is still a change. The line and its numbers are in the event's `data` — only the change hash ignores them |
@@ -2728,7 +2731,43 @@ says so. Funding's window moves and counts, because a funding card is stamped
 with the request time and its event is honest about what changed; momentum's
 RS gap moves and does not, because that card is stamped with a closed bar and
 the line is labelled context, not part of the reading. The rule is the
-mismatch, not the movement.
+mismatch, not the movement. A macro lamp is the same mismatch one level
+deeper, and it is the one case answered by rounding instead of masking: the
+card is stamped with a session that has not closed, so the quote under that
+stamp is still a reading the card publishes — it may not be dropped, only
+read less finely.
+
+**A macro lamp's stamp stands still only on the fallback.** `as_of` comes
+from the provider, and the two providers behave differently:
+
+| Provider | `as_of` | Moves inside a session? |
+|---|---|---|
+| stooq (primary, `defaultSourceOrder`) | the quote's own date **and time**: the CSV is requested as `f=sd2t2ohlcv` and `ParseStooqCSV` parses `date+time` into `AsOf` | yes — it moves with the quote |
+| yahoo (fallback) | the daily bar's opening instant (`yahooBar.Start` → `Quote.AsOf`) | no — it is the session start |
+
+So on a stooq-fed lamp the body changes anyway, through `as_of`, and the
+rounding hides nothing there. The 480-event measurement of 2026-09-21 was
+taken with every lamp on `source: "yahoo"`, i.e. on the fallback: **the shape
+of this noise on a stooq day is not measured.**
+
+**Honest limit of the buckets.** A reading sitting on a bucket edge still
+ping-pongs: 0.049% and 0.051% are two buckets, as are 99.94 and 99.96. That
+is the same effect one order of magnitude rarer — a 0.1 pp bucket against a
+0.01 pp print, three significant digits against five — and it is left as it
+is.
+
+**On `?asset=gold` the bucket is the only resolution the subject has.** There
+the gold lamp is what the card is about, not an input to the rule: it carries
+no rule condition, no contribution, no points and no weight, so of the fields
+that describe its reading only `value` and `delta_pct` move — and both are
+rounded. (Its `as_of` and `source` move too and are hashed as printed, so a
+new session or a changed provider still fires.) The guaranteed resolution of
+the subject on that view is therefore the bucket itself: 0.1 percentage
+points of session change, three significant digits of level. A gold session
+change going -0.040% → +0.040%, or stepping over its +0.5% threshold inside
+one bucket (+0.46% → +0.54%), fires no event there; on `/agents/macro` and
+`?asset=btc` the same move crosses the rule condition and does fire. Two
+buckets apart (0.40% → 0.60%) fires everywhere, the gold view included.
 
 **Gold revises a bar it has already closed.** The `XAUUSD` row of the momentum
 composite comes from Yahoo (GC=F 1h), and for a few minutes after an hour
