@@ -2908,6 +2908,26 @@ builders:
 | any text | the age in the stale Fear & Greed fact (`(52h ago)`) | counted to the request time. Gold prints no running age since 2026-09-15: its `stale (over 6h old)` is a fixed threshold, so a gold event fires when the flag flips, never on the hour |
 | any text | the **numbers** of momentum's RS context line (`… incl. today, 7d * pp · 30d * pp`) | the backend anchors both sides on the still-forming UTC day, so the gap follows live prices while the card's `data_as_of` is the oldest closed bar. At 0.1 pp it crosses a rounding boundary back and forth (prod, 2026-09-16: eight moves in 14 reads 40 s apart, three of them back to a value already seen, on one bar). The numbers only: the line keeps its shape, so a window the backend stops serving (`rs_7d` nil on short history) is still a change. The line and its numbers are in the event's `data` — only the change hash ignores them |
 
+**A quote-only change of a macro address waits 15 minutes** (added
+2026-09-24). Rounding stops ticks, but in a US session the rounded quotes
+themselves move nearly every minute (prod 2026-09-23 14:40 → 14:41 UTC: DXY
++0.55% → +0.52%, VIX 14.74 → 14.80, gold −1.81% → −1.72%), which kept the
+three macro addresses at 60-70 events an hour. So beside the change hash
+each macro address keeps a **reading hash**: the same normalized body with
+the lamp quotes dropped instead of rounded (`macro.lamps[].value` /
+`delta_pct`, and their renderings in `facts[]` and `card_html`; a `null`
+quote stays `null`). A body whose change hash moved but whose reading hash
+did not is held until 15 minutes after that address's last send (any
+attempt); then the latest body goes. The reading compared against is the last
+one the site ACCEPTED (200/201/409): a reading change that was not delivered
+is still new and goes on the next sweep, not after the pause. A body with a new reading — rule score, side, a
+contribution, a rule condition, a lamp's `as_of`, a lamp appearing, dying or
+losing its quote, the index — goes on the sweep that sees it, pause or not.
+Limit: at most 4 quote-only events an hour per address, 12 over the three.
+On the gold view the gold lamp is the subject of the card, not an input, so
+gold's own move there is a quote: it reaches the site within 15 minutes, no
+longer on the minute. Macro addresses only; digest/top are not throttled.
+
 Everything else is data and counts as a change, including values that move
 with time by design: the funding 1-hour liquidation window, the weekend
 banners, digest candidates turning `stale`, a new bar close on candle agents,

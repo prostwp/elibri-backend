@@ -454,6 +454,12 @@ var macroLampKeys = []string{"dxy", "rates", "vix", "spx", "gold"}
 // condition, the contribution and the text around them — in the hash. A
 // token that is not a number (a clamp, "n/a") is left as printed.
 func hookMacroLampText(s string) string {
+	return hookMacroLampTextWith(s, hookMacroLampBuckets)
+}
+
+// hookMacroLampTextWith is hookMacroLampText with the bucket of each capture
+// group given (hookMacroQuoteMask drops the quote entirely).
+func hookMacroLampTextWith(s string, buckets []func(float64) string) string {
 	locs := hookMacroLampRe.FindAllStringSubmatchIndex(s, -1)
 	if locs == nil {
 		return s
@@ -461,11 +467,11 @@ func hookMacroLampText(s string) string {
 	var b strings.Builder
 	last := 0
 	for _, m := range locs {
-		for g := 1; 2*g+1 < len(m) && g <= len(hookMacroLampBuckets); g++ {
+		for g := 1; 2*g+1 < len(m) && g <= len(buckets); g++ {
 			if m[2*g] < 0 {
 				continue // a group of another alternative
 			}
-			tok, ok := hookMacroBucketToken(s[m[2*g]:m[2*g+1]], hookMacroLampBuckets[g-1])
+			tok, ok := hookMacroBucketToken(s[m[2*g]:m[2*g+1]], buckets[g-1])
 			if !ok {
 				continue
 			}
@@ -498,14 +504,14 @@ func hookMacroBucketToken(tok string, bucket func(float64) string) (string, bool
 // lamp's value and session change. A null (or a missing key) is left as it
 // is — a lamp losing its value or its session change is a real change and
 // must still be sent.
-func hookMacroLampFields(m map[string]any) {
+func hookMacroLampFields(m map[string]any, level, pct func(float64) string) {
 	for _, l := range asAnySlice(m["lamps"]) {
 		lm, ok := l.(map[string]any)
 		if !ok {
 			continue
 		}
-		hookBucketNumber(lm, "value", hookMacroLevelBucket)
-		hookBucketNumber(lm, "delta_pct", hookMacroPctBucket)
+		hookBucketNumber(lm, "value", level)
+		hookBucketNumber(lm, "delta_pct", pct)
 	}
 }
 
@@ -514,15 +520,58 @@ func hookMacroLampFields(m map[string]any) {
 // (ai_text, reason, the upper blocks) is left alone — a sentence naming a
 // lamp beside a number is not a lamp reading, and rewriting it would hide a
 // regenerated text.
-func hookMacroLampStrings(env map[string]any) {
+func hookMacroLampStrings(env map[string]any, buckets []func(float64) string) {
 	if s, ok := env["card_html"].(string); ok {
-		env["card_html"] = hookMacroLampText(s)
+		env["card_html"] = hookMacroLampTextWith(s, buckets)
 	}
 	for i, f := range asAnySlice(env["facts"]) {
 		if s, ok := f.(string); ok {
-			env["facts"].([]any)[i] = hookMacroLampText(s)
+			env["facts"].([]any)[i] = hookMacroLampTextWith(s, buckets)
 		}
 	}
+}
+
+// hookMacroQuoteEvery is how often a macro address may send an event whose
+// only change is a lamp quote (a bucketed level or session change). A change
+// of the reading — score, side, contributions, a lamp's rule condition, a
+// lamp appearing or dying, the index — is sent on the sweep that sees it.
+// In a US session the bucketed quotes of DXY, VIX and gold move nearly every
+// minute (prod 2026-09-23 14:40 -> 14:41 UTC: DXY +0.55% -> +0.52%, VIX
+// 14.74 -> 14.80, gold -1.81% -> -1.72%), which kept the three macro
+// addresses at 60-70 events an hour. Denis 2026-09-24: variant B.
+const hookMacroQuoteEvery = 15 * time.Minute
+
+// hookMacroQuoteMask replaces every lamp quote group with one token, so what
+// is left of a macro body is its reading.
+var hookMacroQuoteMask = func() []func(float64) string {
+	out := make([]func(float64) string, len(hookMacroLampBuckets))
+	for i := range out {
+		out[i] = func(float64) string { return hookMasked }
+	}
+	return out
+}()
+
+// hookMacroReading is the hash of a macro GET body normalized as for the
+// change hash, with the lamp quotes dropped instead of bucketed: the
+// readout's value and delta_pct, and their renderings in facts[] and
+// card_html. A null quote stays null (a lamp losing its quote is a reading).
+// Two bodies with the same reading differ only in quotes.
+func hookMacroReading(body []byte, start, end time.Time) (string, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return "", err
+	}
+	if env, ok := v.(map[string]any); ok {
+		hookNormalizer{agent: keyMacro, start: start.UTC(), end: end.UTC(), readingOnly: true}.envelope(env)
+	}
+	b, err := encodeJSON(hookMaskStrings(v))
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // hookBucketNumber replaces a JSON number with its bucket; a null, a missing
@@ -550,8 +599,9 @@ var hookRequestStampAgents = map[string]bool{
 
 // hookNormalizer masks the request-clock fields of one GET body.
 type hookNormalizer struct {
-	agent      string
-	start, end time.Time // the in-process call window
+	agent       string
+	start, end  time.Time // the in-process call window
+	readingOnly bool      // macro: drop lamp quotes instead of bucketing them
 }
 
 // requestTime reports whether an RFC3339 stamp falls inside the call window —
@@ -632,8 +682,14 @@ func (n hookNormalizer) envelope(env map[string]any) {
 		// addresses only: a macro winner inside digest/top is another
 		// agent's card and keeps its numbers, as it did.
 		if n.agent == keyMacro {
-			hookMacroLampFields(m)
-			hookMacroLampStrings(env)
+			if n.readingOnly {
+				mask := hookMacroQuoteMask[0]
+				hookMacroLampFields(m, mask, mask)
+				hookMacroLampStrings(env, hookMacroQuoteMask)
+			} else {
+				hookMacroLampFields(m, hookMacroLevelBucket, hookMacroPctBucket)
+				hookMacroLampStrings(env, hookMacroLampBuckets)
+			}
 		}
 	}
 	if d, ok := env["digest"].(map[string]any); ok {
@@ -862,10 +918,15 @@ func hookEnvDuration(logf func(string, ...any), name string, def time.Duration) 
 // hookTargetState is the per-address memory.
 type hookTargetState struct {
 	sentHash string // hash of the last body POSTed (any answer): never POSTed again
-	state    string // state of the last DELIVERED body — the state_changed baseline
-	hasState bool
-	fails    int // consecutive non-delivery answers (timeout, 401, 408, 5xx, other)
-	skip     int // sweeps this address still sits out (per-address pause)
+	// Macro addresses only: the reading of the last DELIVERED body and when
+	// a body was last POSTed — a quote-only change waits hookMacroQuoteEvery
+	// after that POST.
+	sentReading string
+	sentAt      time.Time
+	state       string // state of the last DELIVERED body — the state_changed baseline
+	hasState    bool
+	fails       int // consecutive non-delivery answers (timeout, 401, 408, 5xx, other)
+	skip        int // sweeps this address still sits out (per-address pause)
 }
 
 // PushHook sweeps the GET addresses and posts changed bodies to the site.
@@ -884,6 +945,14 @@ type PushHook struct {
 	netFails       int                         // consecutive failures to reach the endpoint
 	pause          int                         // whole sweeps still skipped after them
 	logf           func(format string, args ...any)
+	clock          func() time.Time // nil = time.Now; tests set it
+}
+
+func (h *PushHook) now() time.Time {
+	if h.clock != nil {
+		return h.clock()
+	}
+	return time.Now()
 }
 
 // NewPushHook builds a hook over the server's routes: one POST per changed
@@ -1053,6 +1122,15 @@ func (h *PushHook) process(ctx context.Context, t hookTarget, st *hookTargetStat
 	if hash == st.sentHash {
 		return false
 	}
+	reading := ""
+	if t.Agent == keyMacro {
+		if r, err := hookMacroReading(body, start, end); err == nil {
+			reading = r
+			if st.sentReading == reading && h.now().Sub(st.sentAt) < hookMacroQuoteEvery {
+				return false // quotes only: held; the latest body goes once the pause is over
+			}
+		}
+	}
 
 	state, dataAsOf := hookBodyFields(status, body)
 	ev := hookEvent{
@@ -1087,6 +1165,7 @@ func (h *PushHook) process(ctx context.Context, t hookTarget, st *hookTargetStat
 	// An attempt is a send: this event_id is never POSTed again, whatever
 	// the answer (no retries). The next POST for this address needs a new body.
 	st.sentHash = hash
+	st.sentAt = h.now() // any attempt starts the quote pause
 	switch {
 	case err != nil && hookUnreachable(err):
 		h.netFails++
@@ -1102,6 +1181,9 @@ func (h *PushHook) process(ctx context.Context, t hookTarget, st *hookTargetStat
 	case code == http.StatusOK || code == http.StatusCreated || code == http.StatusConflict:
 		h.netFails = 0
 		st.state, st.hasState, st.fails = state, true, 0
+		// Only a delivered reading is the site's: an undelivered one is still
+		// new to them and goes on the next sweep, not after the quote pause.
+		st.sentReading = reading
 		h.logf("[demobot] hook POST %s event=%s → %d (%dms)", t.Path, ev.EventID, code, ms)
 	case code == http.StatusBadRequest || code == http.StatusRequestEntityTooLarge ||
 		code == http.StatusUnsupportedMediaType || code == http.StatusUnprocessableEntity:
