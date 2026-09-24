@@ -1733,12 +1733,13 @@ The card closes with the shape of the setup — which level stands against which
 | `price_as_of` | Close time of the last closed 1h bar (`null` without one) |
 | `price_freshness` | `on_time` \| `stale` (older than 6h at answer time); `null` without a price |
 | `price` | That 1h close, raw |
-| `price_position` | `above` \| `inside` \| `below` the day range; `null` when the range is undefined |
+| `price_position` | `above` \| `inside` \| `below` the day range; `null` when the range is undefined, and in a contract roll window (`roll.state` = `window`: the 1h price and the day range are on different contracts) |
 | `day_range` | `{high, low, candle_date: "YYYY-MM-DD", inside_days_after}` — the candle the range came from and how many inside days follow it; `null` when undefined |
 | `macro_as_of` | Oldest `as_of` among the voting macro lamps — the stalest input of the read; `null` without a read |
 | `macro_backdrop` | `support` \| `pressure` \| `neutral` (the card words `neutral` as "mixed"); `null` without a read |
 | `macro_lamps` | `{for, neutral, against}` — voting lamps by contribution; `null` without a read |
-| `idea` | **Added 2026-09-16.** The setup structure, or `null` when the card names none (unconfirmed regime, no 1h price, no day range, no invalidation level): `{state, trigger {level, side, basis}, invalidation {level, side, basis}, reference_level}`. `state` = `armed` \| `trigger_reached` \| `invalidation_reached` — where the last closed 1h price sits. Each branch uses the comparison its own card line uses, so state and text never disagree: the **invalidation** level at printed tick precision (like the invalidation line — a close that prints the same as the level is not beyond it), the **trigger** raw (like the stage-1 scenario tail — a close 0.004 above an edge that prints identically is already beyond it, and the state says `trigger_reached`). The invalidation level is checked first. `side` = the side a **closed 1d candle** must be on (`above` \| `below`); `basis` = `day_range_high` \| `day_range_low` \| `ema_cluster_atr`. `reference_level` = `{level, kind, class}` — the nearest cluster on the other side of **price** (below price in an uptrend, above it in a downtrend), which can sit beyond the trigger once price has taken that edge; `kind` `support` \| `resistance`, `class` `established` \| `candidate` \| `single_swing` as on the S/R card; `null` when nothing clustered there. Not a recommendation: see [stage 2](#stage-2-the-setup-structure-2026-09-16) |
+| `idea` | **Added 2026-09-16.** The setup structure, or `null` when the card names none (unconfirmed regime, no 1h price, a contract roll window — `roll.state` = `window`, no day range, no invalidation level): `{state, trigger {level, side, basis}, invalidation {level, side, basis}, reference_level}`. `state` = `armed` \| `trigger_reached` \| `invalidation_reached` — where the last closed 1h price sits. Each branch uses the comparison its own card line uses, so state and text never disagree: the **invalidation** level at printed tick precision (like the invalidation line — a close that prints the same as the level is not beyond it), the **trigger** raw (like the stage-1 scenario tail — a close 0.004 above an edge that prints identically is already beyond it, and the state says `trigger_reached`). The invalidation level is checked first. `side` = the side a **closed 1d candle** must be on (`above` \| `below`); `basis` = `day_range_high` \| `day_range_low` \| `ema_cluster_atr`. `reference_level` = `{level, kind, class}` — the nearest cluster on the other side of **price** (below price in an uptrend, above it in a downtrend), which can sit beyond the trigger once price has taken that edge; `kind` `support` \| `resistance`, `class` `established` \| `candidate` \| `single_swing` as on the S/R card; `null` when nothing clustered there. Not a recommendation: see [stage 2](#stage-2-the-setup-structure-2026-09-16) |
+| `roll` | **Added 2026-09-23.** Whether the last closed 1h bar and the last closed 1d bar of GC=F are on the same COMEX contract — see [contract roll](#contract-roll-2026-09-23). `{state, reason, current_contract, next_contract, daily_contract, hourly_contract}`. `state` = `none` \| `window` \| `unknown`. `reason`: with `window` = `hourly_ahead_of_daily` (the 1h bar on the later contract, as in every measured roll) \| `hourly_behind_daily` (on the earlier one; the card places nothing either way); with `unknown` = `no_intraday_price` \| `no_daily_bars` \| `near_contract_not_served` \| `next_contract_not_served` \| `request_failed` \| `matches_both_contracts` (two or more candidates) \| `matches_neither_contract` \| `row_is_a_quote` (GC=F's row is Yahoo's current quote, not a bar); `null` with `none`. Contracts are COMEX codes (`GCZ26`). `none`: daily = hourly = current; `next_contract` is the cycle successor (G/J/M/Q/Z), not an observation. `window`: current/next = the earlier and the later of the two contracts, daily/hourly = what each bar matched. `unknown`: all four `null` |
 
 **`data_as_of` decision.** It stays the daily close — the part the verdict,
 the regime and the day range come from — and is not the freshness of the
@@ -1756,6 +1757,199 @@ also follows the clock (the stale flag, the weekend banner).
 | `invalidates` | Confirmed regime only, as on the card: `"A closed 1d candle below 4040.00 invalidates the daily uptrend reading (1 ATR under the EMA cluster)"`; `null` otherwise |
 | `regime` | The local 1d regime only (not macro): `"Local gold regime: confirmed uptrend · 1d · ADX 31.4"` |
 | `limitations` | `"COMEX GC=F futures, not spot XAUUSD; describes the period, not a forecast of the day"` |
+
+### Contract roll (2026-09-23)
+
+> ⚠️ **One line added to every gold card; in a roll window the card words
+> five lines differently.** Out of a roll window every other line, block and
+> field is byte-identical to before (golden-tested against the output of
+> 437c6a4). `gold` grew one field, `roll`. A client that pins the NUMBER of
+> facts must stop doing that.
+
+GC=F is Yahoo's continuous front-month future. Its **hourly** series moves to
+the next contract about **two daily bars before** the daily series does. On
+the three verified rolls the first hourly bar of the new contract was
+2025-07-30 07:00, 2025-11-25 09:00 and 2026-07-29 07:00 UTC, against daily
+rolls on 2025-08-01, 2025-11-28 and 2026-07-31. In those hours the last closed
+1h price is a price of the new contract (about 1–1.7% higher) while the day
+range, the S/R levels and the EMAs are prices of the old one. Before this
+change the card placed one against the other: on the two verified rolls inside
+the card's year the line "price above/below the day range" was false in **52
+of 103** window hours (always "above" where, in one contract's prices, the
+price sat inside), and a break the price had made was missed in 4. Outside
+those windows: 0 differences.
+
+**How the window is found.** The candidates are three consecutive
+contracts of GC=F's cycle G/J/M/Q/Z (Feb, Apr, Jun, Aug, Dec; October is
+skipped — GC=F went Q25 → Z25 and Q26 → Z26) around the date of the last
+closed daily bar: the first one delivering after that date's month (near),
+the one after it (next) and the one before it (previous). Previous is there
+for the 1st of a delivery month: the established daily roll 2025-08-01 and
+the research's candidate rolls 2025-04-01, 2025-06-02 and 2026-04-01
+(**Hypothesis:** dates from a price jump, the contracts are not served) fell
+on that day, and a daily series switched one day later would still be on the
+contract whose month has just begun. Yahoo serves them as
+`GC<code><YY>.CMX`. The last closed **1d** bar of GC=F is compared with the
+bar of the **same stamp** in each candidate's daily series on **open, high,
+low and close**; the last closed **1h** bar on its **close** — the one hourly
+number the card uses. Bars are paired by stamp only, never by position or by
+the nearest stamp; a GC=F row off the half-hour grid is Yahoo's current
+quote, not a bar, and is not matched (`row_is_a_quote`). Equal = within 0.05
+(half the 0.10 tick). Four-price matching does not work hourly: in the first
+days after a switch GC=F's hourly open/high/low still carry the old contract
+(GC=F against GCZ25, bars opening 2025-07-30 07:00 … 2025-08-01 04:00 UTC,
+both ends included: the close matched in 44 of 44 hours, all four prices in
+2). Each bar on exactly one candidate → `none` (the same one) or `window`
+(different ones, whichever is later); anything else → `unknown`. One bar
+matching one served candidate is enough although another did not answer:
+adjacent contracts print tens of dollars apart. The previous contract's 404
+is its normal answer once expired (every expired contract in the research's
+fetch log but GCZ25 answered 404, every unexpired one 200) and does not make
+an unmatched bar unknown on its own; a 404 for near or next does.
+
+**Requests.** Three per newly closed hourly bar (the three candidates' 1h
+series) and three per newly closed daily bar (their 1d series), cached per
+bar; the daily and the hourly round run side by side, each bounded by 20 s.
+Only the first read after a bar closes asks; every other GET and hook sweep
+reads the cache. Yahoo answers 429 when asked too often, so:
+
+- **An expired previous contract is asked once a day, not on every bar.**
+  Once its delivery month is over (strictly before the month of the last
+  closed daily bar), its 404 is remembered for 24 hours per contract and
+  series (1d, 1h); the rounds in between see the same 404 without a request.
+  Not remembered: a 404 for near or next, a 404 for previous in its own
+  delivery month (on the first days of that month the daily bar may still
+  be on it, so a momentary 404 would hold the card `unknown`, or `unknown`
+  instead of `window`, for the day — asked again, it settles at the next
+  retry), and a failed request for previous. Per series because a 404 of
+  the hourly series says nothing certain about the daily one; it costs no
+  extra requests, both are asked side by side on the first round anyway.
+- **An `unknown` answer is asked again under the same bars after a pause.**
+  After a failed request (transport error, timeout, 5xx, a bad body) the
+  pause is 15 minutes, as before. After any other `unknown` — Yahoo answered
+  and the bar matched no contract or two, near or next answered 404, or
+  Yahoo **refused** the request with any other 4xx (**429** too many,
+  **403**/**401** blocked) — the pause doubles on each repeat, 15 → 30 → 60
+  → 120 minutes, and stays at 120 until a new bar closes. A new bar is asked
+  at once and starts again from 15.
+
+Contract requests, one read a minute (the push hook), counted by the tests
+of `gold_roll_load_test.go` against a counting stub:
+
+| Case | Before | Now |
+|---|---:|---:|
+| Weekend (50 h under the same bars), `unknown`: matches no contract, previous expired | 1200 | 118 |
+| … matches no contract, all three served | 1200 | 168 |
+| … near answers 404 | 1200 | 118 |
+| … every contract answers 429 | 1200 | 168 |
+| … every contract answers 5xx | 1200 | 1200 |
+| Trading day (24 hourly and 2 daily bars in view), `none`, previous expired | 78 | 54 |
+
+The 5xx row is the worst case and is unchanged on purpose: a failed request
+is the one `unknown` a quick retry can fix.
+
+**Log.** The service logs a line when the state or a contract changes
+(`[demobot] gold roll: window GCQ26 → GCZ26 (hourly_ahead_of_daily), …`),
+and for `unknown` once per reason and pair of bars, with the request error
+(`[demobot] gold roll: unknown (request_failed: yahoo chart GCZ26.CMX: HTTP
+500) (1d bar …, 1h bar …)`). An unmatched bar while a candidate did not
+answer names it (`unknown (matches_neither_contract: did not answer: yahoo
+chart GCM26.CMX: HTTP 404) (…)`); with all three answered there is no such
+tail. A retry that fails the same way under the same bars adds no line;
+neither does a new bar in an unchanged state.
+
+**In a window** (example: the card as read at 2026-07-31 08:25 UTC, replayed
+on Yahoo's saved answers; the whole card):
+
+```
+Daily regime: confirmed DOWNTREND
+• Last closed 1h price 4125.10 at 2026-07-31 08:00 UTC — on contract GCZ26
+• Contract roll GCQ26 → GCZ26: 1h price on GCZ26, day range on GCQ26; price not placed against it
+• Day range 4028.50 – 4118.50: high/low of the closed 1d candle of 2026-07-30
+• A daily close above 4118.50 classifies the day as an upside break
+• A daily close below 4028.50 classifies the day as a downside break
+• A closed 1d candle above 4425.21 invalidates the daily downtrend reading (1 ATR over the EMA cluster)
+• Macro backdrop: no gold read available
+• Nearest to 1d close: support 4100.00 (single swing, 1 pivot) · resistance 4171.40 (single swing, 1 pivot)
+• Volatility: normal · 1d · ATR 0.839× its 30-bar baseline
+• S/R, EMAs and regime use spliced GC=F contracts; levels older than the current contract are shifted by rolls
+• No setup structure during a contract roll: the 1h price and the day range are on different contracts
+```
+
+The macro line is the replay's: it has no macro source. Live, that line
+carries the gold lamp read as on any other card.
+
+- the price line names the contract instead of a place in the range;
+  `gold.price_position` is `null`;
+- the scenario lines drop `; the last 1h close is already above/below it`,
+  the invalidation line drops `; last 1h close already …` and keeps `(1 ATR …
+  the EMA cluster)`;
+- the nearest levels are the nearest to the **last daily close** — a price of
+  the same contract as every level — and the line says so (`Nearest to 1d
+  close:`). Hiding them would drop levels that are correct in their own
+  contract; picking them by a price of the other contract would not be;
+- `gold.idea` is `null` with the line above; an unconfirmed regime keeps its
+  own `No setup structure without …` line;
+- `blocks.what_happened` ends `last 1h close 4125.10 on GCZ26 (contract
+  roll)`; `blocks.scenarios` / `invalidates` follow the card lines;
+- the verdict, the regime, the day range and the scenarios themselves are
+  read on daily bars only and do not change.
+
+**Unknown reads as before.** An unestablished check is dominated by causes
+unrelated to a roll — a failed or refused contract request, the last bar
+before a weekend printing apart from its contract (GCZ25: 8 of the 9 hours
+where GC=F's hourly close differed from the contract it was on) — while a
+window is about two trading days in two months. Withholding the placement on
+every such hour would drop a comparison that is right almost always. The card
+therefore reads exactly as before and `gold.roll.state` says `unknown`, so a
+machine reader is not told "no roll" either. The cost: an `unknown` that falls
+inside a real window keeps the old, possibly false, placement.
+
+**A failed request costs one extra hook event.** When the contract request
+for a newly closed bar fails, that bar reads `unknown` (the card otherwise as
+before); the retry 15 minutes later gives `none` or `window`. Out of a window
+that second change touches only `gold.roll`, and the hook sends it as an
+event of its own — one extra event per failed round. In a window the retry
+also rewords the card, which is a real change.
+
+**Hybrid hours.** In the first hours after the hourly switch GC=F's hourly
+close can still be the old contract's. Checked against Yahoo's own GCZ25
+answers for the 2025-11-28 roll, every hourly bar opening 2025-11-24 00:00 …
+2025-11-28 18:00 UTC (79): the card says `none` on GCZ25 on exactly the 36
+hours whose close is GCZ25's — 4 of them after the switch at 2025-11-25 09:00
+(12:00, 16:00, 18:00, 19:00), where placing the price against GCZ25's range
+is right — and `unknown` (`next_contract_not_served`: GCG26 is not served
+any more) on the other 43, the research's 43 window hours of that roll; never
+a wrong contract.
+
+**Day range from an earlier bar.** The day range can come from up to three
+bars back (inside days). A roll between that bar and the last closed one
+would make it a range of the old contract under a `none` state. On the saved
+2-year GC=F daily series (502 daily points, 62 with the range from an earlier
+bar) that never happened, for the 3 established and the 7 candidate roll
+dates; the card keeps placing the price in that case, and a test pins the
+count.
+
+**The disclosure line** (every gold card, before the setup structure):
+`S/R, EMAs and regime use spliced GC=F contracts; levels older than the
+current contract are shifted by rolls`. The card carries no size, because it
+changes with every roll. Measured on the card's year 2025-09-23 … 2026-09-22
+(251 daily points), raw GC=F against a series adjusted back at the two
+verified rolls: the nearest resistance differs on 83 days (33.1%), the
+nearest support on 112 (44.6%), by 26.60 $ and 20.29 $ on average where they
+differ, 153.50 $ at most; the regime state differs on 28 days (11.2%), the
+verdict on 15 (6.0%); EMA200 is off by 33.56 $ on average (66.72 $ max), the
+invalidation level by 34.68 $ (72.17 $ max); the ATR state on 2 days; the day
+range and the day-break scenario on 0. Three more rolls fall in that year but
+could not be measured (Yahoo no longer serves G26, J26, M26, Q26); **Hypothesis:**
+counting them too, the nearest resistance differs on 66.5% of days and the
+nearest support on 66.1%.
+Source: the roll research of 2026-09-23 — harness
+`internal/demobot/zz_goldroll_research_test.go` on branch `research/gold-roll`,
+data and report in `gold_roll/data` and `gold_roll/out/отчёт.md`. The 44 of
+44 hours, the hybrid hours and the day-range count above are recomputed from
+the same data by `internal/demobot/gold_roll_data_test.go`
+(`GOLD_ROLL_DATA=<gold_roll/data> go test -run TestGoldRollData -v`).
 
 ## Narrative card and content blocks
 

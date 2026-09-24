@@ -61,7 +61,14 @@ func goldFixture(state string) goldInputs {
 		res:       &res,
 		vol:       volShortLine(1.086, goldDailySpec.Interval),
 		now:       goldNow,
+		roll:      goldRollNoneOn("GCZ26"),
 	}
+}
+
+// goldRollNoneOn is an established "no roll": both bars on one contract.
+func goldRollNoneOn(code string) GoldRoll {
+	cur, nxt, d, h := code, goldNextContract(code), code, code
+	return GoldRoll{State: goldRollNone, CurrentContract: &cur, NextContract: &nxt, DailyContract: &d, HourlyContract: &h}
 }
 
 // ── golden texts ─────────────────────────────────────────────────────────────
@@ -84,6 +91,7 @@ func TestGoldCardGoldenTexts(t *testing.T) {
 			"Macro backdrop: mixed for gold (lamps: 1 for, 1 neutral, 2 against)",
 			"Nearest levels: support 4329.20 (single swing, 1 pivot) · resistance 4364.50 (candidate, 2 pivots)",
 			"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+			"S/R, EMAs and regime use spliced GC=F contracts; levels older than the current contract are shifted by rolls",
 			"Setup structure: a daily close above 4396.80 (day range high) is the trigger",
 			"Invalidated by a closed 1d candle below 4040.00; nearest level below price: support 4329.20",
 			"Structure, not a forecast: 10 years of history showed no edge this sample could detect",
@@ -97,6 +105,7 @@ func TestGoldCardGoldenTexts(t *testing.T) {
 			"Macro backdrop: mixed for gold (lamps: 1 for, 1 neutral, 2 against)",
 			"Nearest levels: support 4329.20 (single swing, 1 pivot) · resistance 4364.50 (candidate, 2 pivots)",
 			"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+			"S/R, EMAs and regime use spliced GC=F contracts; levels older than the current contract are shifted by rolls",
 			"Setup structure: a daily close below 4293.00 (day range low) is the trigger",
 			"Invalidated by a closed 1d candle above 4660.00; nearest level above price: resistance 4364.50",
 			"Structure, not a forecast: 10 years of history showed no edge this sample could detect",
@@ -110,6 +119,7 @@ func TestGoldCardGoldenTexts(t *testing.T) {
 			"Macro backdrop: mixed for gold (lamps: 1 for, 1 neutral, 2 against)",
 			"Nearest levels: support 4329.20 (single swing, 1 pivot) · resistance 4364.50 (candidate, 2 pivots)",
 			"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+			"S/R, EMAs and regime use spliced GC=F contracts; levels older than the current contract are shifted by rolls",
 			"No setup structure without a confirmed regime and a last closed 1h price",
 		}},
 		"macro against the regime": {macroConflictUp, "Daily regime: confirmed UPTREND", []string{
@@ -122,6 +132,7 @@ func TestGoldCardGoldenTexts(t *testing.T) {
 			"Macro backdrop conflicts with the daily uptrend reading; both stand as read",
 			"Nearest levels: support 4329.20 (single swing, 1 pivot) · resistance 4364.50 (candidate, 2 pivots)",
 			"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+			"S/R, EMAs and regime use spliced GC=F contracts; levels older than the current contract are shifted by rolls",
 			"Setup structure: a daily close above 4396.80 (day range high) is the trigger",
 			"Invalidated by a closed 1d candle below 4040.00; nearest level below price: support 4329.20",
 			"Structure, not a forecast: 10 years of history showed no edge this sample could detect",
@@ -256,6 +267,7 @@ func TestGoldCardNoIntradayPrice(t *testing.T) {
 		"A daily close below 4293.00 classifies the day as a downside break",
 		"Macro backdrop: mixed for gold (lamps: 1 for, 1 neutral, 2 against)",
 		"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+		"S/R, EMAs and regime use spliced GC=F contracts; levels older than the current contract are shifted by rolls",
 		"No setup structure without a confirmed regime and a last closed 1h price",
 	}
 	if strings.Join(c.Facts, "\n") != strings.Join(want, "\n") {
@@ -283,6 +295,7 @@ func TestGoldCardNoMacroAndUndefinedRange(t *testing.T) {
 		"Day range undefined: more than 3 nested inside days, no day levels to give",
 		"Macro backdrop: no gold read available",
 		"Volatility: normal · 1d · ATR 1.086× its 30-bar baseline",
+		"S/R, EMAs and regime use spliced GC=F contracts; levels older than the current contract are shifted by rolls",
 		"No setup structure without a confirmed regime and a last closed 1h price",
 	}
 	if strings.Join(c.Facts, "\n") != strings.Join(want, "\n") {

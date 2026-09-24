@@ -190,13 +190,26 @@ func fetchYahooChart(ctx context.Context, symbol, interval, rng string) ([]types
 	limited := io.LimitReader(resp.Body, 8<<20)
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, limited)
-		return nil, fmt.Errorf("yahoo chart %s: HTTP %d", symbol, resp.StatusCode)
+		return nil, &yahooHTTPError{Symbol: symbol, Status: resp.StatusCode}
 	}
 	body, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, fmt.Errorf("yahoo chart %s: read: %w", symbol, err)
 	}
 	return parseYahooChart(body)
+}
+
+// yahooHTTPError is a non-200 chart answer. Its text is the one this path
+// always returned ("yahoo chart GC=F: HTTP 429"); the type only lets the gold
+// roll check tell "Yahoo does not serve this contract" (404, the answer for
+// an expired dated contract) from a failed request.
+type yahooHTTPError struct {
+	Symbol string
+	Status int
+}
+
+func (e *yahooHTTPError) Error() string {
+	return fmt.Sprintf("yahoo chart %s: HTTP %d", e.Symbol, e.Status)
 }
 
 // aggregate1hTo4h merges hourly bars into 4h bars aligned to UTC 4h

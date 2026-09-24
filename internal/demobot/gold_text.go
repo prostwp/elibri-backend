@@ -10,8 +10,11 @@ package demobot
 //
 // Line order: regime and where the last closed 1h price sits → the day range
 // and where it comes from → two conditional day scenarios → what invalidates
-// a CONFIRMED regime → background (macro, S/R, volatility). The source is the
-// footer.
+// a CONFIRMED regime → background (macro, S/R, volatility) → the one-line
+// disclosure that levels and EMAs run on spliced contracts (goldSplicedLine)
+// → the setup structure. The source is the footer. In a contract roll window
+// (gold_roll.go) a roll line follows the price line and nothing places the 1h
+// price against daily data.
 //
 // Honesty rules for every line below:
 //   - the price is the close of the last CLOSED 1h bar and is named that way,
@@ -43,6 +46,19 @@ const goldLimitations = "COMEX GC=F futures, not spot XAUUSD; describes the peri
 // goldNoPriceLine is the price slot when the intraday series is unavailable.
 const goldNoPriceLine = "Intraday price feed is down: the last 1h close cannot be placed against the day range"
 
+// goldSplicedLine is the one-sentence disclosure that every level-bearing read
+// on this card runs on the continuous GC=F series, which is not adjusted at
+// contract rolls: a level set before the current contract sits where the
+// previous contract printed it. The size of the shift is not on the card (it
+// changes with every roll); docs/demobot-http.md carries the measured numbers
+// with their source.
+const goldSplicedLine = "S/R, EMAs and regime use spliced GC=F contracts; levels older than the current contract are shifted by rolls"
+
+// goldNoIdeaRoll: in a roll window the trigger (a day range edge) and the
+// reference level are prices of one contract and the 1h price of another, so
+// the card names no structure between them.
+const goldNoIdeaRoll = "No setup structure during a contract roll: the 1h price and the day range are on different contracts"
+
 // Machine values of gold.price_freshness.
 const (
 	goldPriceOnTime = "on_time"
@@ -62,6 +78,19 @@ type goldInputs struct {
 	sup, res  *SRLevel // nearest clustered support below / resistance above px
 	vol       string   // volShortLine, "" when the ATR read is unavailable
 	now       time.Time
+	// roll: which contract each GC=F bar is on (gold_roll.go). In a window
+	// sup/res were picked against the last daily close, not px (GoldCard).
+	roll GoldRoll
+}
+
+// inRollWindow reports whether the card's 1h price and its daily data are
+// prices of two different contracts — whichever of the two is the later one
+// (gold.roll.reason says). Only an ESTABLISHED window counts: an unknown
+// state reads as the card did before the check (see goldCardFrom).
+func (in goldInputs) inRollWindow() bool {
+	return in.hasPx && in.roll.State == goldRollWindow &&
+		in.roll.DailyContract != nil && in.roll.HourlyContract != nil &&
+		in.roll.CurrentContract != nil && in.roll.NextContract != nil
 }
 
 // goldCardFrom is the pure half of GoldCard.
@@ -95,8 +124,32 @@ func goldCardFrom(in goldInputs) Card {
 	directional := trend.State == trendUp || trend.State == trendDown
 	confirmed := in.hasPx && directional
 	stale := in.hasPx && in.now.Sub(in.pxAt) > goldPriceStale
+	// Contract roll window (gold_roll.go): the 1h price is a price of one
+	// contract, the day range, levels and EMAs of another. Nothing below
+	// places the one against the other — not the price line, not the
+	// scenario and invalidation tails, not the nearest levels, not the
+	// structure. The regime itself is read on daily bars alone and stands.
+	//
+	// An UNKNOWN roll state reads exactly as before the check existed. It is
+	// dominated by causes unrelated to a roll (a failed or refused contract
+	// request, the last bar before a weekend printing apart from its
+	// contract), while a roll window is about two trading days in two months;
+	// withholding the price placement on every such hour would drop a
+	// comparison that is right almost always, to guard hours where the check
+	// did establish nothing. gold.roll.state says "unknown", so a machine
+	// reader is not told "no roll" either.
+	//
+	// Out of a window the day range is placed against the 1h price even when
+	// it was unwound to an earlier daily bar (up to dayUnwindCap inside days):
+	// a roll between that bar and the last closed one would make it a range
+	// of the old contract. Checked on the research's saved 2-year GC=F daily
+	// series (gold_roll_data_test.go): of 502 daily points, 62 took the range
+	// from an earlier bar, and in none of them did a roll — 3 established, 7
+	// candidate dates — fall between the two. It stays as it is; the test
+	// pins the count.
+	window := in.inRollWindow()
 	pos := ""
-	if in.hasPx {
+	if in.hasPx && !window {
 		pos = in.levels.positionOf(in.px)
 	}
 	against := (trend.State == trendUp && in.macro.State == goldPressure) ||
@@ -132,15 +185,20 @@ func goldCardFrom(in goldInputs) Card {
 	case !confirmed:
 		c.Facts = append(c.Facts, "Regime: "+lowerFirst(trend.Verdict))
 	}
-	if in.hasPx {
+	switch {
+	case window:
+		c.Facts = append(c.Facts, goldRollPriceLine(in.px, in.pxAt, stale, *in.roll.HourlyContract), goldRollLine(in.roll))
+	case in.hasPx:
 		c.Facts = append(c.Facts, goldPriceLine(in.px, in.pxAt, pos, stale))
-	} else {
+	default:
 		c.Facts = append(c.Facts, goldNoPriceLine)
 	}
 
-	// 2-3. The day range, where it comes from, and the two scenarios.
+	// 2-3. The day range, where it comes from, and the two scenarios. In a
+	// roll window the scenarios lose their "already above/below" tail: that
+	// tail places the 1h price against the range.
 	c.Facts = append(c.Facts, in.levels.rangeLine())
-	scenarios := in.levels.scenarios(in.px, in.hasPx)
+	scenarios := in.levels.scenarios(in.px, in.hasPx && !window)
 	c.Facts = append(c.Facts, scenarios...)
 
 	// 4. What invalidates the regime — confirmed states only: under a header
@@ -148,6 +206,9 @@ func goldCardFrom(in goldInputs) Card {
 	inv, invLevel, invSide := "", (*float64)(nil), ""
 	if lv, ok := trend.Levels.(TrendLevels); ok && confirmed && lv.Invalidation != nil && *lv.Invalidation > 0 {
 		inv = goldInvalidationLine(trend.State, *lv.Invalidation, lv.InvalidationSide, in.px)
+		if window { // the "already beyond" tail compares the 1h price with a daily level
+			inv = goldInvalidationPlain(trend.State, *lv.Invalidation, lv.InvalidationSide)
+		}
 		invLevel, invSide = lv.Invalidation, lv.InvalidationSide
 		c.Facts = append(c.Facts, inv)
 		c.Levels = lv
@@ -161,13 +222,18 @@ func goldCardFrom(in goldInputs) Card {
 		c.Facts = append(c.Facts, "Macro backdrop conflicts with the daily "+dirNoun(trend.State)+" reading; both stand as read")
 	}
 	if in.hasPx {
-		if l := goldKeyLevelsLine(in.sup, in.res); l != "" {
-			c.Facts = append(c.Facts, l)
+		levels := goldKeyLevelsLine(in.sup, in.res)
+		if window {
+			levels = goldKeyLevelsLineFrom(goldLevelsFromDailyClose, in.sup, in.res)
+		}
+		if levels != "" {
+			c.Facts = append(c.Facts, levels)
 		}
 	}
 	if in.vol != "" {
 		c.Facts = append(c.Facts, "Volatility: "+in.vol)
 	}
+	c.Facts = append(c.Facts, goldSplicedLine)
 
 	// 6. The setup structure closes the card: the same numbers said as one
 	// shape, plus the line that says what the history run measured. It is
@@ -189,6 +255,26 @@ func goldCardFrom(in goldInputs) Card {
 		c.Blocks = goldBlocksOf(in, scenarios, inv, pos, stale)
 	}
 	return c
+}
+
+// goldRollPriceLine is the price line in a roll window: the price, its time
+// and the contract it is on — and no place against the day range, which is a
+// range of the other contract. Worst case 94 runes (five-digit price, stale).
+func goldRollPriceLine(px float64, at time.Time, stale bool, contract string) string {
+	s := fmt.Sprintf("Last closed 1h price %s at %s UTC — ", goldPx(px), at.UTC().Format("2006-01-02 15:04"))
+	if stale {
+		s += fmt.Sprintf("stale (over %.0fh old), ", goldPriceStale.Hours())
+	}
+	return s + "on contract " + contract
+}
+
+// goldRollLine is the one fact that a contract roll is under way: from which
+// contract to which, which series is on which, and that the price is not
+// placed. Contract codes only — no spread, no date that would go stale on the
+// card. 95 runes: every code is five characters.
+func goldRollLine(r GoldRoll) string {
+	return fmt.Sprintf("Contract roll %s → %s: 1h price on %s, day range on %s; price not placed against it",
+		*r.CurrentContract, *r.NextContract, *r.HourlyContract, *r.DailyContract)
 }
 
 // goldPriceLine: "Last closed 1h price 4354.90 at 2026-09-15 03:00 UTC —
@@ -262,16 +348,26 @@ func (d goldDayLevels) scenarios(px float64, hasPx bool) []string {
 // "(1 ATR … the EMA cluster)" note, which does not fit beside it within
 // goldFactMaxRunes; the level's origin is in the docs and in levels.
 func goldInvalidationLine(state string, inv float64, side string, px float64) string {
-	s := fmt.Sprintf("A closed %s candle %s %s invalidates the daily %s reading",
-		goldDailySpec.Interval, side, goldPx(inv), dirNoun(state))
 	if goldBeyond(px, inv, side) {
-		return s + "; last 1h close already " + side + " it" // worst case 106 runes
+		return goldInvalidationHead(state, inv, side) + "; last 1h close already " + side + " it" // worst case 106 runes
 	}
+	return goldInvalidationPlain(state, inv, side)
+}
+
+// goldInvalidationHead is the level and what it invalidates.
+func goldInvalidationHead(state string, inv float64, side string) string {
+	return fmt.Sprintf("A closed %s candle %s %s invalidates the daily %s reading",
+		goldDailySpec.Interval, side, goldPx(inv), dirNoun(state))
+}
+
+// goldInvalidationPlain is the line without any word about the 1h price —
+// the form a roll window uses whatever that price is.
+func goldInvalidationPlain(state string, inv float64, side string) string {
 	prep := "under"
 	if side == "above" {
 		prep = "over"
 	}
-	return s + " (1 ATR " + prep + " the EMA cluster)"
+	return goldInvalidationHead(state, inv, side) + " (1 ATR " + prep + " the EMA cluster)"
 }
 
 // goldBeyond reports whether a price is STRICTLY beyond a level on the given
@@ -340,6 +436,8 @@ func goldIdeaOf(in goldInputs, confirmed bool, inv *float64, invSide string) (*G
 	switch {
 	case !confirmed:
 		return nil, []string{goldNoIdeaUnconfirmed}
+	case in.inRollWindow():
+		return nil, []string{goldNoIdeaRoll}
 	case !in.levels.Defined:
 		return nil, []string{goldNoIdeaNoRange}
 	case inv == nil || *inv <= 0 || invSide == "":
@@ -470,16 +568,27 @@ func goldMacroLine(m Card) string {
 // S/R card's class words ("single swing, 1 pivot"), so the two cards never
 // describe one level two ways. "" when nothing clustered on either side.
 func goldKeyLevelsLine(sup, res *SRLevel) string {
+	return goldKeyLevelsLineFrom("Nearest levels: ", sup, res)
+}
+
+// goldLevelsFromDailyClose heads the levels line in a roll window, where the
+// levels are the nearest to the last daily close — a price of the same
+// contract as every level — rather than to the 1h price of the next one.
+// Worst case 109 runes (five-digit levels, two-digit pivot counts).
+const goldLevelsFromDailyClose = "Nearest to 1d close: "
+
+// goldKeyLevelsLineFrom is goldKeyLevelsLine under a given head.
+func goldKeyLevelsLineFrom(head string, sup, res *SRLevel) string {
 	switch {
 	case sup == nil && res == nil:
 		return ""
 	case res == nil:
-		return fmt.Sprintf("Nearest levels: support %s (%s), nothing clustered above", goldPx(sup.Raw), classPivots(*sup))
+		return fmt.Sprintf("%ssupport %s (%s), nothing clustered above", head, goldPx(sup.Raw), classPivots(*sup))
 	case sup == nil:
-		return fmt.Sprintf("Nearest levels: resistance %s (%s), nothing clustered below", goldPx(res.Raw), classPivots(*res))
+		return fmt.Sprintf("%sresistance %s (%s), nothing clustered below", head, goldPx(res.Raw), classPivots(*res))
 	}
-	return fmt.Sprintf("Nearest levels: support %s (%s) · resistance %s (%s)",
-		goldPx(sup.Raw), classPivots(*sup), goldPx(res.Raw), classPivots(*res))
+	return fmt.Sprintf("%ssupport %s (%s) · resistance %s (%s)",
+		head, goldPx(sup.Raw), classPivots(*sup), goldPx(res.Raw), classPivots(*res))
 }
 
 // goldBlocksOf is the content-ready form. what_happened is a SNAPSHOT: the
@@ -488,7 +597,9 @@ func goldKeyLevelsLine(sup, res *SRLevel) string {
 func goldBlocksOf(in goldInputs, scenarios []string, inv, pos string, stale bool) *ContentBlocks {
 	tf := goldDailySpec.Interval
 	what := fmt.Sprintf("Snapshot, not an event: %s regime %s; last 1h close %s", tf, in.trend.Short, goldPx(in.px))
-	if pos != "" {
+	if in.inRollWindow() {
+		what += " on " + *in.roll.HourlyContract + " (contract roll)"
+	} else if pos != "" {
 		what += " " + pos + " the day range"
 	} else {
 		what += ", no day range defined"
@@ -551,6 +662,12 @@ func goldReadoutOf(in goldInputs, confirmed, stale bool, pos string) *GoldReadou
 	if d := in.levels; d.Defined {
 		g.DayRange = &GoldDayRange{High: d.High, Low: d.Low, CandleDate: d.candleDate(), InsideDaysAfter: d.Unwound}
 	}
+	roll := in.roll
+	if roll.State == "" { // a builder that did not run the check established nothing
+		r := goldRollNotChecked
+		roll = GoldRoll{State: goldRollUnknown, Reason: &r}
+	}
+	g.Roll = &roll
 	if in.macro.State != "" {
 		st := in.macro.State
 		g.MacroBackdrop = &st

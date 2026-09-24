@@ -207,7 +207,15 @@ func (a *Agents) GoldCard(ctx context.Context) Card {
 	// having it (conflict priority rule 1, spec section 6): a dead 1h feed
 	// once left a green "confirmed UPTREND" card serving ok=true with nothing
 	// saying a source had failed.
-	px, pxAt, hasPx := a.goldLatestPrice(ctx)
+	hour, hasPx := a.goldLastHour(ctx)
+	var px float64
+	var pxAt time.Time
+	if hasPx {
+		px, pxAt = hour.Close, time.Unix(hour.Time, 0).UTC().Add(time.Hour)
+	}
+	// Which contract each bar is on (gold_roll.go). Cached per closed bar:
+	// only the first read after a bar closes asks Yahoo.
+	roll := a.goldRollOf(ctx, daily, hour, hasPx)
 	in := goldInputs{
 		trend:     trend,
 		levels:    goldDayLevelsOf(daily),
@@ -217,9 +225,18 @@ func (a *Agents) GoldCard(ctx context.Context) Card {
 		hasPx:     hasPx,
 		macro:     a.MacroAssetCard(ctx, macroAssetGold),
 		now:       a.clock(),
+		roll:      roll,
 	}
 	if hasPx {
-		in.sup, in.res = goldNearestLevels(daily, px)
+		// In a roll window the 1h price is a price of another contract than
+		// the levels, so "nearest" is taken from the last daily close — the
+		// same contract as every level on the list (gold_text.go words it
+		// that way). Everywhere else: the 1h price, as before.
+		ref := px
+		if in.inRollWindow() {
+			ref = daily[len(daily)-1].Close
+		}
+		in.sup, in.res = goldNearestLevels(daily, ref)
 	}
 	// Volatility: the ATR agent's own read, in the Volatility card's own words
 	// (volShortLine) — never the machine state.
@@ -231,17 +248,16 @@ func (a *Agents) GoldCard(ctx context.Context) Card {
 	return goldCardFrom(in)
 }
 
-// goldLatestPrice is the last CLOSED hourly close and its close time (Yahoo
-// bars are cut at fetch time, candlesWindow). ok=false when the intraday
-// series is unavailable, and the card then says so rather than pretending the
-// day's range is untouched.
-func (a *Agents) goldLatestPrice(ctx context.Context) (float64, time.Time, bool) {
+// goldLastHour is the last CLOSED hourly bar (Yahoo bars are cut at fetch
+// time, candlesWindow): its close is the card's price, closing one hour after
+// its open stamp. ok=false when the intraday series is unavailable, and the
+// card then says so rather than pretending the day's range is untouched.
+func (a *Agents) goldLastHour(ctx context.Context) (types.OHLCVCandle, bool) {
 	bars, err := a.candlesFor(ctx, goldIntradaySpec)
 	if err != nil || len(bars) == 0 {
-		return 0, time.Time{}, false
+		return types.OHLCVCandle{}, false
 	}
-	last := bars[len(bars)-1]
-	return last.Close, time.Unix(last.Time, 0).UTC().Add(time.Hour), true
+	return bars[len(bars)-1], true
 }
 
 // goldPriceStale is how old the last closed 1h price may be before the card

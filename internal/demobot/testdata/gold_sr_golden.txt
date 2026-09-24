@@ -17,6 +17,7 @@ fact: A daily close below 4379.90 classifies the day as a downside break; the la
 fact: Macro backdrop: no gold read available
 fact: Nearest levels: support 4330.30 (candidate, 5 pivots) · resistance 4423.90 (established, 9 pivots)
 fact: Volatility: normal · 1d · ATR 0.997× its 30-bar baseline
+fact: S/R, EMAs and regime use spliced GC=F contracts; levels older than the current contract are shifted by rolls
 fact: No setup structure without a confirmed regime and a last closed 1h price
 levels: <nil>
 == price 4520
@@ -31,6 +32,7 @@ fact: A daily close below 4379.90 classifies the day as a downside break
 fact: Macro backdrop: no gold read available
 fact: Nearest levels: support 4380.70 (established, 9 pivots), nothing clustered above
 fact: Volatility: normal · 1d · ATR 0.997× its 30-bar baseline
+fact: S/R, EMAs and regime use spliced GC=F contracts; levels older than the current contract are shifted by rolls
 fact: No setup structure without a confirmed regime and a last closed 1h price
 levels: <nil>
 == price 4200
@@ -45,5 +47,6 @@ fact: A daily close below 4379.90 classifies the day as a downside break; the la
 fact: Macro backdrop: no gold read available
 fact: Nearest levels: resistance 4423.90 (established, 9 pivots), nothing clustered below
 fact: Volatility: normal · 1d · ATR 0.997× its 30-bar baseline
+fact: S/R, EMAs and regime use spliced GC=F contracts; levels older than the current contract are shifted by rolls
 fact: No setup structure without a confirmed regime and a last closed 1h price
 levels: <nil>

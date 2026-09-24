@@ -25,6 +25,8 @@ type Agents struct {
 	// whale 24h window when the snapshot has no captured_at. nil = wall
 	// clock; tests set it to step sweeps and weekends deterministically.
 	now func() time.Time
+	// goldRoll caches which contract the gold card's bars are on (gold_roll.go).
+	goldRoll *goldRollMemo
 }
 
 // clock is the composite build time (UTC).
@@ -36,7 +38,7 @@ func (a *Agents) clock() time.Time {
 }
 
 func NewAgents(api *BackendClient) *Agents {
-	return &Agents{api: api, klines: newKlineCache()}
+	return &Agents{api: api, klines: newKlineCache(), goldRoll: newGoldRollMemo()}
 }
 
 const (

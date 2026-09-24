@@ -13,6 +13,11 @@ package demobot
 // regime and a last closed 1h price". Every stage-1 line is unchanged, which
 // is what a diff of that regeneration has to show.
 //
+// Regenerated a second time for the roll disclosure (2026-09-23): one added
+// line per card — goldSplicedLine — and nothing else. The stub serves every
+// symbol the same bars, so both dated contracts match and the roll state is
+// unknown, which reads exactly as before.
+//
 //	UPDATE_GOLD_GOLDEN=1 go test -run TestGoldOutputGolden ./internal/demobot/
 
 import (

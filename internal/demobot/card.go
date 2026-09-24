@@ -351,7 +351,7 @@ type GoldReadout struct {
 	PriceAsOf      *string         `json:"price_as_of"`     // close of the last closed 1h bar
 	PriceFreshness *string         `json:"price_freshness"` // on_time | stale (older than 6h at answer time)
 	Price          *float64        `json:"price"`           // that 1h close, raw
-	PricePosition  *string         `json:"price_position"`  // above | inside | below the day range; null without a range
+	PricePosition  *string         `json:"price_position"`  // above | inside | below the day range; null without a range or in a roll window
 	DayRange       *GoldDayRange   `json:"day_range"`       // null when undefined (deeper than the inside-day cap)
 	MacroAsOf      *string         `json:"macro_as_of"`     // oldest as_of of the voting macro lamps
 	MacroBackdrop  *string         `json:"macro_backdrop"`  // support | pressure | neutral; null without a read
@@ -360,13 +360,50 @@ type GoldReadout struct {
 	// stands against which, assembled from the fields above and from the trend
 	// card's invalidation level — no new rule and no new number. null when the
 	// card names no structure: the regime is unconfirmed, there is no 1h
-	// price, no day range, or the regime read carries no invalidation level.
+	// price, a contract roll window (roll.state "window": the 1h price and the
+	// day range are on different contracts), no day range, or the regime read
+	// carries no invalidation level.
 	//
 	// It is NOT a recommendation. The history run found no edge THIS SAMPLE
 	// COULD DETECT (Отчёт_прогона_золотой_агент.md — it resolves about 12 pp
 	// and larger), the card carries that sentence at that strength, and a test
 	// bans trade vocabulary on every path.
 	Idea *GoldIdea `json:"idea"`
+	// Roll says whether the last closed 1h bar and the last closed 1d bar of
+	// GC=F are on the same COMEX contract (additive 2026-09-23). Always
+	// present on a gold card; see GoldRoll.
+	Roll *GoldRoll `json:"roll"`
+}
+
+// GoldRoll is the contract check behind the card (gold_roll.go). GC=F's hourly
+// series moves to the next contract about two daily bars before the daily
+// one; in between, the 1h price and the day range, levels and EMAs are prices
+// of two different contracts, and the card does not place one against the
+// other.
+type GoldRoll struct {
+	// State: none (both bars on one contract) | window (the 1h bar on one
+	// contract, the 1d bar on another) | unknown (not established — the card
+	// then reads as it did before the check existed; see Reason).
+	State string `json:"state"`
+	// Reason. window: hourly_ahead_of_daily (the 1h bar on the later
+	// contract — every measured roll) | hourly_behind_daily (on the earlier
+	// one; the card places nothing either way). unknown: no_intraday_price |
+	// no_daily_bars | near_contract_not_served | next_contract_not_served |
+	// request_failed | matches_both_contracts (two or more candidates) |
+	// matches_neither_contract | row_is_a_quote (GC=F's row is Yahoo's
+	// current quote, not a bar) (| not_checked, a defensive value no served
+	// card carries). null with none.
+	Reason *string `json:"reason"`
+	// CurrentContract / NextContract: the contract GC=F is on and the one it
+	// rolls to, as COMEX codes ("GCZ26", "GCG27"). In a window: the earlier
+	// and the later of the two contracts the bars are on. With none, next is the cycle
+	// successor (G/J/M/Q/Z), not an observation. null when unknown.
+	CurrentContract *string `json:"current_contract"`
+	NextContract    *string `json:"next_contract"`
+	// DailyContract / HourlyContract: what each bar was matched to. Equal with
+	// none, different in a window, null when unknown.
+	DailyContract  *string `json:"daily_contract"`
+	HourlyContract *string `json:"hourly_contract"`
 }
 
 // GoldIdea is the shape of the setup: the trigger the day is classified by,
