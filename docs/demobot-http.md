@@ -1509,8 +1509,10 @@ idea to invalidate (`invalidates` is always `null`, `regime` is empty):
 | `scenarios` | Not a state machine (there is nothing to transition) — what happens next: `"Tomorrow's forecast replaces this one at 00:00 UTC, from the next closed hourly candles"` / `"A move far from this size does not revise today's forecast; it is only scored in the model's own window"` |
 | `limitations` | `"Forecast of volatility size from BTC hourly data (and model inputs); not direction, not advice"` |
 
-Not wired into `/agents/digest`, `/agents/top` or the push hook yet (2026-09):
-the site does not read this agent, so it stays out of both until it does.
+Not wired into `/agents/digest`, `/agents/top`, the push hook or the landing
+catalog `/showcase` yet (2026-09): the site has not launched this agent. It is
+listed on `/agents` and served on `/agents/radar`; `showcaseUnreleased` in
+showcase.go keeps it off `/showcase` until the launch.
 
 ## Funding card and content blocks
 

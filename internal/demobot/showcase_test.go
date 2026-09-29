@@ -133,9 +133,9 @@ func TestShowcaseCatalogShape(t *testing.T) {
 	_, srv := newTestAPI(t, mixedStateAgents(t), true)
 	sc := getShowcase(t, srv.URL)
 
-	if sc.TotalCount != len(httpAgentNames) || len(sc.Agents) != len(httpAgentNames) {
-		t.Fatalf("total_count %d / rows %d, want %d (every agent that exists)",
-			sc.TotalCount, len(sc.Agents), len(httpAgentNames))
+	if sc.TotalCount != len(showcaseSlugs()) || len(sc.Agents) != len(showcaseSlugs()) {
+		t.Fatalf("total_count %d / rows %d, want %d (every released agent)",
+			sc.TotalCount, len(sc.Agents), len(showcaseSlugs()))
 	}
 	if _, err := time.Parse(time.RFC3339, sc.GeneratedAt); err != nil {
 		t.Errorf("generated_at %q is not RFC3339: %v", sc.GeneratedAt, err)
@@ -146,8 +146,8 @@ func TestShowcaseCatalogShape(t *testing.T) {
 	}
 	live := 0
 	for i, row := range sc.Agents {
-		if row.Slug != httpAgentNames[i] {
-			t.Errorf("row %d slug %q, want %q (catalog keeps the /agents order)", i, row.Slug, httpAgentNames[i])
+		if row.Slug != showcaseSlugs()[i] {
+			t.Errorf("row %d slug %q, want %q (catalog keeps the /agents order)", i, row.Slug, showcaseSlugs()[i])
 		}
 		if row.Name == "" || row.Headline == "" || row.OneLiner == "" {
 			t.Errorf("%s: empty name/headline/one_liner: %+v", row.Slug, row)
@@ -555,8 +555,8 @@ func TestShowcaseExampleUnavailableWhenEverythingDown(t *testing.T) {
 	}
 	// The catalog still answers 200 — degraded agents stay listed.
 	sc := getShowcase(t, srv.URL)
-	if sc.TotalCount != len(httpAgentNames) {
-		t.Errorf("catalog dropped rows in a blackout: %d of %d", sc.TotalCount, len(httpAgentNames))
+	if sc.TotalCount != len(showcaseSlugs()) {
+		t.Errorf("catalog dropped rows in a blackout: %d of %d", sc.TotalCount, len(showcaseSlugs()))
 	}
 }
 
@@ -574,5 +574,20 @@ func TestRiskExampleValuesMatchButtonArgs(t *testing.T) {
 		if v != riskExampleValues[i] {
 			t.Errorf("example arg %d: button %q != calculator %v", i, s, riskExampleValues[i])
 		}
+	}
+}
+
+// Risk Radar is served on /agents but kept off the landing catalog until the
+// site launches it (showcaseUnreleased).
+func TestShowcaseHidesUnreleasedRadar(t *testing.T) {
+	_, srv := newTestAPI(t, mixedStateAgents(t), true)
+	sc := getShowcase(t, srv.URL)
+	for _, row := range sc.Agents {
+		if row.Slug == keyRadar {
+			t.Fatal("radar is on the landing catalog before its launch")
+		}
+	}
+	if len(showcaseSlugs()) != len(httpAgentNames)-1 {
+		t.Errorf("exactly one unreleased agent expected, got %d", len(httpAgentNames)-len(showcaseSlugs()))
 	}
 }

@@ -327,11 +327,26 @@ func (b *showcaseBuild) lastModified() time.Time {
 	return b.at.UTC()
 }
 
-// rows renders the catalog in the /agents listing order (the bot's menu grid).
+// showcaseUnreleased are agents served on /agents but not yet listed on the
+// marketing page: the site has not launched them. Risk Radar (2026-09-29) waits
+// for Denis's go — delete its entry here to put it on the landing catalog.
+var showcaseUnreleased = map[string]bool{keyRadar: true}
 
+// showcaseSlugs is the landing catalog: the /agents order minus unreleased agents.
+func showcaseSlugs() []string {
+	out := make([]string, 0, len(httpAgentNames))
+	for _, slug := range httpAgentNames {
+		if !showcaseUnreleased[slug] {
+			out = append(out, slug)
+		}
+	}
+	return out
+}
+
+// rows renders the catalog in the /agents listing order (the bot's menu grid).
 func (b *showcaseBuild) rows() []showcaseAgent {
 	out := make([]showcaseAgent, 0, len(httpAgentNames))
-	for _, slug := range httpAgentNames {
+	for _, slug := range showcaseSlugs() {
 		out = append(out, b.row(slug))
 	}
 	return out
@@ -339,7 +354,7 @@ func (b *showcaseBuild) rows() []showcaseAgent {
 
 func (b *showcaseBuild) liveCount() int {
 	n := 0
-	for _, slug := range httpAgentNames {
+	for _, slug := range showcaseSlugs() {
 		if b.status(slug) == statusOK {
 			n++
 		}
@@ -353,7 +368,7 @@ func (b *showcaseBuild) liveCount() int {
 // for the full TTL. This is the flag that picks showcaseTTL vs
 // showcaseDeadTTL, nothing else.
 func (b *showcaseBuild) marketLive() bool {
-	for _, slug := range httpAgentNames {
+	for _, slug := range showcaseSlugs() {
 		if slug == keyRisk {
 			continue
 		}
