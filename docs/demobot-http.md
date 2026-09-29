@@ -1470,7 +1470,7 @@ On a fresh forecast:
 
 ```
 ⚪ Risk Radar · BTC
-Next 24h · BTC: expected move ±2.1% — more active than usual
+Next 24h · BTC: expected volatility 2.1% (1σ) — more active than usual
 • Model forecast for 2026-09-29 UTC: 2.06% daily volatility (1σ of the day's move); yesterday 1.83%
 • Higher than 69% of the last 180 days · issued 00:00 UTC from closed hourly candles
 • Volatility agent: last 4h candles vs prior 30 (now: normal); this forecast covers the whole UTC day
@@ -1493,7 +1493,7 @@ independently-worded read. When that read is not itself a real reading
 unavailable; this forecast covers the whole UTC day"` instead of naming a
 state.
 
-**Wording discipline**: "expected move" is the only forecast word this card
+**Wording discipline**: "expected volatility" is the only forecast word this card
 uses — never "will", "likely", "expect price" or "target". This is a
 volatility-**size** forecast: no direction, no price level, no guaranteed
 range (`blocks.limitations`).

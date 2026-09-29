@@ -10,9 +10,10 @@ package demobot
 // code constant standing in for a live result.
 //
 // Honesty rules for every line on this card:
-//   - "expected move" is the only forecast word this card uses: no "will",
+//   - "expected volatility" is the only forecast word this card uses: no "will",
 //     no "likely", no "expect price", no "target" (TestRadarNoForecastWords)
-//     — a volatility-SIZE forecast is not a price or direction call;
+//     — a volatility-SIZE forecast is not a price or direction call, and
+//     1σ of the day's log return is not a price range, so no "±" either;
 //   - it must never contradict the Volatility Agent's own BTC read: the
 //     fusion line is built from the exact Card a.VolCard renders for BTC
 //     (radar.go), never a second, independently-worded read;
@@ -73,17 +74,17 @@ func radarPValue(p float64) string {
 	return fmt.Sprintf("%.3f", p)
 }
 
-// radarVerdict: "Next 24h · BTC: expected move ±2.1% — more active than
+// radarVerdict: "Next 24h · BTC: expected volatility 2.1% (1σ) — more active than
 // usual". vol_pct rounds to one decimal; level is the file's own word for
 // the read (never a code constant — the model's own calibration decides it).
 func radarVerdict(f radarFile) string {
-	return fmt.Sprintf("Next 24h · BTC: expected move ±%.1f%% — %s", f.VolPct, f.Level)
+	return fmt.Sprintf("Next 24h · BTC: expected volatility %.1f%% (1σ) — %s", f.VolPct, f.Level)
 }
 
 // radarShort is the compact digest-style line (radar carries no digest slot,
 // but every card keeps one for the landing showcase's one-liner).
 func radarShort(f radarFile) string {
-	return fmt.Sprintf("expected ±%.1f%% — %s", f.VolPct, f.Level)
+	return fmt.Sprintf("expected volatility %.1f%% — %s", f.VolPct, f.Level)
 }
 
 // radarFact1: the forecast itself, at the file's own two-decimal precision,
@@ -170,7 +171,7 @@ func radarFacts(f radarFile, volLine string) []string {
 // is the standing size-only, no-advice line.
 func radarBlocks(f radarFile) *ContentBlocks {
 	return &ContentBlocks{
-		WhatHappened: fmt.Sprintf("BTC expected daily move ±%.1f%%: %s (higher than %d%% of the last 180 days).",
+		WhatHappened: fmt.Sprintf("BTC expected daily volatility %.1f%% (1σ): %s (higher than %d%% of the last 180 days).",
 			f.VolPct, f.Level, radarPctOf(f.Percentile180d)),
 		WhyLevel: "No price level: 1σ of BTC's daily move from an hourly-data ML model, not a support/resistance level",
 		Scenarios: []string{

@@ -80,7 +80,7 @@ func TestRadarCardGoldenNormalVolatility(t *testing.T) {
 		t.Errorf("emoji %q, want neutral", c.Emoji)
 	}
 
-	wantVerdict := "Next 24h · BTC: expected move ±2.1% — more active than usual"
+	wantVerdict := "Next 24h · BTC: expected volatility 2.1% (1σ) — more active than usual"
 	if c.Verdict != wantVerdict {
 		t.Errorf("verdict:\n got  %q\n want %q", c.Verdict, wantVerdict)
 	}
@@ -304,8 +304,14 @@ func TestRadarNoForecastWords(t *testing.T) {
 			}
 		}
 	}
-	// "expected move" is the one allowed forecast phrase, and it must appear.
-	if !strings.Contains(c.Verdict, "expected move") {
+	// "expected volatility" is the one allowed forecast phrase, and it must appear;
+	// 1σ is not a price range, so no "±" anywhere on the card.
+	for _, s := range append([]string{c.Verdict, c.Short}, c.Facts...) {
+		if strings.Contains(s, "±") {
+			t.Errorf("%q prints ±: 1σ is not a price range", s)
+		}
+	}
+	if !strings.Contains(c.Verdict, "expected volatility") {
 		t.Errorf("verdict must use the one allowed phrase: %q", c.Verdict)
 	}
 }
