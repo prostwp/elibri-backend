@@ -27,6 +27,8 @@ type Agents struct {
 	now func() time.Time
 	// goldRoll caches which contract the gold card's bars are on (gold_roll.go).
 	goldRoll *goldRollMemo
+	// radar caches the Risk Radar forecast file by mtime (radar.go).
+	radar *radarFileCache
 }
 
 // clock is the composite build time (UTC).
@@ -38,7 +40,7 @@ func (a *Agents) clock() time.Time {
 }
 
 func NewAgents(api *BackendClient) *Agents {
-	return &Agents{api: api, klines: newKlineCache(), goldRoll: newGoldRollMemo()}
+	return &Agents{api: api, klines: newKlineCache(), goldRoll: newGoldRollMemo(), radar: newRadarFileCache()}
 }
 
 const (
@@ -212,6 +214,7 @@ var howTexts = map[string]string{
 	keyTrend:    "State machine on 4h bars (1h for FX/gold): ADX<20 flat, 20-25 grey zone, ADX 25+ with price and EMA50/200 aligned = confirmed unless swing structure disagrees; else conflict.",
 	keySR:       "Clusters swing highs/lows within 0.5% on closed 4h candles (1h FX/gold), 3 strongest per side. Test = a close within 0.25 ATR; reaction or break within 3 candles. 7+ pivots = established.",
 	keyVol:      "ATR(14) vs the mean of its previous 30 values, on closed candles. Ratio ≤0.80 compressed, ≥1.25 elevated: the agent's thresholds, not a market benchmark. Size of moves, not direction or breakout.",
+	keyRadar:    "Gradient-boosted ML model on BTC hourly data, refreshed once a day at 00:00 UTC. Tested on 154 unseen days against HAR-RV and ATR(14). Size of the move only, not direction.",
 	keyRisk:     "Result = (balance × risk%) ÷ |entry − stop|, in abstract units. Valid only when a 1.0 price move changes one unit's value by 1.0 in account currency; FX lots, futures, CFDs differ.",
 	keyFX:       "Per instrument on closed 1h Yahoo bars: price, change over 24h (or since the close before a gap), place in that range, EMA50 vs EMA200, RSI(14). Gold = COMEX GC=F futures. No overall verdict.",
 	keyDigest:   "Fixed rule: a fresh, fully lit RISK-OFF macro tops; else the strongest fresh CONFIRMED reading among funding, momentum, trend. Their scales are not calibrated.",

@@ -1,0 +1,24 @@
+{
+ "asset": "BTCUSDT",
+ "forecast_day": "2026-09-29",
+ "generated_at": "2026-09-29T00:32:13.584074+00:00",
+ "vol_pct": 2.06,
+ "yesterday_pct": 1.83,
+ "percentile_180d": 0.69,
+ "level": "more active than usual",
+ "validation": {
+  "days": 154,
+  "from": "2026-04-27",
+  "to": "2026-09-27",
+  "gain_vs_har": 0.29,
+  "p_vs_har": 3.1335693804771403e-06,
+  "gain_vs_atr14": 0.367,
+  "gain_vs_har_dow": 0.075,
+  "p_vs_har_dow": 0.053,
+  "pre_registered_pass": false
+ },
+ "forward": {
+  "days": 0,
+  "gain_vs_har_dow": null
+ }
+}

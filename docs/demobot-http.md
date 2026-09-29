@@ -33,6 +33,7 @@ Telegram.
 | `GET /agents/trend/chart` | `?asset=` optional (default `btc`) | Chart data for the Trend Agent: the candles it reads, EMA20/50/200, pivots, zone and invalidation (see [trend chart](#trend-chart)) |
 | `GET /agents/sr` | `?asset=` optional (default `btc`) | Support/resistance swing clusters: class, reactions/breaks counts, last touch, content `blocks` |
 | `GET /agents/vol` | `?asset=` optional (default `btc`) | ATR(14) against its 30-bar baseline: compressed / normal / elevated, machine readout in `levels`, content `blocks` (see [volatility card](#volatility-card-and-content-blocks)) |
+| `GET /agents/radar` | `?asset=btc` optional (BTC only) | Daily BTC volatility-**size** forecast from an ML model that runs once a day outside this process, content `blocks` (see [Risk Radar card](#risk-radar-card)) |
 | `GET /agents/fx` | — | Forex overview: EURUSD, GBPUSD, USDJPY and gold (COMEX GC=F futures) — price, change, place in range, per-row freshness (see [FX card](#fx-card)) |
 | `GET /agents/gold` | — | Gold Agent on COMEX GC=F futures (`asset` stays `XAUUSD`): daily regime, the day range and two conditional day scenarios, the last closed 1h price with its own stamp, invalidation in a confirmed regime, macro / S/R / volatility background, the setup structure with its own honesty line, machine readout in `gold` (`idea` included), content `blocks` (see [gold card](#gold-card-and-content-blocks)) |
 | `GET /agents/news` | — | Narrative radar: RSS items and Reddit posts matching a theme's keywords in the last 24h (growth vs the previous 24h), the leader's activity score from 5 matched items, machine readout in `narrative`, content `blocks` (see [narrative card](#narrative-card-and-content-blocks)) |
@@ -45,8 +46,12 @@ Telegram.
 **Assets** for `momentum` / `trend` / `sr` / `vol`:
 `btc` (default), `eth`, `eurusd`, `gbpusd`, `usdjpy`, `xauusd` — aliases
 `xau`, `gold`, `bitcoin` are accepted. Passing `?asset=` to any other agent
-(except `macro`, below) is a `400` (those reads are not asset-specific, and
-pretending otherwise would be misleading).
+(except `macro` and `radar`, below) is a `400` (those reads are not
+asset-specific, and pretending otherwise would be misleading).
+
+`radar` takes `?asset=btc` only (any alias that resolves to `btc`, e.g.
+`?asset=bitcoin`) — Risk Radar has one market. Any other value, known to the
+registry or not, is the same `400 unknown asset` the registry gives.
 
 ## Momentum scan: assets + tf
 
@@ -1418,6 +1423,94 @@ Degraded reads (`insufficient_history`, the fact names the reason): too few
 bars (`ATR(14) 30-bar baseline`), a flat zero baseline, non-finite input
 (overflowing prices), or a last close that is not positive (`ATR(14) as a
 share of price (the last close is not positive)`).
+
+## Risk Radar card
+
+Risk Radar is a daily BTC **volatility-size** forecast: a gradient-boosted ML
+model, trained and validated **outside this process**, predicts the size of
+BTC's next 24h move (1σ of the day's move) from hourly candles. A separate
+Python job runs it once a day at 00:00 UTC and writes one JSON file; this
+Go agent only **reads** that file and formats the card — it never computes a
+forecast itself, and every number on the card comes from the file.
+
+**File**: path from `DEMOBOT_RADAR_FILE`, default
+`/root/flagship/results/radar.json`. Read on every GET, cached by the file's
+mtime (the file is small and changes once a day). Schema:
+
+```json
+{
+  "asset": "BTCUSDT",
+  "forecast_day": "2026-09-29",
+  "generated_at": "2026-09-29T00:32:13.584074+00:00",
+  "vol_pct": 2.06,
+  "yesterday_pct": 1.83,
+  "percentile_180d": 0.69,
+  "level": "more active than usual",
+  "validation": {
+    "days": 154, "from": "2026-04-27", "to": "2026-09-27",
+    "gain_vs_har": 0.29, "p_vs_har": 3.13e-06,
+    "gain_vs_atr14": 0.367,
+    "gain_vs_har_dow": 0.075, "p_vs_har_dow": 0.053,
+    "pre_registered_pass": false
+  },
+  "forward": { "days": 0, "gain_vs_har_dow": null }
+}
+```
+
+**Freshness**: a forecast is only shown for the caller's own UTC day
+(`forecast_day` must equal today's UTC date). Any other case reads as an
+honest "no forecast yet" — never yesterday's number relabeled as today's:
+
+| Condition | Card |
+|---|---|
+| `forecast_day` ≠ today (UTC) | `verdict` = `"No model forecast for today yet (last: <forecast_day>)"`, no forecast numbers, `ok: false`, `reason: "no_data"` (`200`) |
+| File missing or not valid JSON | The same honest offline card every other agent gives a dead source: `ok: false`, `reason: "source_offline"` (`503`) |
+
+On a fresh forecast:
+
+```
+⚪ Risk Radar · BTC
+Next 24h · BTC: expected move ±2.1% — more active than usual
+• Model forecast for 2026-09-29 UTC: 2.06% daily volatility (1σ of the day's move); yesterday 1.83%
+• Higher than 69% of the last 180 days · issued 00:00 UTC from closed hourly candles
+• Volatility agent: last 4h candles vs prior 30 (now: normal); this forecast covers the whole UTC day
+• Tested on 154 unseen days: 29% less error than HAR-RV, 37% less than ATR(14)
+• Against HAR-RV + weekday: 7.5% less error, not yet statistically confirmed (p=0.053)
+• Size of the move only: no direction and no guaranteed range
+```
+
+`validation.pre_registered_pass: true` swaps the fifth fact's tail to
+`"confirmed (p=…)"`. `forward.days > 0` appends a seventh fact, `"Live
+forward test: <N> days, <X>% vs HAR-RV + weekday"`; at `forward.days: 0`
+(no live forward window yet) that fact is omitted rather than print `"0
+days, 0.0%"`.
+
+**No contradicting the Volatility Agent**: the third fact is built from the
+exact `Card` `a.VolCard` renders for BTC (sharing its kline cache — reading
+it costs no second Binance request when the cache is warm), never a second,
+independently-worded read. When that read is not itself a real reading
+(offline, insufficient history) the fact reads `"Volatility agent reading
+unavailable; this forecast covers the whole UTC day"` instead of naming a
+state.
+
+**Wording discipline**: "expected move" is the only forecast word this card
+uses — never "will", "likely", "expect price" or "target". This is a
+volatility-**size** forecast: no direction, no price level, no guaranteed
+range (`blocks.limitations`).
+
+`blocks` (Risk Radar envelopes with a reading; absent on both degraded
+paths). Like Volatility, Risk Radar has no price level and no directional
+idea to invalidate (`invalidates` is always `null`, `regime` is empty):
+
+| Field | Meaning |
+|---|---|
+| `what_happened` | The verdict restated with the percentile: `"BTC expected daily move ±2.1%: more active than usual (higher than 69% of the last 180 days)."` |
+| `why_level` | There is no price level: `"No price level: 1σ of BTC's daily move from an hourly-data ML model, not a support/resistance level"` |
+| `scenarios` | Not a state machine (there is nothing to transition) — what happens next: `"Tomorrow's forecast replaces this one at 00:00 UTC, from the next closed hourly candles"` / `"A move far from this size does not revise today's forecast; it is only scored in the model's own window"` |
+| `limitations` | `"Forecast of volatility size from BTC hourly data (and model inputs); not direction, not advice"` |
+
+Not wired into `/agents/digest`, `/agents/top` or the push hook yet (2026-09):
+the site does not read this agent, so it stays out of both until it does.
 
 ## Funding card and content blocks
 

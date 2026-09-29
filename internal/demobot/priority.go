@@ -14,6 +14,7 @@ const (
 	keyTrend    = "trend"
 	keySR       = "sr"
 	keyVol      = "vol"
+	keyRadar    = "radar"
 	keyDigest   = "digest"
 	keyTop      = "top"
 	keyRisk     = "risk"

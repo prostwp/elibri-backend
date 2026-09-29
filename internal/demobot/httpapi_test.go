@@ -148,6 +148,7 @@ func TestHTTPRoutingTable(t *testing.T) {
 		{"/agents/trend", 503},
 		{"/agents/sr", 503},
 		{"/agents/vol", 503},
+		{"/agents/radar", 503},
 		{"/agents/fx", 503},
 		{"/agents/news", 503},
 		{"/agents/gold", 503},
@@ -201,8 +202,8 @@ func TestHTTPAgentsListComplete(t *testing.T) {
 	if err := json.Unmarshal(body, &list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Agents) != 13 {
-		t.Fatalf("want 13 agents, got %d", len(list.Agents))
+	if len(list.Agents) != 14 {
+		t.Fatalf("want 14 agents, got %d", len(list.Agents))
 	}
 	if list.Disclaimer != disclaimerText {
 		t.Errorf("disclaimer: %q", list.Disclaimer)
@@ -227,6 +228,11 @@ func TestHTTPAgentsListComplete(t *testing.T) {
 			// B2 asset views: lamp re-framings, not registry assets.
 			if strings.Join(item.Assets, ",") != strings.Join(macroAssetViews, ",") {
 				t.Errorf("macro: assets %v, want %v", item.Assets, macroAssetViews)
+			}
+		case item.Name == keyRadar:
+			// BTC only — not the full registry assetAgents lists.
+			if strings.Join(item.Assets, ",") != "btc" {
+				t.Errorf("radar: assets %v, want [btc]", item.Assets)
 			}
 		case len(item.Assets) > 0:
 			t.Errorf("%s: must not list assets, got %v", item.Name, item.Assets)

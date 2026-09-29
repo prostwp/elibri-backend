@@ -83,6 +83,7 @@ var showcaseNames = map[string]string{
 	keyTrend:    "Trend Agent",
 	keySR:       "S/R Agent",
 	keyVol:      "Volatility Agent",
+	keyRadar:    "Risk Radar",
 	keyRisk:     "Risk Calculator",
 	keyNews:     "Narrative Radar",
 	keyGold:     "Gold Agent",
@@ -104,6 +105,7 @@ var showcaseCategories = map[string]string{
 	keyTrend:    "crypto", // default asset btc
 	keySR:       "crypto",
 	keyVol:      "crypto",
+	keyRadar:    "crypto", // BTC only
 	keyGold:     "metals",
 }
 
@@ -153,6 +155,9 @@ func (a *Agents) buildShowcase(ctx context.Context) *showcaseBuild {
 	cards[keyNews] = news
 	cards[keyGold] = gold
 	cards[keyRisk] = a.RiskCard(riskExampleValues, true, nil)
+	// Local file read plus one shared-cache BTC vol read — cheap enough not
+	// to need its own goroutine, same as risk above.
+	cards[keyRadar] = a.RadarCard(ctx)
 	_, top := topSelection(g)
 	cards[keyDigest] = top // the digest's head IS the winner card
 	cards[keyTop] = top

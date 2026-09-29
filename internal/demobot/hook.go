@@ -99,7 +99,9 @@ func hookTargets() []hookTarget {
 	}
 	for _, name := range httpAgentNames {
 		switch name {
-		case keyRisk:
+		case keyRisk, keyRadar:
+			// Risk is a function of user input; Radar is not yet known to the
+			// site (2026-09) — neither belongs in the v1 push sweep.
 			continue
 		case keyDigest, keyTop, keyNews:
 			add(name, "", true)

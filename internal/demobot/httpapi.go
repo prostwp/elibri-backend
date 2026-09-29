@@ -52,7 +52,7 @@ const (
 // (mirrors the bot's menu grid).
 var httpAgentNames = []string{
 	keyDigest, keyTop, keyFX, keyMacro, keyWhale, keyFunding,
-	keyMomentum, keyTrend, keySR, keyVol, keyRisk, keyNews, keyGold,
+	keyMomentum, keyTrend, keySR, keyVol, keyRadar, keyRisk, keyNews, keyGold,
 }
 
 // assetAgents take the optional ?asset= parameter; every other agent
@@ -582,6 +582,11 @@ func (s *HTTPServer) handleList(w http.ResponseWriter, _ *http.Request) {
 			info.Assets = append([]string{}, macroAssetViews...)
 			info.Examples = append(info.Examples, "/agents/macro?asset=gold")
 		}
+		if name == keyRadar {
+			// BTC only — not the full registry assetAgents lists.
+			info.Assets = []string{"btc"}
+			info.Examples = append(info.Examples, "/agents/radar?asset=btc")
+		}
 		if name == keyRisk {
 			info.Examples = []string{"/agents/risk?balance=10000&risk=1&entry=64000&stop=62500"}
 		}
@@ -621,7 +626,7 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	asset := strings.TrimSpace(q.Get("asset"))
-	if asset != "" && !assetAgents[name] && name != keyMacro {
+	if asset != "" && !assetAgents[name] && name != keyMacro && name != keyRadar {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("agent %q does not take an ?asset= parameter", name))
 		return
 	}
@@ -719,6 +724,16 @@ func (s *HTTPServer) handleAgent(w http.ResponseWriter, r *http.Request) {
 		default:
 			s.writeCard(w, r, s.ag.VolCard(ctx, spec))
 		}
+	case keyRadar:
+		// BTC only, unlike the registry-wide ?asset= agents above: a bare
+		// address or ?asset=btc (any alias resolving to it) both serve the
+		// one forecast; every other asset is the registry's own honest
+		// "unknown asset" 400 (radarAssetOK reuses resolveAssetKey).
+		if err := radarAssetOK(asset); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.writeCard(w, r, s.ag.RadarCard(ctx))
 	case keyGold:
 		// Fixed asset by design: this agent IS the gold read, so it takes no
 		// ?asset= (the guard above already rejects one).

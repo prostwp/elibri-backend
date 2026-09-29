@@ -2,6 +2,7 @@ package demobot
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -9,7 +10,11 @@ import (
 
 // stubExternalBases points every external data source at an instantly
 // refused port so agent builders produce deterministic offline cards
-// without touching the network.
+// without touching the network. It also points DEMOBOT_RADAR_FILE at a path
+// that is guaranteed not to exist, so Risk Radar degrades the same way (no
+// test must depend on whether /root/flagship/results/radar.json happens to
+// exist on the machine running go test) — a test that needs a real forecast
+// file calls t.Setenv("DEMOBOT_RADAR_FILE", …) itself afterward to override it.
 func stubExternalBases(t *testing.T) {
 	t.Helper()
 	origYahoo, origBinance, origPremium := yahooChartBase, binanceKlinesBase, premiumIndexURL
@@ -19,6 +24,7 @@ func stubExternalBases(t *testing.T) {
 	t.Cleanup(func() {
 		yahooChartBase, binanceKlinesBase, premiumIndexURL = origYahoo, origBinance, origPremium
 	})
+	t.Setenv("DEMOBOT_RADAR_FILE", filepath.Join(t.TempDir(), "no-such-radar-file.json"))
 }
 
 // stripFooter removes the timestamped footer so two renders made
