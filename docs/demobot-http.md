@@ -1504,7 +1504,7 @@ idea to invalidate (`invalidates` is always `null`, `regime` is empty):
 
 | Field | Meaning |
 |---|---|
-| `what_happened` | The verdict restated with the percentile: `"BTC expected daily move ±2.1%: more active than usual (higher than 69% of the last 180 days)."` |
+| `what_happened` | The verdict restated with the percentile: `"BTC expected daily volatility 2.1% (1σ): more active than usual (higher than 69% of the last 180 days)."` |
 | `why_level` | There is no price level: `"No price level: 1σ of BTC's daily move from an hourly-data ML model, not a support/resistance level"` |
 | `scenarios` | Not a state machine (there is nothing to transition) — what happens next: `"Tomorrow's forecast replaces this one at 00:00 UTC, from the next closed hourly candles"` / `"A move far from this size does not revise today's forecast; it is only scored in the model's own window"` |
 | `limitations` | `"Forecast of volatility size from BTC hourly data (and model inputs); not direction, not advice"` |
