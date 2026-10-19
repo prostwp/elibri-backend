@@ -2934,7 +2934,7 @@ anything else is a bug in the address list and is logged, not sent.
 
 ### Event
 
-`POST`, `Content-Type: application/json`:
+`POST`, `Content-Type: application/json`. Machine-readable schema: `webhooks.agentEvent` / `HookEvent` in [`/openapi.json`](#openapi--swagger), shown on `/docs` under Webhooks (added 2026-10-19); the contract test validates every event a sweep sends against it.
 
 ```json
 {

@@ -297,6 +297,37 @@ paths:
           $ref: '#/components/responses/MethodNotAllowed'
         '429':
           $ref: '#/components/responses/RateLimited'
+webhooks:
+  agentEvent:
+    post:
+      summary: Push hook event (demobot → site backend)
+      operationId: agentEvent
+      x-added: '2026-10-19'
+      description: 'Sent by the demobot to `DEMOBOT_HOOK_URL` (POST, `Content-Type: application/json`, plus the
+        optional `DEMOBOT_HOOK_HEADER`) when an address''s reading changes. `data` is the GET body of that address
+        byte for byte: a Card for a 200, a Degraded body for a 503, so every field of GET /agents/{name}, the clean
+        numbers included, arrives in the event the same way. One attempt per event, never repeated; the site
+        reconciles by GET. Human reference: docs/demobot-http.md, "Push hook".'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HookEvent'
+      responses:
+        '201':
+          description: Delivered. 200 and 409 (duplicate event_id) count as delivered too.
+        '200':
+          description: Delivered.
+        '409':
+          description: Duplicate event_id; delivered.
+        '400':
+          description: Refused body (also 413, 415, 422). The address is not paused; the next change is sent on
+            the next sweep.
+        default:
+          description: Not delivered (401, 408, 5xx, anything else). The address is paused, exponentially, up to
+            10 minutes. When the endpoint cannot be reached at all (refused, no route, DNS), the sweep
+            stops and whole sweeps are paused the same way.
 components:
   headers:
     LastModified:
@@ -2953,6 +2984,93 @@ components:
         card_html:
           type: string
           description: The exact Telegram HTML card.
+    HookEvent:
+      description: One push hook event. See webhooks.agentEvent.
+      x-added: '2026-10-19'
+      type: object
+      required:
+      - event_id
+      - agent
+      - asset
+      - params
+      - data_as_of
+      - sent_at
+      - state_changed
+      - data
+      additionalProperties: false
+      properties:
+        event_id:
+          type: string
+          description: '`agent:asset:params:data_as_of:hash8`; an empty segment is `-`; hash8 is the first 8 hex of
+            the change hash. The site''s idempotency key.'
+          pattern: ^[a-z]+:[^:]+:[^:]+:.+:[0-9a-f]{8}$
+          examples:
+          - trend:BTC:-:2026-09-15T08:00:00Z:a1b2c3d4
+        agent:
+          type: string
+          description: Agent key as in /agents/{name}. risk is never sent.
+          enum:
+          - digest
+          - top
+          - fx
+          - macro
+          - whale
+          - funding
+          - momentum
+          - trend
+          - sr
+          - vol
+          - news
+          - gold
+        asset:
+          type: string
+          description: Upper-case asset of the address (BTC, XAUUSD, GOLD for the macro gold view); empty for a
+            global read. Taken from the address, not the body.
+        params:
+          type: object
+          description: Extra query parameters of the address; {} in v1.
+          additionalProperties:
+            type: string
+        data_as_of:
+          type:
+          - string
+          - 'null'
+          description: The body's data_as_of; null for a 503 body.
+        sent_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC send time.
+        state_changed:
+          description: '{from, to} when the state differs from the last delivered event of this address, else null.
+            State is the semaphore when ok, "unavailable" when ok is false (a 503 body included). The first event
+            after a restart is null.'
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/HookStateChange'
+        data:
+          description: The GET body of the address, a JSON object.
+          oneOf:
+          - $ref: '#/components/schemas/Card'
+          - $ref: '#/components/schemas/Degraded'
+    HookStateChange:
+      x-added: '2026-10-19'
+      type: object
+      required:
+      - from
+      - to
+      additionalProperties: false
+      properties:
+        from:
+          $ref: '#/components/schemas/HookState'
+        to:
+          $ref: '#/components/schemas/HookState'
+    HookState:
+      type: string
+      enum:
+      - bullish
+      - bearish
+      - neutral
+      - unavailable
     Error:
       type: object
       required:
