@@ -998,6 +998,9 @@ func fxOverviewCard(reads []fxRead, now time.Time) Card {
 		c.Results = append(c.Results, fxResult(r, now, i+1))
 	}
 	c.Blocks = fxBlocksOf(reads, now, len(table.shown))
+	n := fxCoverageOf(reads, now)
+	c.FX = &FXReadout{PairsTotal: n.pairs, PairsRead: n.pairsOK, GoldRead: n.goldOK, GoldNoRecentBar: n.goldStale,
+		ShortHistory: n.short, Unavailable: n.dead, DataDelayed: n.delayed}
 	return c
 }
 

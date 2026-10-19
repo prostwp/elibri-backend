@@ -305,22 +305,50 @@ func lampSelfLine(l MacroLamp) string {
 }
 
 // MacroLampRule is the machine form of one lamp's rule in one model.
+//
+// The numeric fields (additive 2026-10-19) are the same conditions as
+// numbers, both comparisons strict like the strings: positive_below: 18 is
+// "< 18", negative_above: 0.5 is "> 0.5". Exactly one of *_above / *_below
+// is present for each side the rule has; none on a non-voting lamp.
 type MacroLampRule struct {
-	Input        string `json:"input"`                   // "level" | "session_change_pct"
-	PositiveWhen string `json:"positive_when,omitempty"` // e.g. "< 0", "< 18"
-	NegativeWhen string `json:"negative_when,omitempty"` // e.g. "> 0.5", "> 25"
+	Input         string   `json:"input"`                   // "level" | "session_change_pct"
+	PositiveWhen  string   `json:"positive_when,omitempty"` // e.g. "< 0", "< 18"
+	NegativeWhen  string   `json:"negative_when,omitempty"` // e.g. "> 0.5", "> 25"
+	PositiveAbove *float64 `json:"positive_above,omitempty"`
+	PositiveBelow *float64 `json:"positive_below,omitempty"`
+	NegativeAbove *float64 `json:"negative_above,omitempty"`
+	NegativeBelow *float64 `json:"negative_below,omitempty"`
+}
+
+// macroCond is one rule condition: its string form and its number on the
+// matching side (above for ">", below for "<").
+func macroCond(op string, v float64) (s string, above, below *float64) {
+	s = op + " " + fmtNum(v)
+	if op == ">" {
+		return s, ptrF(v), nil
+	}
+	return s, nil, ptrF(v)
+}
+
+// macroRuleOf builds a rule from its two conditions, string and number from
+// the same value.
+func macroRuleOf(input, posOp string, pos float64, negOp string, neg float64) MacroLampRule {
+	r := MacroLampRule{Input: input}
+	r.PositiveWhen, r.PositiveAbove, r.PositiveBelow = macroCond(posOp, pos)
+	r.NegativeWhen, r.NegativeAbove, r.NegativeBelow = macroCond(negOp, neg)
+	return r
 }
 
 // riskRule is the risk-appetite rule of a lamp, from the rule constants.
 func riskRule(key string) MacroLampRule {
-	strong := fmtNum(macro.RuleStrongMovePct)
+	strong := macro.RuleStrongMovePct
 	switch key {
 	case "vix":
-		return MacroLampRule{Input: "level", PositiveWhen: "< " + fmtNum(macro.RuleVIXCalmBelow), NegativeWhen: "> " + fmtNum(macro.RuleVIXFearAbove)}
+		return macroRuleOf("level", "<", macro.RuleVIXCalmBelow, ">", macro.RuleVIXFearAbove)
 	case "dxy", "rates", "gold":
-		return MacroLampRule{Input: "session_change_pct", PositiveWhen: "< 0", NegativeWhen: "> " + strong}
+		return macroRuleOf("session_change_pct", "<", 0, ">", strong)
 	case "spx":
-		return MacroLampRule{Input: "session_change_pct", PositiveWhen: "> 0", NegativeWhen: "< -" + strong}
+		return macroRuleOf("session_change_pct", ">", 0, "<", -strong)
 	}
 	return MacroLampRule{}
 }
@@ -334,6 +362,8 @@ func goldRule(key string) MacroLampRule {
 		return r
 	case goldPressure:
 		r.PositiveWhen, r.NegativeWhen = r.NegativeWhen, r.PositiveWhen
+		r.PositiveAbove, r.NegativeAbove = r.NegativeAbove, r.PositiveAbove
+		r.PositiveBelow, r.NegativeBelow = r.NegativeBelow, r.PositiveBelow
 		return r
 	}
 	return MacroLampRule{Input: r.Input}
@@ -918,19 +948,28 @@ func fngLine(f *FearGreedCheck, now time.Time, scoreName string) string {
 // MacroReadout is the envelope's "macro" object: the numbers behind a macro
 // card, for visualisation (docs/demobot-http.md "Macro card"). Additive.
 type MacroReadout struct {
-	Model          string             `json:"model"`        // "risk_appetite" | "gold_backdrop"
-	Experimental   bool               `json:"experimental"` // true for the gold model
-	Reading        string             `json:"reading"`      // risk_on|mixed|risk_off (risk) · positive|mixed|negative|no_read (gold)
-	RuleScore      *int               `json:"rule_score"`   // the model's rounded score; null without one
-	RuleScoreExact *float64           `json:"rule_score_unrounded"`
-	Bands          MacroBands         `json:"bands"`
-	MinVotingLamps int                `json:"min_voting_lamps"`
-	VotingLamps    int                `json:"voting_lamps"`
-	LiveLamps      int                `json:"live_lamps"`
-	Lamps          []MacroLampReadout `json:"lamps"`
-	Freshness      MacroFreshness     `json:"freshness"`
-	FearGreed      *MacroFearGreed    `json:"fear_greed"`
-	IsForecast     bool               `json:"is_forecast"` // always false
+	Model          string     `json:"model"`        // "risk_appetite" | "gold_backdrop"
+	Experimental   bool       `json:"experimental"` // true for the gold model
+	Reading        string     `json:"reading"`      // risk_on|mixed|risk_off (risk) · positive|mixed|negative|no_read (gold)
+	RuleScore      *int       `json:"rule_score"`   // the model's rounded score; null without one
+	RuleScoreExact *float64   `json:"rule_score_unrounded"`
+	Bands          MacroBands `json:"bands"`
+	MinVotingLamps int        `json:"min_voting_lamps"`
+	VotingLamps    int        `json:"voting_lamps"`
+	LiveLamps      int        `json:"live_lamps"`
+	// TotalLamps (additive 2026-10-19): the lamps the payload carries — the
+	// "N" of "Data: 4 of N lamps live".
+	TotalLamps int `json:"total_lamps"`
+	// NeutralScore (additive 2026-10-19): the score with every voting lamp
+	// neutral — the "50" of "score = 50 + the contributions".
+	NeutralScore int `json:"neutral_score"`
+	// Contributions (additive 2026-10-19): voting lamps by contribution, the
+	// "3 positive, 0 negative, 2 neutral" of blocks.what_happened.
+	Contributions MacroContributions `json:"contributions"`
+	Lamps         []MacroLampReadout `json:"lamps"`
+	Freshness     MacroFreshness     `json:"freshness"`
+	FearGreed     *MacroFearGreed    `json:"fear_greed"`
+	IsForecast    bool               `json:"is_forecast"` // always false
 }
 
 // MacroBands: reading is Low's side below Low, High's side above High, mixed
@@ -980,6 +1019,33 @@ type MacroFearGreed struct {
 
 func ptrF(v float64) *float64 { return &v }
 
+// contributionCounts counts the voting lamps by contribution — the "N
+// positive, N negative, N neutral" of the macro block.
+func (r modelRead) contributionCounts() (pos, neg, neu int) {
+	for _, lr := range r.lamps {
+		switch lr.word {
+		case contribPositive:
+			pos++
+		case contribNegative:
+			neg++
+		case contribNeutral:
+			neu++
+		}
+	}
+	return pos, neg, neu
+}
+
+// MacroContributions counts the voting lamps of a model by contribution.
+type MacroContributions struct {
+	Positive int `json:"positive"`
+	Negative int `json:"negative"`
+	Neutral  int `json:"neutral"`
+}
+
+// macroNeutralScore is the score of an all-neutral vote: score = 50 + Σ
+// vs_neutral.
+const macroNeutralScore = 50
+
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
 func (r modelRead) readout(m *MacroResp, reading string, ruleScore *int, now time.Time) *MacroReadout {
@@ -991,8 +1057,12 @@ func (r modelRead) readout(m *MacroResp, reading string, ruleScore *int, now tim
 		Bands:          MacroBands{Low: r.m.low, High: r.m.high},
 		MinVotingLamps: r.m.minVoters,
 		VotingLamps:    r.voters,
+		TotalLamps:     len(m.Lamps),
+		NeutralScore:   macroNeutralScore,
 		Lamps:          make([]MacroLampReadout, 0, len(r.lamps)),
 	}
+	pos, neg, neu := r.contributionCounts()
+	out.Contributions = MacroContributions{Positive: pos, Negative: neg, Neutral: neu}
 	if r.pts {
 		out.RuleScoreExact = ptrF(round2(r.exact))
 	}
@@ -1208,7 +1278,7 @@ func (v macroView) scoreLine(r modelRead) string {
 	case score == nil:
 		return fmt.Sprintf("No %s: %d of %d lamps vote, the rule needs %d", r.m.scoreName, r.voters, r.inModel, r.m.minVoters)
 	case r.pts:
-		return fmt.Sprintf("%s %d/100 %s 50 + the contributions above (%s)", upperFirst(r.m.scoreName), *score, r.eqSign(*score), bands)
+		return fmt.Sprintf("%s %d/100 %s %d + the contributions above (%s)", upperFirst(r.m.scoreName), *score, r.eqSign(*score), macroNeutralScore, bands)
 	}
 	return fmt.Sprintf("%s %d/100 (%s)", upperFirst(r.m.scoreName), *score, bands)
 }
@@ -1310,17 +1380,7 @@ func (v macroView) limitations() string {
 func (v macroView) blocks() *ContentBlocks {
 	r := v.risk
 	word := regimeWord(v.regime)
-	var pos, neg, neu int
-	for _, lr := range r.lamps {
-		switch lr.word {
-		case contribPositive:
-			pos++
-		case contribNegative:
-			neg++
-		case contribNeutral:
-			neu++
-		}
-	}
+	pos, neg, neu := r.contributionCounts()
 	score := "no rule score"
 	if c := v.compositeText(); c != "" {
 		score = c

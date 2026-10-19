@@ -82,7 +82,10 @@ const momentumWhyLevel = "No price level: 55 and 45 are the RSI(14) thresholds, 
 // under 55 never prints at or above 55 and a value over 45 never prints at or
 // below 45 (at %.1f, 54.96 used to print "55.0 < 55"). The printed value is
 // never more than 0.1 from the real one.
-func rsiShown(v float64) string {
+func rsiShown(v float64) string { return fmt.Sprintf("%.1f", rsiShownValue(v)) }
+
+// rsiShownValue is the value rsiShown prints, as a number (rsi_shown_value).
+func rsiShownValue(v float64) float64 {
 	var s float64
 	if v < 50 {
 		s = math.Ceil(v*10) / 10
@@ -95,7 +98,7 @@ func rsiShown(v float64) string {
 			s = momentumBullRSI - 0.1
 		}
 	}
-	return fmt.Sprintf("%.1f", s)
+	return s
 }
 
 // macdSide is the histogram as the card shows it: its sign only.
@@ -613,6 +616,8 @@ func momentumResult(spec assetSpec, r momentumRead, fresh string) AssetResult {
 	// rounding `rsi` itself can land on the other side of a threshold from the
 	// text (live 2026-09-16: a gauge printed 60.9 under text saying 60.8).
 	res.RSIShown = rsiShown(rsi)
+	shown := rsiShownValue(rsi)
+	res.RSIShownValue = &shown
 	res.Blocks = momentumBlocks(spec.Display, r.interval, rsi, hist)
 	return res
 }
@@ -687,12 +692,52 @@ func composeMomentum(c *Card, assets []momentumAsset, tf string, now time.Time) 
 		}
 	}
 	c.Deviation = maxDev
+	c.Momentum = momentumReadoutOf(assets)
 	c.Verdict, c.Emoji = momentumHeader(assets)
 	c.Short = c.Verdict
 	// The card's own content blocks (additive 2026-09-16). The multi-asset card
 	// had none, so the site had no CURRENT READING / SCOPE section for it and
 	// every caveat sank into the numbered facts list.
 	c.Blocks = momentumOverviewBlocks(assets)
+}
+
+// momentumVolumeBars is the "20-bar average" of the volume context line
+// (volRatio20).
+const momentumVolumeBars = 20
+
+// momentumReadoutOf is the card's numeric readout: the rule's thresholds,
+// and on a multi-asset card (assets != nil) the verdict's counter from the
+// same tally the header prints. The context numbers are set by the callers
+// that print them.
+func momentumReadoutOf(assets []momentumAsset) *MomentumReadout {
+	ro := &MomentumReadout{
+		Thresholds:        MomentumThresholds{RSIBullish: momentumBullRSI, RSIBearish: momentumBearRSI, MACDZero: 0},
+		VolumeAverageBars: momentumVolumeBars,
+	}
+	if assets != nil {
+		t := momentumTallyOf(assets)
+		cnt := &MomentumCounts{Bullish: len(t.bull), Bearish: len(t.bear), NotConfirmed: t.neutral, Unavailable: t.failed,
+			BullishAssets: append([]string{}, t.bull...), BearishAssets: append([]string{}, t.bear...)}
+		if t.sameTF && t.tf != "" {
+			tf := t.tf
+			cnt.Timeframe = &tf
+		}
+		ro.Counts = cnt
+	}
+	return ro
+}
+
+// setRS records the RS context line's numbers (momentumRSContext prints
+// exactly these two windows, each only when served).
+func (ro *MomentumReadout) setRS(item MomentumItem) {
+	if item.RS7D != nil {
+		v := *item.RS7D
+		ro.ETHMinusBTC7dPP = &v
+	}
+	if item.RS30D != nil {
+		v := *item.RS30D
+		ro.ETHMinusBTC30dPP = &v
+	}
 }
 
 // momentumDegraded fills a multi-asset card that produced no reading at all:

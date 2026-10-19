@@ -67,9 +67,9 @@ func TestTrendLevelsOnlyWhenConfirmed(t *testing.T) {
 		wantKeys []string
 		wantSide string
 	}{
-		{"up_inside", -1, []string{"invalidation", "invalidation_side", "pullback_zone"}, "below"},
-		{"down", -1, []string{"invalidation", "invalidation_side", "pullback_zone"}, "above"},
-		{"down", 0, []string{"pullback_zone"}, ""}, // confirmed, ATR = 0: zone only
+		{"up_inside", -1, []string{"distance_to_pullback_pct", "invalidation", "invalidation_atr_multiple", "invalidation_distance_pct", "invalidation_side", "pullback_position", "pullback_zone"}, "below"},
+		{"down", -1, []string{"distance_to_pullback_pct", "invalidation", "invalidation_atr_multiple", "invalidation_distance_pct", "invalidation_side", "pullback_position", "pullback_zone"}, "above"},
+		{"down", 0, []string{"distance_to_pullback_pct", "pullback_position", "pullback_zone"}, ""}, // confirmed, ATR = 0: zone only (+ its 2026-10-19 distance)
 		{"flat", -1, nil, ""},
 		{"grey", -1, nil, ""},
 		{"conflict", -1, nil, ""},

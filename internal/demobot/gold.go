@@ -243,6 +243,7 @@ func (a *Agents) GoldCard(ctx context.Context) Card {
 	if vol := a.VolCard(ctx, goldDailySpec); !vol.Offline && vol.State != "" {
 		if lv, ok := vol.Levels.(VolLevels); ok {
 			in.vol = volShortLine(lv.Ratio, lv.Timeframe)
+			in.volLv = &lv
 		}
 	}
 	return goldCardFrom(in)

@@ -631,6 +631,14 @@ type breakHoldResult struct {
 //   - a test still open when the window ends is dropped the same way.
 //   - warmup bars without a valid ATR are skipped; a close that gaps across
 //     the whole band in one bar never lands inside it and is not a test.
+//
+// The test definition's two parameters, printed by the S/R card's window
+// line and served as levels.test_band_atr / test_resolve_bars.
+const (
+	srTestBandATR     = 0.25 // the band: this many ATR(14) around the level
+	srTestResolveBars = 3    // a test resolves within this many bars
+)
+
 func breakHoldStats(level float64, closes, atr []float64) breakHoldResult {
 	n := len(closes)
 	if len(atr) < n {
@@ -644,7 +652,7 @@ func breakHoldStats(level float64, closes, atr []float64) breakHoldResult {
 			i++
 			continue
 		}
-		band := 0.25 * atr[i]
+		band := srTestBandATR * atr[i]
 		d := closes[i] - level
 		if math.Abs(d) > band {
 			if d > 0 {
@@ -665,7 +673,7 @@ func breakHoldStats(level float64, closes, atr []float64) breakHoldResult {
 		frozenBand := band // fix 9: entry bar's ATR governs the whole test
 		resolved := false
 		resolveAt := i
-		for j := i + 1; j <= i+3 && j < n; j++ {
+		for j := i + 1; j <= i+srTestResolveBars && j < n; j++ {
 			dj := closes[j] - level
 			if math.Abs(dj) <= frozenBand {
 				continue // still inside the frozen band
@@ -683,11 +691,11 @@ func breakHoldStats(level float64, closes, atr []float64) breakHoldResult {
 		if !resolved {
 			// Unresolved — consolidation inside the band, or the window ended
 			// mid-test. Either way: not a hold, not a break, not a test.
-			if i+3 >= n {
+			if i+srTestResolveBars >= n {
 				return r
 			}
 			outsideSide = 0 // next test needs a fresh exit → entry
-			i = i + 4
+			i = i + srTestResolveBars + 1
 			continue
 		}
 		i = resolveAt // the resolving bar re-seeds outsideSide on its own pass

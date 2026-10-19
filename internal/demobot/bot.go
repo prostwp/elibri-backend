@@ -647,6 +647,28 @@ type digestSection struct {
 	lines  []string   // HTML lines, exactly as rendered
 	status cardStatus // statusOK when the section carries a real reading
 	asOf   time.Time  // data time of the section; zero = none (offline, no stamp)
+	// The section card's machine objects behind the numbers its lines print
+	// (served on digest.sections[], docs "Digest readout"). Not rendered.
+	levels   any
+	results  []AssetResult
+	momentum *MomentumReadout
+	trend    *TrendReadout
+	theme    *DigestTheme
+}
+
+// sectionResults copies a card's per-asset rows for a digest section without
+// their content blocks: the section prints one line, not the per-asset prose.
+// nil when the card has no rows.
+func sectionResults(rows []AssetResult) []AssetResult {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]AssetResult, len(rows))
+	for i, r := range rows {
+		r.Blocks = nil
+		out[i] = r
+	}
+	return out
 }
 
 // digestSections lists every block below the winner: the one-liners of the
@@ -664,6 +686,7 @@ func digestSections(g gathered, winner string, now time.Time) []digestSection {
 		s := digestSection{key: k, lines: []string{c.OneLiner()}, status: c.effectiveStatus()}
 		if !c.Offline {
 			s.asOf = c.DataTime
+			s.levels, s.results, s.momentum, s.trend = c.Levels, sectionResults(c.Results), c.Momentum, c.Trend
 		}
 		out = append(out, s)
 	}
@@ -677,6 +700,10 @@ func digestSections(g gathered, winner string, now time.Time) []digestSection {
 		fx.status = statusOK
 		table := fxTableOf(g.fx, now)
 		fx.lines = table.lines()
+		// The rows exactly as the FX card serves them (fxOverviewCard).
+		for i, r := range table.shown {
+			fx.results = append(fx.results, fxResult(r, now, i+1))
+		}
 		if !table.oldest.IsZero() {
 			fx.asOf = table.oldest.UTC()
 		}
@@ -693,7 +720,11 @@ func digestSections(g gathered, winner string, now time.Time) []digestSection {
 	fx.title = fxDigestTitle(now, fx.asOf, fxPairsRead(g.fx) > 0)
 	out = append(out, fx)
 	if len(g.extras) > 0 { // best-effort context line, omitted when the radar is silent
-		out = append(out, digestSection{key: "narrative", lines: append([]string{}, g.extras...), asOf: g.narrAt})
+		s := digestSection{key: "narrative", lines: append([]string{}, g.extras...), asOf: g.narrAt}
+		if n := g.topNarr; n != nil { // the theme narrativeDigestLine printed
+			s.theme = &DigestTheme{Narrative: n.Narrative, ActivityScore: n.TrendScore, MatchedItems24h: n.MentionCount}
+		}
+		out = append(out, s)
 	}
 	return out
 }

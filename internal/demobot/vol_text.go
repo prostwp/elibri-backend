@@ -148,12 +148,7 @@ func volRatioShown(r float64) string { return volKShown(volRatioK(r)) }
 // truncated toward 0: inside the range it never reaches "20% below" or
 // "25% above".
 func volDistance(r float64) string {
-	d := volRatioK(r) - 1000
-	side := "above"
-	if d < 0 {
-		side, d = "below", -d
-	}
-	p := d / 10
+	p, side := volDistanceOf(r)
 	switch {
 	case p == 0:
 		return "within 1% of its 30-bar baseline"
@@ -162,6 +157,32 @@ func volDistance(r float64) string {
 	}
 	return fmt.Sprintf("%d%% %s its 30-bar baseline", p, side)
 }
+
+// volDistanceOf is the whole-percent distance volDistance prints and its
+// side: from the printed ratio, truncated toward 0.
+func volDistanceOf(r float64) (p int, side string) {
+	d := volRatioK(r) - 1000
+	side = "above"
+	if d < 0 {
+		side, d = "below", -d
+	}
+	return d / 10, side
+}
+
+// volDistanceSigned is that distance signed (− below), the JSON distance_pct.
+func volDistanceSigned(r float64) int {
+	p, side := volDistanceOf(r)
+	if side == "below" {
+		return -p
+	}
+	return p
+}
+
+// volRatioShownValue is the printed ratio as a number (ratio_shown).
+func volRatioShownValue(r float64) float64 { return float64(volRatioK(r)) / 1000 }
+
+// volBaselineBars is the "30-bar" baseline the text names.
+const volBaselineBars = 30
 
 // volWord is the state as the card text says it. The machine state stays
 // expanding | normal | compressed; only expanding is reworded ("elevated":
@@ -277,6 +298,9 @@ func volLevelsOf(r volRead) VolLevels {
 		Baseline:       r.baseline,
 		Ratio:          ratio,
 		Thresholds:     VolThresholds{Compressed: volCompressedAt, Expanding: volExpandingAt},
+		RatioShown:     volRatioShownValue(ratio),
+		DistancePct:    volDistanceSigned(ratio),
+		BaselineBars:   volBaselineBars,
 	}
 }
 

@@ -525,10 +525,12 @@ func fundingCardFrom(quotes map[string]fundingQuote, ratesErr error, liq *Fundin
 		Coverage: FundingCoverage{Received: len(rows), Total: len(fundingSymbols), Missing: missing,
 			MinForVerdict: fundingMinCoverage},
 	}
+	ro.Rates = []FundingRate{}
 	for _, r := range rows {
 		if r.crossed() {
 			ro.Crossed++
 		}
+		ro.Rates = append(ro.Rates, FundingRate{Symbol: r.sym, Rate: r.rate, RatePct: fundingUnitsPct(r.u)})
 	}
 
 	var liqRead *fundingLiqRead
@@ -599,6 +601,7 @@ func fundingCardFrom(quotes map[string]fundingQuote, ratesErr error, liq *Fundin
 		}
 		ro.SelectionReason = &reason
 		c.Facts = append(c.Facts, fundingCheckLine(s), fundingDistanceLine(s), fundingWhyLine(s, len(rows), ro.Crossed))
+		fundingDistReadout(ro, s)
 		var others []string
 		for i, r := range rows {
 			if i != sel {
@@ -648,25 +651,86 @@ func fundingCheckLine(s fundingRow) string {
 	return fmt.Sprintf("Last funding rate: %s < %s < %s → within thresholds", fundingShortShown, s.pct(), fundingLongShown)
 }
 
-func fundingDistanceLine(s fundingRow) string {
+// fundingDist is what the distance line says about the shown rate, in printed
+// units: past a threshold (which, exactly at it, by how much) or the nearest
+// threshold within them and the distance to it.
+type fundingDist struct {
+	past    string // "long" | "short" | "" (within the thresholds)
+	exact   bool   // exactly at the past threshold
+	pastU   int64  // units past it (fundingPastPP prints ≤0 as "<0.0001 pp")
+	nearest string // within: "long" | "short" | "equidistant"
+	nearU   int64  // within: units to the nearest threshold
+}
+
+func fundingDistOf(s fundingRow) fundingDist {
 	switch {
-	case s.crossedLong && s.rate == fundingLongsCrowded:
-		return fmt.Sprintf("Exactly at the long threshold %s · short threshold %s", fundingLongShown, fundingShortShown)
 	case s.crossedLong:
-		return fmt.Sprintf("Past the long threshold by %s · short threshold %s", fundingPastPP(s.u-fundingLongU), fundingShortShown)
-	case s.crossedShort && s.rate == fundingShortsCrowded:
-		return fmt.Sprintf("Exactly at the short threshold %s · long threshold %s", fundingShortShown, fundingLongShown)
+		return fundingDist{past: "long", exact: s.rate == fundingLongsCrowded, pastU: s.u - fundingLongU}
 	case s.crossedShort:
-		return fmt.Sprintf("Past the short threshold by %s · long threshold %s", fundingPastPP(fundingShortU-s.u), fundingLongShown)
+		return fundingDist{past: "short", exact: s.rate == fundingShortsCrowded, pastU: fundingShortU - s.u}
 	}
 	dLong, dShort := fundingLongU-s.u, s.u-fundingShortU
 	switch {
 	case dShort < dLong:
-		return fmt.Sprintf("Nearest threshold: short %s, %s away", fundingShortShown, fundingPP(dShort))
+		return fundingDist{nearest: "short", nearU: dShort}
 	case dLong < dShort:
-		return fmt.Sprintf("Nearest threshold: long %s, %s away", fundingLongShown, fundingPP(dLong))
+		return fundingDist{nearest: "long", nearU: dLong}
 	}
-	return fmt.Sprintf("Nearest threshold: equidistant, %s from both", fundingPP(dLong))
+	return fundingDist{nearest: "equidistant", nearU: dLong}
+}
+
+func fundingDistanceLine(s fundingRow) string {
+	d := fundingDistOf(s)
+	switch {
+	case d.past == "long" && d.exact:
+		return fmt.Sprintf("Exactly at the long threshold %s · short threshold %s", fundingLongShown, fundingShortShown)
+	case d.past == "long":
+		return fmt.Sprintf("Past the long threshold by %s · short threshold %s", fundingPastPP(d.pastU), fundingShortShown)
+	case d.past == "short" && d.exact:
+		return fmt.Sprintf("Exactly at the short threshold %s · long threshold %s", fundingShortShown, fundingLongShown)
+	case d.past == "short":
+		return fmt.Sprintf("Past the short threshold by %s · long threshold %s", fundingPastPP(d.pastU), fundingLongShown)
+	}
+	switch d.nearest {
+	case "short":
+		return fmt.Sprintf("Nearest threshold: short %s, %s away", fundingShortShown, fundingPP(d.nearU))
+	case "long":
+		return fmt.Sprintf("Nearest threshold: long %s, %s away", fundingLongShown, fundingPP(d.nearU))
+	}
+	return fmt.Sprintf("Nearest threshold: equidistant, %s from both", fundingPP(d.nearU))
+}
+
+// fundingUnitsPct converts printed units (1 = 0.0001%) to the printed percent.
+func fundingUnitsPct(u int64) float64 { return float64(u) / 10000 }
+
+// fundingDistReadout fills the readout's distance fields from the line's own
+// numbers (fundingDistOf).
+func fundingDistReadout(ro *FundingReadout, s fundingRow) {
+	d := fundingDistOf(s)
+	if d.past == "" {
+		near, pp := d.nearest, fundingUnitsPct(d.nearU)
+		ro.NearestThreshold, ro.NearestThresholdDistancePP = &near, &pp
+		return
+	}
+	var pp float64
+	switch {
+	case d.exact:
+		pp = 0
+	case d.pastU <= 0: // printed "<0.0001 pp": the raw distance, in pp
+		pp = math.Abs(s.rate-s.sideThreshold()) * 100
+	default:
+		pp = fundingUnitsPct(d.pastU)
+	}
+	ro.PastThresholdByPP = &pp
+}
+
+// ratioShownValue is the printed ratio as a number (">1.00×" → 1).
+func (r fundingRow) ratioShownValue() float64 {
+	th := int64(fundingLongU)
+	if r.negative() {
+		th = -fundingShortU
+	}
+	return float64(absI(r.u)*100/th) / 100
 }
 
 func fundingWhyLine(s fundingRow, n, crossed int) string {
@@ -745,8 +809,9 @@ func fundingResults(rows []fundingRow, sel int) []AssetResult {
 		r := rows[i]
 		rate, th, ratio := r.rate, r.sideThreshold(), r.ratio()
 		crossed, selected := r.crossed(), i == sel
+		pct, shown := fundingUnitsPct(r.u), r.ratioShownValue()
 		out = append(out, AssetResult{Asset: fundingBase(sym), Symbol: sym, OK: true, Rate: &rate, SideThreshold: &th,
-			Crossed: &crossed, RatioToThreshold: &ratio, Selected: &selected})
+			Crossed: &crossed, RatioToThreshold: &ratio, Selected: &selected, RatePct: &pct, RatioToThresholdShown: &shown})
 	}
 	return out
 }

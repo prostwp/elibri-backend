@@ -210,6 +210,16 @@ var (
 	hookPPNumRe = regexp.MustCompile(hookPPNum)
 )
 
+// hookLiveNumberKeys are the machine twins of the RS context line's numbers
+// (MomentumReadout, additive 2026-10-19): the same live return gaps the line
+// prints, so they are masked the same way — the number, wherever the momentum
+// object rides (its own card, digest/top, a digest section). A null stays
+// null: a window the backend stops serving is a real change and still sends.
+var hookLiveNumberKeys = map[string]bool{
+	"eth_minus_btc_7d_pp":  true,
+	"eth_minus_btc_30d_pp": true,
+}
+
 // hookPPNum matches one printed return gap — ppShown's "%+.1f" or its
 // clamps. Kept as a source string so the line pattern and the number pattern
 // cannot describe different things.
@@ -641,7 +651,9 @@ func (n hookNormalizer) maskIfRequestTime(m map[string]any, key string) {
 //     candidates[].data_as_of and sections[].data_as_of inside the window
 //     (the funding entries always are);
 //   - any string: the stale-F&G "(Nh ago)" age, and the numbers of momentum's
-//     RS context line (live prices under a closed-bar stamp).
+//     RS context line (live prices under a closed-bar stamp);
+//   - any object: the same RS numbers in machine form,
+//     momentum.eth_minus_btc_7d_pp / _30d_pp (hookLiveNumberKeys).
 func hookNormalize(agent string, body []byte, start, end time.Time) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber() // numbers stay byte-exact through the round trip
@@ -736,6 +748,12 @@ func hookMaskStrings(v any) any {
 		})
 	case map[string]any:
 		for k, e := range x {
+			if hookLiveNumberKeys[k] {
+				if _, isNum := e.(json.Number); isNum {
+					x[k] = hookMasked
+					continue
+				}
+			}
 			x[k] = hookMaskStrings(e)
 		}
 		return x

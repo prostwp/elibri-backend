@@ -74,9 +74,10 @@ type goldInputs struct {
 	px        float64   // close of the last closed 1h bar
 	pxAt      time.Time // its close time
 	hasPx     bool
-	macro     Card     // MacroAssetCard(gold): State "" = no read
-	sup, res  *SRLevel // nearest clustered support below / resistance above px
-	vol       string   // volShortLine, "" when the ATR read is unavailable
+	macro     Card       // MacroAssetCard(gold): State "" = no read
+	sup, res  *SRLevel   // nearest clustered support below / resistance above px
+	vol       string     // volShortLine, "" when the ATR read is unavailable
+	volLv     *VolLevels // the read vol was worded from (gold.volatility); nil with vol ""
 	now       time.Time
 	// roll: which contract each GC=F bar is on (gold_roll.go). In a window
 	// sup/res were picked against the last daily close, not px (GoldCard).
@@ -211,7 +212,10 @@ func goldCardFrom(in goldInputs) Card {
 		}
 		invLevel, invSide = lv.Invalidation, lv.InvalidationSide
 		c.Facts = append(c.Facts, inv)
-		c.Levels = lv
+		// The daily trend card's levels, without the distances it adds
+		// (2026-10-19): those are measured from the DAILY close, which this
+		// card does not print — its price is the 1h close.
+		c.Levels = TrendLevels{Invalidation: lv.Invalidation, InvalidationSide: lv.InvalidationSide, PullbackZone: lv.PullbackZone}
 	}
 
 	// 5. Background: macro (an absent read is stated), S/R, volatility.
@@ -591,6 +595,15 @@ func goldKeyLevelsLineFrom(head string, sup, res *SRLevel) string {
 		head, goldPx(sup.Raw), classPivots(*sup), goldPx(res.Raw), classPivots(*res))
 }
 
+// goldLevelRefOf is one level of the nearest-levels line in machine form,
+// nil when nothing clustered on that side.
+func goldLevelRefOf(l *SRLevel) *GoldLevelRef {
+	if l == nil {
+		return nil
+	}
+	return &GoldLevelRef{Level: l.Raw, Label: goldPx(l.Raw), Class: srClassKey(srClassOf(l.Touches)), Pivots: l.Touches}
+}
+
 // goldBlocksOf is the content-ready form. what_happened is a SNAPSHOT: the
 // agent keeps no previous state, so it cannot say what changed — the sentence
 // says so itself.
@@ -668,6 +681,24 @@ func goldReadoutOf(in goldInputs, confirmed, stale bool, pos string) *GoldReadou
 		roll = GoldRoll{State: goldRollUnknown, Reason: &r}
 	}
 	g.Roll = &roll
+	// The nearest-levels line is printed only with a 1h price (goldCardFrom);
+	// in a roll window it is taken from the last daily close.
+	if in.hasPx {
+		ref := "price_1h"
+		if in.inRollWindow() {
+			ref = "daily_close"
+		}
+		g.NearestLevels = &GoldNearestLevels{Reference: ref, Support: goldLevelRefOf(in.sup), Resistance: goldLevelRefOf(in.res)}
+	}
+	// ADX as the regime block prints it (the daily trend card's own readout).
+	if tr := in.trend.Trend; tr != nil {
+		adx, shown := tr.ADX, tr.ADXShown
+		g.ADX, g.ADXShown = &adx, &shown
+	}
+	if lv := in.volLv; lv != nil && in.vol != "" {
+		g.Volatility = &GoldVolatility{State: lv.State, Timeframe: lv.Timeframe, ATRRatio: lv.Ratio,
+			ATRRatioShown: lv.RatioShown, BaselineBars: lv.BaselineBars}
+	}
 	if in.macro.State != "" {
 		st := in.macro.State
 		g.MacroBackdrop = &st

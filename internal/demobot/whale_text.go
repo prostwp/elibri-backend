@@ -112,6 +112,24 @@ type WhaleReadout struct {
 	// carried a direction. `asset` in the envelope is composite on the labeled
 	// path, so this is the field to read for the one headline asset.
 	LeadAsset *string `json:"lead_asset"`
+	// The "prior 24h net flow" line (additive 2026-10-19): the asset it is
+	// about (BTC on the monitor card, lead_asset on the labeled card), the
+	// prior 24h net flow in USD and its change in percent (the backend's
+	// flow_pct, ±999-capped; the card prints it as a whole percent). All null
+	// when the card prints no such line; change_pct alone null when the
+	// backend served no change.
+	Prior24hAsset      *string  `json:"prior_24h_asset"`
+	Prior24hNetFlowUSD *float64 `json:"prior_24h_net_flow_usd"`
+	Prior24hChangePct  *float64 `json:"prior_24h_change_pct"`
+}
+
+// setPrior24h records the prior-24h line the card printed.
+func (ro *WhaleReadout) setPrior24h(asset string, prev float64, pct *float64) {
+	ro.Prior24hAsset, ro.Prior24hNetFlowUSD = &asset, &prev
+	if pct != nil {
+		v := *pct
+		ro.Prior24hChangePct = &v
+	}
 }
 
 // WhaleTop is how the listed transactions were picked.
@@ -378,6 +396,7 @@ func whaleCardFrom(w *WhaleResp, now time.Time) Card {
 			base += fmt.Sprintf(" → %+.0f%% change", *btc.FlowPct)
 		}
 		c.Facts = append(c.Facts, whaleFit(base))
+		ro.setPrior24h("BTC", *btc.NetFlowPrev24h, btc.FlowPct)
 	}
 	c.Facts = append(c.Facts, whaleLineSample, whaleLineGaps)
 	if len(shown) > 0 {

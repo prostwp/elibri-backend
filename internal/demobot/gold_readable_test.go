@@ -60,9 +60,17 @@ func goldFixture(state string) goldInputs {
 		sup:       &sup,
 		res:       &res,
 		vol:       volShortLine(1.086, goldDailySpec.Interval),
+		volLv:     goldFixtureVol(),
 		now:       goldNow,
 		roll:      goldRollNoneOn("GCZ26"),
 	}
+}
+
+// goldFixtureVol is the volatility read the fixture's vol line words (ratio
+// 1.086 on 1d), as GoldCard carries it beside the line.
+func goldFixtureVol() *VolLevels {
+	lv := volLevelsOf(volRead{atr: 1.086, baseline: 1, price: 4354.9, interval: goldDailySpec.Interval})
+	return &lv
 }
 
 // goldRollNoneOn is an established "no roll": both bars on one contract.

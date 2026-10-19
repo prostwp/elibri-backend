@@ -41,6 +41,8 @@ Telegram.
 | `GET /agents/top` | — | The single strongest signal right now, with the AI brief + why-line |
 | `GET /showcase` | — | **Landing catalog**: every agent with `live`/`degraded` status, headline and one-liner (see [landing showcase](#landing-showcase)) |
 | `GET /showcase/example` | — | **Landing story**: one worked example — detected → explained → data → conclusion |
+| `GET /openapi.json` · `GET /openapi.yaml` | — | This API as an OpenAPI 3.1 document (see [OpenAPI / Swagger](#openapi--swagger)) |
+| `GET /docs` | — | Swagger UI over `/openapi.json` |
 
 **Assets** for `momentum` / `trend` / `sr` / `vol`:
 `btc` (default), `eth`, `eurusd`, `gbpusd`, `usdjpy`, `xauusd` — aliases
@@ -1131,6 +1133,74 @@ degraded states are branchable too:
 ```json
 {"error": "Trend Agent: Insufficient history — no verdict", "ok": false, "reason": "insufficient_history"}
 ```
+
+## OpenAPI / Swagger
+
+The API describes itself in an OpenAPI 3.1 document,
+`internal/demobot/openapi.yaml` — embedded in the binary and served by the
+same process:
+
+- `GET /openapi.yaml` — the document as written;
+- `GET /openapi.json` — the same document as JSON (converted at start-up,
+  key order kept);
+- `GET /docs` — Swagger UI (`swagger-ui-dist` 5.33.0 from jsDelivr, pinned
+  with subresource integrity) rendering `/openapi.json`. Locally:
+  `http://127.0.0.1:8090/docs`.
+
+The document covers every GET address (`/`, `/agents`, `/agents/{name}` with
+its parameters, `/agents/trend/chart`, `/showcase`, `/showcase/example`) and
+every body: the `Card` envelope and the machine object of each agent
+(`levels` per agent, `results`, `blocks`, `trend`, `momentum`, `fx`, `macro`,
+`funding`, `gold`, `whale`, `narrative`, `risk`, `digest`), the `503` degraded
+body and the error envelope. Units and `null` semantics are in each field's
+description; fields added 2026-10-19 carry `x-added: "2026-10-19"`.
+
+Machine objects are closed (`additionalProperties: false`): a field the API
+serves is always described. The envelope itself stays open, so a client
+should ignore top-level keys it does not know. A contract test validates
+every body the API serves — each address end to end over stub sources, the
+builders' fixture cards, and production answers of 2026-10-19 — against the
+document, and fails on an undescribed field.
+
+## Numbers as fields (2026-10-19)
+
+Every number a card prints in its texts (verdict, facts, blocks, digest
+lines) is also served as a clean JSON field, read from the **same variable**
+the text is formatted from — never recomputed. Units sit in the name: `_pct`
+is percent as printed (`0.5` = 0.5%), `_pp` percentage points, `_usd` US
+dollars; prices are in quote units. Raw fields keep full precision;
+`*_shown` fields are exactly what the text prints where the print rounds in
+a way that matters (toward a threshold). An absent reading is `null` (or the
+field is absent where noted), never `0`. All additive: no existing field,
+text or rule changed.
+
+| Agent | Where | New fields |
+|---|---|---|
+| trend | `trend` (new, every ok trend card) | `state`, `timeframe`, `price` (last close), `adx`, `adx_shown` (floored to one decimal, as printed), `adx_threshold` (25), `adx_flat_threshold` (20), `ema20`, `ema50`, `ema200`, `ema50_distance_pct` / `ema200_distance_pct` ((close − EMA) / close × 100, + when price is above — "0.2% above EMA50" = +0.2), `atr` (null without range) |
+| trend | `levels` (confirmed only, as before) | `pullback_position` (below \| inside \| above), `distance_to_pullback_pct` ((close − nearest zone edge) / close × 100; 0 inside), `invalidation_distance_pct` ((invalidation − close) / close × 100 — the "(-1.8%, 1 ATR …)"), `invalidation_atr_multiple` (1). Price, ADX and EMAs are not repeated here: an unconfirmed card has no `levels` (decision 2026-09-15) yet prints them, so they live in `trend` |
+| sr | `levels` | `price`, `price_label`, `timeframe`, `window_bars`, `nearest_resistance_pct` / `nearest_support_pct` (the "Nearest shown levels" numbers; null when the side shows no level), `test_band_atr` (0.25), `test_resolve_bars` (3); per level `distance_pct` ((level − price) / price × 100 from the PRINTED numbers, as the line prints it; 0 "at price") and `resolved_tests` (holds + breaks) |
+| vol | `levels` | `ratio_shown` (three decimals, rounded toward 1, as printed), `distance_pct` (the verdict's whole "N% below/above", signed, − below, 0 = "within 1%"), `baseline_bars` (30) |
+| gold | `gold` | `nearest_levels` {`reference`: price_1h \| daily_close, `support` / `resistance`: {`level`, `label`, `class`, `pivots`} or null} — null without a 1h price; `adx`, `adx_shown`; `volatility` {`state`, `timeframe`, `atr_ratio`, `atr_ratio_shown`, `baseline_bars`} or null |
+| funding | `funding`, `results[]` | `rates[]` {`symbol`, `rate`, `rate_pct`} for every received major (the "Other majors" / "Rates received" lines); `nearest_threshold` (long \| short \| equidistant) and `nearest_threshold_distance_pp` within the thresholds; `past_threshold_by_pp` past one (0 exactly at it); rows add `rate_pct` and `ratio_to_threshold_shown` (">1.00×" served as 1) |
+| whale | `whale` | `prior_24h_asset`, `prior_24h_net_flow_usd`, `prior_24h_change_pct` — the "prior 24h net flow" line; null when not printed |
+| momentum | `momentum` (new), `results[]` | `thresholds` {`rsi_bullish` 55, `rsi_bearish` 45, `macd_zero` 0}; `counts` {`bullish`, `bearish`, `not_confirmed`, `unavailable`, `bullish_assets`, `bearish_assets`, `timeframe`} on multi-asset cards (null on one asset); `volume_ratio` + `volume_average_bars` (20); `eth_minus_btc_7d_pp` / `_30d_pp` (overview RS line); rows add `rsi_shown_value` (`rsi_shown` as a number) |
+| macro | `macro` | per lamp `rule.positive_above` / `positive_below` / `negative_above` / `negative_below` — the string conditions as numbers, strict like them (`"< 18"` = `positive_below: 18`); `total_lamps`, `neutral_score` (50), `contributions` {`positive`, `negative`, `neutral`} |
+| fx | `fx` (new) | the verdict's coverage counts: `pairs_total`, `pairs_read`, `gold_read`, `gold_no_recent_bar`, `short_history`, `unavailable`, `data_delayed` |
+| digest | `digest.sections[]` | each section carries the machine form of its line: `levels` (sr, vol, trend), `results` (momentum rows without blocks, funding majors, FX table rows), `momentum`, `trend`, `theme` {`narrative`, `activity_score`, `matched_items_24h`} (narrative) |
+| top | envelope | the winner's own objects, as before — the new ones included |
+
+Left as text on purpose (parameters, labels, list numbering — not readings):
+the indicator periods in `RSI(14)` / `MACD(12,26,9)`, instrument names
+(`S&P 500`), the "1." numbering of the news list, the history-sample length
+in the gold structure line, stablecoins valued at $1, and the trend
+thresholds where the gold card quotes the trend verdict. Catalog texts
+(`/agents` descriptions, `/showcase` headlines) quote cards: their numbers are
+in the agent's own address.
+
+Push hook: `momentum.eth_minus_btc_7d_pp` / `_30d_pp` follow live prices like
+the RS line they mirror, so the change hash masks them (see [what counts as a
+change](#what-counts-as-a-change)). Every other new field moves only with the
+card's reading.
 
 ## Machine-readable levels
 
@@ -2906,6 +2976,7 @@ builders:
 | `macro` only (`/agents/macro` and its `?asset=` views) — **rounded, not masked** | every lamp's quote is hashed at a coarser resolution: a session change (`macro.lamps[].delta_pct`, and the `%` a card prints) to **0.1 percentage points**, a price level (`macro.lamps[].value`, and the level a card prints) to **three significant digits**. In the machine readout for every lamp the payload carries; in the text only where a card renders a lamp — `facts[]` and `card_html` (`DXY 99.6, session 0.1% (0 to +0.5%) → neutral, 0` · `VIX 17.1 (<18) → +12.5`), and there only for the five lamps the rule knows (`DXY`, `US 10Y`, `VIX`, `S&P 500`, `Gold`). Free prose — `ai_text`, `reason`, the upper `blocks` — keeps its numbers | a lamp's `as_of` stamps a SESSION, not a close, so the quote behind it moves under one stamp, and the card prints it to two decimals. Prod 2026-09-21: 480 events in a day on the macro address, one every three minutes, all under one `data_as_of` — two bodies 200 s apart differed in a single character (`Gold -0.48% (fell) → +5.0` → `-0.47%`) while the rule score (68), its unrounded form (67.5) and every contribution stood still. **Rounded rather than dropped**, because dropping loses a real change: on the gold view the gold lamp is the SUBJECT of the card and not an input to the rule (`lampSelfLine` prints it with no rule condition and no contribution, and the gold model gives it no weight), so with its number gone nothing about it could change and gold walking 12% in a session reached no one. Rounding also catches what a status word cannot: VIX 12 → 17.9 is one `(<18)` all the way, and two buckets apart. Never rounded: `rule_score` and `rule_score_unrounded`, the contribution beside a lamp and its sign, the side it is filed under, the rule condition it met, the reading, the voting and live counts, each lamp's `as_of`, and a lamp appearing, dying (`— no data`), losing its session change or leaving the set — so a crossed threshold always fires. A `null` value or `delta_pct` is never rounded: that is the lamp losing its reading. A clamp (`>+999%`, `n/a`) is not a number and is left as printed. Macro addresses only: a macro winner inside `digest`/`top` keeps its numbers, as before. The raw quotes are in the event's `data` — only the change hash rounds them |
 | `digest` | `digest.generated_at`; `selection.highlight_data_as_of`, `selection.candidates[].data_as_of`, `sections[].data_as_of` when inside the call | the sweep clock; the funding entries are request-time stamps |
 | any text | the age in the stale Fear & Greed fact (`(52h ago)`) | counted to the request time. Gold prints no running age since 2026-09-15: its `stale (over 6h old)` is a fixed threshold, so a gold event fires when the flag flips, never on the hour |
+| any `momentum` object (its card, digest/top, a digest section) | the numbers of `eth_minus_btc_7d_pp` / `eth_minus_btc_30d_pp` (added 2026-10-19); a `null` stays `null` | the machine twins of the RS line below, same reason |
 | any text | the **numbers** of momentum's RS context line (`… incl. today, 7d * pp · 30d * pp`) | the backend anchors both sides on the still-forming UTC day, so the gap follows live prices while the card's `data_as_of` is the oldest closed bar. At 0.1 pp it crosses a rounding boundary back and forth (prod, 2026-09-16: eight moves in 14 reads 40 s apart, three of them back to a value already seen, on one bar). The numbers only: the line keeps its shape, so a window the backend stops serving (`rs_7d` nil on short history) is still a change. The line and its numbers are in the event's `data` — only the change hash ignores them |
 
 **A quote-only change of a macro address waits 15 minutes** (added

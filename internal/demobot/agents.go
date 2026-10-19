@@ -542,12 +542,14 @@ func (a *Agents) MomentumCard(ctx context.Context) Card {
 	// read used — no refetch, so it never sits beside a missing BTC read.
 	if ratio, ok := volRatio20(btcCandles); ok {
 		c.Facts = append(c.Facts, momentumVolumeContext("BTC "+btcSpec.Interval+" volume", ratio))
+		c.Momentum.VolumeRatio = &ratio
 	}
 	// ETH-vs-BTC return gap from the backend (secondary, best-effort).
 	if rs, err := a.api.MomentumRS(ctx, []string{"ETH"}); err == nil {
 		if item, ok := rs.Items["ETH"]; ok {
 			if line := momentumRSContext(item); line != "" {
 				c.Facts = append(c.Facts, line)
+				c.Momentum.setRS(item)
 			}
 		}
 	}
@@ -566,7 +568,7 @@ func volRatio20(candles []types.OHLCVCandle) (float64, bool) {
 	for _, c := range candles[n-21 : n-1] {
 		sum += c.Volume
 	}
-	avg := sum / 20
+	avg := sum / momentumVolumeBars
 	if avg <= 0 {
 		return 0, false
 	}
@@ -631,8 +633,11 @@ func momentumAssetCardFrom(spec assetSpec, r momentumRead, volRatio float64, vol
 	if spec.Source == srcYahoo && spec.Interval == "4h" {
 		c.Facts = append(c.Facts, yahooAgg4hNote) // B1: disclose the 1h→4h merge
 	}
+	c.Momentum = momentumReadoutOf(nil)
 	if spec.Source == srcBinance && volOK {
 		c.Facts = append(c.Facts, momentumVolumeContext("volume", volRatio)+" ("+tf+")")
+		v := volRatio
+		c.Momentum.VolumeRatio = &v
 	}
 	c.Results = []AssetResult{momentumResult(spec, r, fresh)}
 	c.Blocks = momentumBlocks(spec.Display, spec.Interval, r.rsi, r.hist)
@@ -891,8 +896,12 @@ func classifyTrend(adx, ema50, ema200, closePrice float64) string {
 // keeps ordinary noise from reading as a break; a close beyond it means the
 // EMA structure the verdict stands on is gone.
 func invalidationLevel(ema50, ema200, atr float64) float64 {
-	return math.Min(ema50, ema200) - atr
+	return math.Min(ema50, ema200) - trendInvalidationATRs*atr
 }
+
+// trendInvalidationATRs is the ATR multiple of the invalidation level — the
+// "1 ATR" the card prints (served as levels.invalidation_atr_multiple).
+const trendInvalidationATRs = 1.0
 
 // invalidationFor picks the invalidation level AND direction per state
 // (review fix 8): a DOWNTREND's structure breaks UPWARD — max(EMA50, EMA200)
@@ -902,7 +911,7 @@ func invalidationLevel(ema50, ema200, atr float64) float64 {
 // machine-readably as invalidation_side so no consumer has to parse wording).
 func invalidationFor(state string, ema50, ema200, atr float64) (float64, string) {
 	if state == trendDown {
-		return math.Max(ema50, ema200) + atr, "above"
+		return math.Max(ema50, ema200) + trendInvalidationATRs*atr, "above"
 	}
 	return invalidationLevel(ema50, ema200, atr), "below"
 }
@@ -1179,8 +1188,10 @@ func trendCardFrom(r trendRead, spec assetSpec, dataTime time.Time) Card {
 			inv := v.inv
 			lv.Invalidation, lv.InvalidationSide = &inv, v.invSide
 		}
+		v.levelsExtras(&lv)
 		c.Levels = lv
 	}
+	c.Trend = v.readout()
 	c.Facts = v.facts()
 	switch state {
 	case trendUp:
@@ -1316,10 +1327,10 @@ func (a *Agents) VolCard(ctx context.Context, spec assetSpec) Card {
 		return c
 	}
 	var sum float64
-	for _, v := range series[n-31 : n-1] {
+	for _, v := range series[n-volBaselineBars-1 : n-1] {
 		sum += v
 	}
-	r := volRead{atr: series[n-1], baseline: sum / 30, price: closes[len(closes)-1], interval: spec.Interval}
+	r := volRead{atr: series[n-1], baseline: sum / volBaselineBars, price: closes[len(closes)-1], interval: spec.Interval}
 	if !r.valid() {
 		// A zero 30-bar ATR baseline makes the ratio 0/0. It used to be left
 		// at 0.0, which volState reads as CONFIRMED COMPRESSION — a claim

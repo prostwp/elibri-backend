@@ -434,6 +434,7 @@ func whaleLabeledCardFrom(w *WhaleResp, ro *WhaleReadout, respEnd time.Time) Car
 			base += fmt.Sprintf(" → %+.0f%% change", *lead.FlowPct)
 		}
 		c.Facts = append(c.Facts, whaleFit(base))
+		ro.setPrior24h(lead.Asset, *lead.NetFlowPrev24h, lead.FlowPct)
 	}
 	// The BTC monitor keeps its own line and its own numbers.
 	if btc := whaleBTCFlowOf(w.Flows); btc != nil {

@@ -435,7 +435,10 @@ func TestHTTPMacroReadoutAndBlocks(t *testing.T) {
 	}
 	vix := r.Lamps[2]
 	if vix.Key != "vix" || vix.Contribution != "positive" || vix.Weight != 25 || *vix.Points != 25 || *vix.MaxPoints != 25 ||
-		*vix.VsNeutral != 12.5 || vix.Rule != (MacroLampRule{Input: "level", PositiveWhen: "< 18", NegativeWhen: "> 25"}) ||
+		*vix.VsNeutral != 12.5 || vix.Rule.Input != "level" || vix.Rule.PositiveWhen != "< 18" || vix.Rule.NegativeWhen != "> 25" ||
+		// numeric twins of the strings (additive 2026-10-19)
+		vix.Rule.PositiveBelow == nil || *vix.Rule.PositiveBelow != 18 || vix.Rule.NegativeAbove == nil || *vix.Rule.NegativeAbove != 25 ||
+		vix.Rule.PositiveAbove != nil || vix.Rule.NegativeBelow != nil ||
 		vix.AsOf != "2026-09-14T07:00:00Z" || vix.Source != "yahoo" {
 		t.Errorf("vix readout: %+v", vix)
 	}

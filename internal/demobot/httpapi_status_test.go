@@ -107,7 +107,9 @@ func TestSRPointsRawPrecision(t *testing.T) {
 	body := string(got)
 	// label = the printed level (pip precision); ranks and class additive
 	// (2026-09-15).
-	if !strings.Contains(body, `"levels":{"supports":[{"level":1.15834,"label":"1.1583","class":"candidate","display_rank":1,"strength_rank":1,"touches":5,"strength":0,"weakening":false,"breaks":0,"holds":0,"last_touch":""}],"resistances":[]}`) {
+	if !strings.Contains(body, `"levels":{"supports":[{"level":1.15834,"label":"1.1583","class":"candidate","display_rank":1,"strength_rank":1,"touches":5,"strength":0,"weakening":false,"breaks":0,"holds":0,"last_touch":"",`+
+		// additive 2026-10-19: the printed distance (1.1583 vs 1.1601) and the resolved-test count
+		`"distance_pct":-0.15515903801394726,"resolved_tests":0}],"resistances":[]`) {
 		t.Errorf("sr levels must serve the raw mean and [] for the empty side, got: %s", body)
 	}
 	if strings.Contains(body, `"level":1,`) || strings.Contains(body, `"level":1.1583,`) {

@@ -120,6 +120,11 @@ func stripDisclosure(t *testing.T, raw json.RawMessage) map[string]any {
 	env["card_html"] = strings.Replace(html, line, "", 1)
 	if g, ok := env["gold"].(map[string]any); ok {
 		delete(g, "roll")
+		// Additive numeric fields of 2026-10-19 (the numbers the card already
+		// printed at 437c6a4): not part of the base, the texts are compared.
+		for _, k := range []string{"nearest_levels", "adx", "adx_shown", "volatility"} {
+			delete(g, k)
+		}
 	}
 	return env
 }

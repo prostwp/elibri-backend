@@ -1,0 +1,3013 @@
+# AlphaVizor demo bot — OpenAPI 3.1. Served at /openapi.yaml, /openapi.json, /docs (Swagger UI).
+# The contract test (openapi_contract_test.go) validates every served body against it.
+openapi: 3.1.0
+info:
+  title: AlphaVizor Demo Bot API
+  version: '2026-10-19'
+  description: 'Read-only HTTP JSON API of the AlphaVizor demo bot: the same agent cards the Telegram bot sends,
+    as JSON.
+
+
+    Every agent endpoint serves one envelope (Card). Every number a card prints in its texts is also served as a
+    clean field in the card''s machine objects, read from the same variable the text is formatted from. Units sit
+    in field names: `_pct` is percent as printed (0.5 = 0.5%), `_pp` percentage points, `_usd` US dollars; prices
+    are in quote units. Raw fields keep full precision; `_shown` fields are exactly what the text prints. An absent
+    reading is `null`, never 0.
+
+
+    GET only, CORS open, a global limit of 10 requests per second (429 with Retry-After: 1). Analytics, not financial
+    advice.
+
+
+    Human reference: docs/demobot-http.md.'
+servers:
+- url: /
+  description: This server
+security: []
+paths:
+  /:
+    get:
+      summary: Service index
+      operationId: getRoot
+      responses:
+        '200':
+          description: Index of the main addresses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Root'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /agents:
+    get:
+      summary: List the agents
+      operationId: listAgents
+      responses:
+        '200':
+          description: Every agent with its parameters and example addresses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentList'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /agents/{name}:
+    get:
+      summary: One agent's card
+      operationId: getAgent
+      description: 'Parameters by agent: `asset` — momentum, trend, sr, vol (registry assets, default btc) and macro
+        (btc | gold views); `assets` + `tf` — momentum only (comma scan, up to 6 assets; tf 1h | 4h | 1d); `balance`,
+        `risk`, `entry`, `stop` — risk only, all four required. Any parameter an agent does not take is a 400; a
+        repeated parameter is a 400.'
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - digest
+          - top
+          - fx
+          - macro
+          - whale
+          - funding
+          - momentum
+          - trend
+          - sr
+          - vol
+          - risk
+          - news
+          - gold
+      - name: asset
+        in: query
+        schema:
+          type: string
+          examples:
+          - btc
+          - eth
+          - eurusd
+          - gbpusd
+          - usdjpy
+          - xauusd
+          - gold
+        description: 'Asset agents: btc | eth | eurusd | gbpusd | usdjpy | xauusd (aliases accepted). Macro: btc
+          | gold.'
+      - name: assets
+        in: query
+        schema:
+          type: string
+        description: 'Momentum only: comma list, e.g. btc,eurusd,gold.'
+      - name: tf
+        in: query
+        schema:
+          type: string
+          enum:
+          - 1h
+          - 4h
+          - 1d
+        description: Momentum only.
+      - name: balance
+        in: query
+        schema:
+          type: string
+        description: 'Risk only: account balance.'
+      - name: risk
+        in: query
+        schema:
+          type: string
+        description: 'Risk only: risk per trade, percent.'
+      - name: entry
+        in: query
+        schema:
+          type: string
+        description: 'Risk only: entry price.'
+      - name: stop
+        in: query
+        schema:
+          type: string
+        description: 'Risk only: stop price.'
+      - name: If-Modified-Since
+        in: header
+        schema:
+          type: string
+        description: Stamped cards answer 304 when the reading has not changed since.
+      responses:
+        '200':
+          description: The card.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Card'
+          headers:
+            Last-Modified:
+              $ref: '#/components/headers/LastModified'
+        '304':
+          description: Not modified (stamped cards only).
+        '400':
+          description: Bad parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Unknown agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: 'No reading: the source is offline, history is too short, or the radar is warming up.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Degraded'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /agents/trend/chart:
+    get:
+      summary: Trend chart data
+      operationId: getTrendChart
+      description: 'The trend card''s drawing data: the newest 200 closed candles, EMAs, pullback zone, invalidation
+        and pivots.'
+      parameters:
+      - name: asset
+        in: query
+        schema:
+          type: string
+          examples:
+          - btc
+          - eth
+          - eurusd
+          - gbpusd
+          - usdjpy
+          - xauusd
+      responses:
+        '200':
+          description: Chart data.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrendChart'
+          headers:
+            Last-Modified:
+              $ref: '#/components/headers/LastModified'
+        '304':
+          description: Not modified.
+        '400':
+          description: Bad parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: No reading.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Degraded'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /showcase:
+    get:
+      summary: Landing catalog
+      operationId: getShowcase
+      responses:
+        '200':
+          description: Every agent's live status, headline and one-liner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Showcase'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /showcase/example:
+    get:
+      summary: One worked story
+      operationId: getShowcaseExample
+      responses:
+        '200':
+          description: Detected → explained → data → conclusion.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShowcaseExample'
+        '503':
+          description: No agent produced a real reading.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Degraded'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /openapi.json:
+    get:
+      summary: This document as JSON
+      operationId: getOpenAPIJSON
+      responses:
+        '200':
+          description: OpenAPI 3.1 document.
+          content:
+            application/json:
+              schema:
+                type: object
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /openapi.yaml:
+    get:
+      summary: This document as YAML
+      operationId: getOpenAPIYAML
+      responses:
+        '200':
+          description: OpenAPI 3.1 document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /docs:
+    get:
+      summary: Swagger UI
+      operationId: getDocs
+      responses:
+        '200':
+          description: HTML page rendering /openapi.json.
+          content:
+            text/html:
+              schema:
+                type: string
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+components:
+  headers:
+    LastModified:
+      description: The data time of the reading (= data_as_of), on stamped cards only.
+      schema:
+        type: string
+  responses:
+    MethodNotAllowed:
+      description: Any method but GET.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: Global limit of 10 requests per second.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    ContentBlocks:
+      description: Ready-made sentences for content writers, one per job. Composite cards (FX, multi-asset momentum,
+        digest) fill what_happened and limitations only.
+      type: object
+      additionalProperties: false
+      required:
+      - what_happened
+      - why_level
+      - scenarios
+      - invalidates
+      - regime
+      properties:
+        what_happened:
+          type: string
+          description: The verdict and where price is, as one sentence.
+        why_level:
+          type: string
+          description: What the level the card leans on is made of; "" on agents without a price level (macro, composite
+            cards).
+        scenarios:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: Exactly two "if → then" transitions of the agent's state machine; [] when undefined. Null
+            on composite cards (FX, multi-asset momentum, digest).
+        invalidates:
+          type:
+          - string
+          - 'null'
+          description: What invalidates a CONFIRMED reading; null otherwise.
+        regime:
+          type: string
+          description: The local regime in one line; "" on composite cards.
+        context:
+          type: string
+          description: 'Macro only: the asset backdrops and Fear & Greed beside the regime.'
+        state_changes_when:
+          type: string
+          description: 'Volatility only: what changes the state on the next closed candle.'
+        limitations:
+          type: string
+          description: What the agent does not measure (scope and limitations section).
+        source:
+          type: string
+          description: 'Whale only: where the observation comes from.'
+    PullbackZone:
+      type: object
+      additionalProperties: false
+      required:
+      - from
+      - to
+      properties:
+        from:
+          type: number
+          description: EMA20 — the shallow edge, nearer price.
+        to:
+          type: number
+          description: 'EMA50 — the deep, trend-defining edge. Unordered by size: in an uptrend from > to.'
+    TrendLevels:
+      description: Trend levels — served ONLY on a confirmed trend (up/down). An unconfirmed card carries no levels
+        object at all.
+      type: object
+      additionalProperties: false
+      properties:
+        invalidation:
+          type: number
+          description: 'Level that invalidates the confirmed trend reading: max(EMA50, EMA200) + 1 ATR(14) in a
+            downtrend, min(…) − 1 ATR(14) in an uptrend, checked on a closed candle. Absent only on a series with
+            no ATR.'
+        invalidation_side:
+          type: string
+          description: above | below — the side a closed candle must reach. Present together with invalidation.
+        pullback_zone:
+          $ref: '#/components/schemas/PullbackZone'
+          description: The EMA20–EMA50 band, always present on a confirmed card.
+        pullback_position:
+          type: string
+          description: below | inside | above — where the last close sits against the pullback zone.
+          x-added: '2026-10-19'
+        distance_to_pullback_pct:
+          type: number
+          description: 'Percent, signed like the text: (close − nearest zone edge) / close × 100; "0.5% above the
+            pullback zone" = +0.5, below = negative, 0 inside.'
+          x-added: '2026-10-19'
+        invalidation_distance_pct:
+          type: number
+          description: 'Percent: (invalidation − close) / close × 100 — the "(-1.8%, 1 ATR …)" of the invalidation
+            line; + when the level is above price. Present with invalidation.'
+          x-added: '2026-10-19'
+        invalidation_atr_multiple:
+          type: number
+          description: The ATR multiple of the invalidation level (the "1 ATR" the card prints). Present with invalidation.
+          x-added: '2026-10-19'
+    TrendReadout:
+      description: Every number the trend card prints, at raw precision, on every ok trend card (confirmed or not).
+      type: object
+      additionalProperties: false
+      required:
+      - state
+      - timeframe
+      - price
+      - adx
+      - adx_shown
+      - adx_threshold
+      - adx_flat_threshold
+      - ema20
+      - ema50
+      - ema200
+      - ema50_distance_pct
+      - ema200_distance_pct
+      - atr
+      properties:
+        state:
+          type: string
+          description: flat | grey | up | down | conflict (after the structure gate).
+        timeframe:
+          type: string
+          description: Candle timeframe of the reading (4h for crypto, 1h for FX/gold, 1d inside the gold card).
+        price:
+          type: number
+          description: Close of the last closed candle (printed rounded by magnitude).
+        adx:
+          type: number
+          description: ADX(14), raw.
+        adx_shown:
+          type: number
+          description: 'ADX exactly as printed: floored to one decimal, so a printed value never sits on the other
+            side of 20 / 25.'
+        adx_threshold:
+          type: integer
+          description: '25: at or above, the EMA conditions decide (confirmed / conflict).'
+        adx_flat_threshold:
+          type: integer
+          description: '20: below it the reading is flat; 20 up to 25 is the grey zone.'
+        ema20:
+          type: number
+          description: EMA20 of closes, raw.
+        ema50:
+          type: number
+          description: EMA50 of closes, raw.
+        ema200:
+          type: number
+          description: EMA200 of closes, raw.
+        ema50_distance_pct:
+          type: number
+          description: 'Percent, signed like the text: (close − EMA50) / close × 100; "0.2% above EMA50" = +0.2.
+            The text prints one decimal and "<0.1%" under 0.05.'
+        ema200_distance_pct:
+          type: number
+          description: Percent, signed like ema50_distance_pct, against EMA200.
+        atr:
+          type:
+          - number
+          - 'null'
+          description: ATR(14) at the last closed candle; null on a series with no range.
+    SRPoint:
+      type: object
+      additionalProperties: false
+      required:
+      - level
+      - label
+      - class
+      - display_rank
+      - strength_rank
+      - touches
+      - strength
+      - weakening
+      - breaks
+      - holds
+      - last_touch
+      - distance_pct
+      - resolved_tests
+      properties:
+        level:
+          type: number
+          description: Cluster mean at full precision (never display-rounded).
+        label:
+          type: string
+          description: The level exactly as the card prints it (instrument precision).
+        class:
+          type: string
+          description: established (≥7 pivots) | candidate (2–6) | single_swing (1).
+        display_rank:
+          type: integer
+          description: 1-based position of the level's line on the card (each side nearest-to-price first).
+        strength_rank:
+          type: integer
+          description: 1-based position in this array (strength order).
+        touches:
+          type: integer
+          description: Swing pivots in the cluster.
+        strength:
+          type: number
+          description: touches + 0.5 per above-median-volume touch (= touches on volume-less FX series).
+        weakening:
+          type: boolean
+          description: ≥7 touches with the last 3 touches' mean volume below the first 3's.
+        breaks:
+          type: integer
+          description: Resolved tests that broke the level over the window (frequency, not a probability).
+        holds:
+          type: integer
+          description: Resolved tests where price reacted off the level (frequency, not a probability).
+        last_touch:
+          type: string
+          description: RFC3339 UTC of the newest touch's bar; "" when unknown.
+        distance_pct:
+          type: number
+          description: 'Percent, signed: (level − price) / price × 100 from the PRINTED level and price, as the
+            level line prints it ("Resistance 82895 (+0.2%)"); 0 when both print as one number ("at price"). The
+            text prints one decimal and "<0.1%" under 0.05.'
+          x-added: '2026-10-19'
+        resolved_tests:
+          type: integer
+          description: holds + breaks — the "in N resolved tests" count.
+          x-added: '2026-10-19'
+    SRLevels:
+      description: 'S/R levels: the three strongest clusters per side and the numbers of the verdict, the nearest-sides
+        line and the window line.'
+      type: object
+      additionalProperties: false
+      required:
+      - supports
+      - resistances
+      - price
+      - price_label
+      - timeframe
+      - window_bars
+      - nearest_resistance_pct
+      - nearest_support_pct
+      - test_band_atr
+      - test_resolve_bars
+      properties:
+        supports:
+          type: array
+          items:
+            $ref: '#/components/schemas/SRPoint'
+          description: Supports below price, strength order; [] when none clustered.
+        resistances:
+          type: array
+          items:
+            $ref: '#/components/schemas/SRPoint'
+          description: Resistances above price, strength order; [] when none clustered.
+        price:
+          type: number
+          description: Last close, raw.
+          x-added: '2026-10-19'
+        price_label:
+          type: string
+          description: Last close as printed.
+          x-added: '2026-10-19'
+        timeframe:
+          type: string
+          description: Candle timeframe of the window.
+          x-added: '2026-10-19'
+        window_bars:
+          type: integer
+          description: 'Closed candles in the window ("Window: N closed candles").'
+          x-added: '2026-10-19'
+        nearest_resistance_pct:
+          type:
+          - number
+          - 'null'
+          description: 'The "Nearest shown levels" resistance number: distance_pct of the resistance with display_rank
+            1; null when no resistance is shown.'
+          x-added: '2026-10-19'
+        nearest_support_pct:
+          type:
+          - number
+          - 'null'
+          description: The "Nearest shown levels" support number; null when no support is shown.
+          x-added: '2026-10-19'
+        test_band_atr:
+          type: number
+          description: 'Test definition: a close within this many ATR(14) of a level (0.25).'
+          x-added: '2026-10-19'
+        test_resolve_bars:
+          type: integer
+          description: 'Test definition: a test resolves within this many candles (3).'
+          x-added: '2026-10-19'
+    VolThresholds:
+      type: object
+      additionalProperties: false
+      required:
+      - compressed
+      - expanding
+      properties:
+        compressed:
+          type: number
+          description: 'Ratio at or below: compressed (0.80).'
+        expanding:
+          type: number
+          description: 'Ratio at or above: expanding, worded "elevated" (1.25).'
+    VolLevels:
+      description: The volatility read at raw precision, plus the printed ratio and distance.
+      type: object
+      additionalProperties: false
+      required:
+      - expansion_ratio
+      - state
+      - timeframe
+      - atr
+      - atr_pct
+      - baseline
+      - ratio
+      - thresholds
+      - ratio_shown
+      - distance_pct
+      - baseline_bars
+      properties:
+        expansion_ratio:
+          type: number
+          description: ATR(14) of the last closed candle over the mean of the 30 ATR(14) values before it, raw.
+        state:
+          type: string
+          description: expanding | normal | compressed (the card words expanding "elevated").
+        timeframe:
+          type: string
+          description: Candle timeframe.
+        atr:
+          type: number
+          description: ATR(14) of the last closed candle, raw (price units).
+        atr_pct:
+          type: number
+          description: ATR / last close × 100.
+        baseline:
+          type: number
+          description: Mean of the previous 30 ATR(14) values, raw.
+        ratio:
+          type: number
+          description: Same value as expansion_ratio.
+        thresholds:
+          $ref: '#/components/schemas/VolThresholds'
+          description: The rule's ratio thresholds.
+        ratio_shown:
+          type: number
+          description: 'The ratio exactly as printed: three decimals, rounded toward 1, so it never sits on the
+            other side of a threshold (the text prints ">99.999" past that cap).'
+          x-added: '2026-10-19'
+        distance_pct:
+          type: integer
+          description: 'Whole percent, signed: the verdict''s "N% below/above its 30-bar baseline" (− below); 0
+            = "within 1%". From the printed ratio, truncated toward 0. The text caps at ">999%".'
+          x-added: '2026-10-19'
+        baseline_bars:
+          type: integer
+          description: ATR values the baseline averages (30).
+          x-added: '2026-10-19'
+    AssetResult:
+      description: One asset's machine outcome. Momentum, FX and funding rows each fill their own subset; every
+        field but asset/ok is absent where it does not apply.
+      type: object
+      additionalProperties: false
+      required:
+      - asset
+      - ok
+      properties:
+        asset:
+          type: string
+          description: Machine asset (BTC, ETH, EURUSD, …; full label for gold on FX rows).
+        ok:
+          type: boolean
+          description: true when this asset produced a reading.
+        reason:
+          type: string
+          enum:
+          - market_closed
+          - source_offline
+          - insufficient_history
+          - below_threshold
+          - no_data
+          description: insufficient_history | source_offline when not ok.
+        timeframe:
+          type: string
+          description: 'Momentum / FX rows: candle timeframe.'
+        data_as_of:
+          type: string
+          description: 'Momentum / FX rows: close of the asset''s last closed bar, RFC3339.'
+        freshness:
+          type: string
+          description: 'on_time | market_closed | data_delayed; FX gold rows: on_time | no_recent_bar.'
+        verdict:
+          type: string
+          description: 'Momentum rows: bullish | bearish | neutral.'
+        state:
+          type: string
+          description: 'Momentum rows: confirmed_bullish | confirmed_bearish | conflict | rsi_below_55 | rsi_above_45
+            | macd_at_zero | neutral_zone.'
+        why:
+          type: string
+          description: 'Momentum rows: the card''s reason line.'
+        rsi:
+          type: number
+          description: RSI(14), raw (momentum and FX rows).
+        macd_histogram:
+          type: number
+          description: 'Momentum rows: MACD(12,26,9) histogram, raw, price units (the card prints its sign only).'
+        rsi_shown:
+          type: string
+          description: 'Momentum rows: RSI exactly as printed — one decimal, rounded toward 50. Print it as is.'
+        rsi_shown_value:
+          type: number
+          description: 'Momentum rows: rsi_shown as a number.'
+          x-added: '2026-10-19'
+        blocks:
+          $ref: '#/components/schemas/ContentBlocks'
+          description: 'Momentum rows: the asset''s content blocks (absent on digest sections).'
+        price:
+          type: number
+          description: 'FX rows: last close, raw.'
+        change_pct:
+          type: number
+          description: 'FX rows: change in percent over change_window (printed with two decimals).'
+        change_window:
+          type: string
+          description: 'FX rows: 24h | since_previous_close.'
+        change_from:
+          type: string
+          description: 'FX rows: close time of the reference bar, RFC3339.'
+        ema_relation:
+          type: string
+          description: 'FX rows: EMA50 vs EMA200 — above | below | equal.'
+        range_position_pct:
+          type: number
+          description: 'FX rows: the close''s place in the 24h range, 0–100 (printed as a whole percent).'
+        row:
+          type: integer
+          description: 'FX rows: 1-based place in the shown table.'
+        section:
+          type: string
+          description: 'FX rows: pairs | gold.'
+        label:
+          type: string
+          description: 'FX rows: the label the row prints (EURUSD, GOLD).'
+        symbol:
+          type: string
+          description: 'Funding rows: the Binance symbol.'
+        rate:
+          type: number
+          description: 'Funding rows: last funding rate, raw fraction (0.0001 = 0.01%).'
+        side_threshold:
+          type: number
+          description: 'Funding rows: the threshold of the rate''s own side, raw fraction (+0.0003 at or above zero,
+            -0.0001 below).'
+        crossed:
+          type: boolean
+          description: 'Funding rows: the rate is past its side''s threshold.'
+        ratio_to_threshold:
+          type: number
+          description: 'Funding rows: |rate| ÷ |side_threshold|, raw.'
+        selected:
+          type: boolean
+          description: 'Funding rows: this is the coin the card shows.'
+        rate_pct:
+          type: number
+          description: 'Funding rows: the rate as printed, in percent (truncated to four decimals: +0.0093% = 0.0093).'
+          x-added: '2026-10-19'
+        ratio_to_threshold_shown:
+          type: number
+          description: 'Funding rows: the ratio as printed ("0.33×" = 0.33; ">1.00×" is served as 1).'
+          x-added: '2026-10-19'
+    FundingReadout:
+      description: The funding card's machine readout.
+      type: object
+      additionalProperties: false
+      required:
+      - state
+      - selected_symbol
+      - selection_reason
+      - rate_kind
+      - funding_interval
+      - thresholds
+      - crossed
+      - coverage
+      - liquidations
+      - rates
+      - nearest_threshold
+      - nearest_threshold_distance_pp
+      - past_threshold_by_pp
+      properties:
+        state:
+          type: string
+          description: positive_above_threshold | negative_below_threshold | within_thresholds | partial | rates_offline.
+        selected_symbol:
+          type:
+          - string
+          - 'null'
+          description: The coin the card shows; null on partial / rates_offline.
+        selection_reason:
+          type:
+          - string
+          - 'null'
+          description: furthest_past_own_threshold | closest_to_own_threshold; null without a selection.
+        rate_kind:
+          type: string
+          description: Always last_funding_rate.
+        funding_interval:
+          type:
+          - string
+          - 'null'
+          description: 'Always null: the source serves no funding interval.'
+        thresholds:
+          $ref: '#/components/schemas/FundingThresholds'
+          description: The rule's thresholds, raw fractions.
+        crossed:
+          type: integer
+          description: Received majors past a threshold.
+        coverage:
+          $ref: '#/components/schemas/FundingCoverage'
+          description: Which majors answered.
+        liquidations:
+          oneOf:
+          - $ref: '#/components/schemas/FundingLiquidations'
+          - type: 'null'
+          description: The 1h liquidation window; null when the feed is offline.
+        rates:
+          type: array
+          items:
+            $ref: '#/components/schemas/FundingRate'
+          description: 'Every received major in the card''s order: the rate raw and as printed. [] when no rate
+            arrived.'
+          x-added: '2026-10-19'
+        nearest_threshold:
+          type:
+          - string
+          - 'null'
+          description: 'Within the thresholds: long | short | equidistant — the "Nearest threshold" line. Null when
+            the shown rate is past a threshold or there is no reading.'
+          x-added: '2026-10-19'
+        nearest_threshold_distance_pp:
+          type:
+          - number
+          - 'null'
+          description: 'Within the thresholds: distance to the nearest threshold in percentage points, as printed
+            (0.0200 pp = 0.02). Null otherwise.'
+          x-added: '2026-10-19'
+        past_threshold_by_pp:
+          type:
+          - number
+          - 'null'
+          description: 'Past a threshold: how far, in percentage points as printed; 0 exactly at the threshold;
+            under one printed unit ("<0.0001 pp") the raw distance. Null within the thresholds or without a reading.'
+          x-added: '2026-10-19'
+    FundingRate:
+      type: object
+      additionalProperties: false
+      required:
+      - symbol
+      - rate
+      - rate_pct
+      properties:
+        symbol:
+          type: string
+          description: Binance symbol.
+        rate:
+          type: number
+          description: Last funding rate, raw fraction.
+        rate_pct:
+          type: number
+          description: The rate as printed, in percent (truncated to four decimals).
+    FundingThresholds:
+      type: object
+      additionalProperties: false
+      required:
+      - long
+      - short
+      properties:
+        long:
+          type: number
+          description: Long threshold, raw fraction (0.0003 = +0.03%).
+        short:
+          type: number
+          description: Short threshold, raw fraction (-0.0001 = -0.01%).
+    FundingCoverage:
+      type: object
+      additionalProperties: false
+      required:
+      - received
+      - total
+      - missing
+      - min_for_verdict
+      properties:
+        received:
+          type: integer
+          description: Majors that answered.
+        total:
+          type: integer
+          description: Majors asked (5).
+        missing:
+          type: array
+          items:
+            type: string
+          description: Symbols that did not answer; [] when none.
+        min_for_verdict:
+          type: integer
+          description: Majors needed for a verdict (3).
+    FundingLiquidations:
+      type: object
+      additionalProperties: false
+      required:
+      - window_minutes
+      - count
+      - usd
+      - long_usd
+      - short_usd
+      - feed_limit
+      - capped
+      - cluster
+      properties:
+        window_minutes:
+          type: integer
+          description: Window length (60).
+        count:
+          type: integer
+          description: Liquidation events in the window.
+        usd:
+          type: number
+          description: Their USD value.
+        long_usd:
+          type: number
+          description: USD value of long liquidations.
+        short_usd:
+          type: number
+          description: USD value of short liquidations.
+        feed_limit:
+          type: integer
+          description: Newest events read from the feed.
+        capped:
+          type: boolean
+          description: The page was full, so the window may hold more.
+        cluster:
+          oneOf:
+          - $ref: '#/components/schemas/FundingClusterOut'
+          - type: 'null'
+          description: The observed liquidation cluster; null when none is shown.
+    FundingClusterOut:
+      type: object
+      additionalProperties: false
+      required:
+      - symbol
+      - side
+      - price_band
+      - usd
+      - count
+      - last_event_at
+      - band_vs_mark
+      properties:
+        symbol:
+          type: string
+          description: Symbol of the band.
+        side:
+          type: string
+          description: 'long_liq | short_liq: the larger USD side of the band.'
+        price_band:
+          type: string
+          description: The 0.5% price band, as printed.
+        usd:
+          type: number
+          description: USD liquidated in the band.
+        count:
+          type: integer
+          description: Events in the band.
+        last_event_at:
+          type:
+          - string
+          - 'null'
+          description: Newest event of the band in the served feed; null when none is there.
+        band_vs_mark:
+          type:
+          - string
+          - 'null'
+          description: above | below | inside — where the band sits against the mark price; null without a mark
+            price.
+    GoldReadout:
+      description: The gold card's machine readout. Each part carries its own stamp; data_as_of stays the daily
+        close.
+      type: object
+      additionalProperties: false
+      required:
+      - regime
+      - confirmed
+      - daily_as_of
+      - price_as_of
+      - price_freshness
+      - price
+      - price_position
+      - day_range
+      - macro_as_of
+      - macro_backdrop
+      - macro_lamps
+      - idea
+      - roll
+      - nearest_levels
+      - adx
+      - adx_shown
+      - volatility
+      properties:
+        regime:
+          type: string
+          description: 'Trend state on 1d: flat | grey | up | down | conflict.'
+        confirmed:
+          type: boolean
+          description: 'A direction is stated: regime up/down and a 1h price.'
+        daily_as_of:
+          type: string
+          description: Close of the last closed 1d bar (= data_as_of).
+        price_as_of:
+          type:
+          - string
+          - 'null'
+          description: Close of the last closed 1h bar; null without a 1h price.
+        price_freshness:
+          type:
+          - string
+          - 'null'
+          description: on_time | stale (older than 6h at answer time); null without a 1h price.
+        price:
+          type:
+          - number
+          - 'null'
+          description: The last closed 1h close, raw; null without one.
+        price_position:
+          type:
+          - string
+          - 'null'
+          description: above | inside | below the day range; null without a range or in a roll window.
+        day_range:
+          oneOf:
+          - $ref: '#/components/schemas/GoldDayRange'
+          - type: 'null'
+          description: The range the scenarios classify against; null when undefined.
+        macro_as_of:
+          type:
+          - string
+          - 'null'
+          description: Oldest as_of of the voting macro lamps; null without a read.
+        macro_backdrop:
+          type:
+          - string
+          - 'null'
+          description: support | pressure | neutral; null without a read.
+        macro_lamps:
+          oneOf:
+          - $ref: '#/components/schemas/GoldMacroLamps'
+          - type: 'null'
+          description: Voting lamps by contribution for gold; null without a read.
+        idea:
+          oneOf:
+          - $ref: '#/components/schemas/GoldIdea'
+          - type: 'null'
+          description: The setup structure (not a recommendation); null when the card names none.
+        roll:
+          oneOf:
+          - $ref: '#/components/schemas/GoldRoll'
+          - type: 'null'
+          description: Whether the 1h and 1d bars are on the same COMEX contract. Always present.
+        nearest_levels:
+          oneOf:
+          - $ref: '#/components/schemas/GoldNearestLevels'
+          - type: 'null'
+          description: The "Nearest levels" line; null when the card has no 1h price and prints no such line.
+          x-added: '2026-10-19'
+        adx:
+          type:
+          - number
+          - 'null'
+          description: Daily ADX(14), raw; null without a trend reading.
+          x-added: '2026-10-19'
+        adx_shown:
+          type:
+          - number
+          - 'null'
+          description: Daily ADX as printed in the regime line (floored to one decimal); null without a trend reading.
+          x-added: '2026-10-19'
+        volatility:
+          oneOf:
+          - $ref: '#/components/schemas/GoldVolatility'
+          - type: 'null'
+          description: The "Volatility:" line on the daily bars; null when unavailable.
+          x-added: '2026-10-19'
+    GoldRoll:
+      type: object
+      additionalProperties: false
+      required:
+      - state
+      - reason
+      - current_contract
+      - next_contract
+      - daily_contract
+      - hourly_contract
+      properties:
+        state:
+          type: string
+          description: none (both bars on one contract) | window (the 1h bar on one contract, the 1d bar on another)
+            | unknown (not established).
+        reason:
+          type:
+          - string
+          - 'null'
+          description: 'window: hourly_ahead_of_daily | hourly_behind_daily. unknown: no_intraday_price | no_daily_bars
+            | near_contract_not_served | next_contract_not_served | request_failed | matches_both_contracts | matches_neither_contract
+            | row_is_a_quote | not_checked. Null with none.'
+        current_contract:
+          type:
+          - string
+          - 'null'
+          description: COMEX code GC=F is on (GCZ26); in a window the earlier contract; null when unknown.
+        next_contract:
+          type:
+          - string
+          - 'null'
+          description: COMEX code it rolls to; in a window the later contract; null when unknown.
+        daily_contract:
+          type:
+          - string
+          - 'null'
+          description: Contract the 1d bar was matched to; null when unknown.
+        hourly_contract:
+          type:
+          - string
+          - 'null'
+          description: Contract the 1h bar was matched to; null when unknown.
+    GoldIdea:
+      type: object
+      additionalProperties: false
+      required:
+      - state
+      - trigger
+      - invalidation
+      - reference_level
+      properties:
+        state:
+          type: string
+          description: armed | trigger_reached | invalidation_reached — where the last 1h close sits against the
+            levels.
+        trigger:
+          $ref: '#/components/schemas/GoldIdeaLevel'
+          description: The day-range edge the day is classified by.
+        invalidation:
+          $ref: '#/components/schemas/GoldIdeaLevel'
+          description: The level that ends the reading.
+        reference_level:
+          oneOf:
+          - $ref: '#/components/schemas/GoldIdeaRef'
+          - type: 'null'
+          description: Nearest clustered level on the other side of price; null when nothing clustered there.
+    GoldIdeaLevel:
+      type: object
+      additionalProperties: false
+      required:
+      - level
+      - side
+      - basis
+      properties:
+        level:
+          type: number
+          description: Level, raw.
+        side:
+          type: string
+          description: above | below — the side a closed daily candle must be on.
+        basis:
+          type: string
+          description: day_range_high | day_range_low | ema_cluster_atr.
+    GoldIdeaRef:
+      type: object
+      additionalProperties: false
+      required:
+      - level
+      - kind
+      - class
+      properties:
+        level:
+          type: number
+          description: Cluster mean, raw.
+        kind:
+          type: string
+          description: support | resistance.
+        class:
+          type: string
+          description: established | candidate | single_swing.
+    GoldDayRange:
+      type: object
+      additionalProperties: false
+      required:
+      - high
+      - low
+      - candle_date
+      - inside_days_after
+      properties:
+        high:
+          type: number
+          description: Range high.
+        low:
+          type: number
+          description: Range low.
+        candle_date:
+          type: string
+          description: YYYY-MM-DD of the 1d candle it came from.
+        inside_days_after:
+          type: integer
+          description: Inside days walked back (0 = the last closed day).
+    GoldMacroLamps:
+      type: object
+      additionalProperties: false
+      required:
+      - for
+      - neutral
+      - against
+      properties:
+        for:
+          type: integer
+          description: Voting lamps supporting gold.
+        neutral:
+          type: integer
+          description: Neutral voting lamps.
+        against:
+          type: integer
+          description: Voting lamps pressing on gold.
+    GoldNearestLevels:
+      type: object
+      additionalProperties: false
+      required:
+      - reference
+      - support
+      - resistance
+      properties:
+        reference:
+          type: string
+          description: 'Price the levels are nearest to: price_1h (last closed 1h close) | daily_close (contract
+            roll window).'
+        support:
+          oneOf:
+          - $ref: '#/components/schemas/GoldLevelRef'
+          - type: 'null'
+          description: Nearest clustered support below; null when nothing clustered there.
+        resistance:
+          oneOf:
+          - $ref: '#/components/schemas/GoldLevelRef'
+          - type: 'null'
+          description: Nearest clustered resistance above; null when nothing clustered there.
+    GoldLevelRef:
+      type: object
+      additionalProperties: false
+      required:
+      - level
+      - label
+      - class
+      - pivots
+      properties:
+        level:
+          type: number
+          description: Cluster mean, raw.
+        label:
+          type: string
+          description: As printed (two decimals).
+        class:
+          type: string
+          description: established | candidate | single_swing (the card prints "single swing").
+        pivots:
+          type: integer
+          description: Swing pivots in the cluster.
+    GoldVolatility:
+      type: object
+      additionalProperties: false
+      required:
+      - state
+      - timeframe
+      - atr_ratio
+      - atr_ratio_shown
+      - baseline_bars
+      properties:
+        state:
+          type: string
+          description: expanding | normal | compressed (the card words expanding "elevated").
+        timeframe:
+          type: string
+          description: Candle timeframe (1d).
+        atr_ratio:
+          type: number
+          description: ATR(14) over its 30-bar baseline, raw.
+        atr_ratio_shown:
+          type: number
+          description: The ratio as printed (three decimals, rounded toward 1).
+        baseline_bars:
+          type: integer
+          description: ATR values in the baseline (30).
+    MomentumReadout:
+      description: 'The momentum card''s numbers that are not per asset: rule thresholds, the multi-asset counter,
+        context numbers.'
+      type: object
+      additionalProperties: false
+      required:
+      - thresholds
+      - counts
+      - volume_ratio
+      - volume_average_bars
+      - eth_minus_btc_7d_pp
+      - eth_minus_btc_30d_pp
+      properties:
+        thresholds:
+          $ref: '#/components/schemas/MomentumThresholds'
+          description: The rule's parameters as numbers.
+        counts:
+          oneOf:
+          - $ref: '#/components/schemas/MomentumCounts'
+          - type: 'null'
+          description: 'Multi-asset cards: the verdict''s counter; null on the single-asset card.'
+        volume_ratio:
+          type:
+          - number
+          - 'null'
+          description: 'Volume context line: the last closed bar''s volume over the mean of the volume_average_bars
+            before it (BTC on the overview, the asset on a single Binance card); null where the card prints none.'
+        volume_average_bars:
+          type: integer
+          description: Bars in the volume average (20).
+        eth_minus_btc_7d_pp:
+          type:
+          - number
+          - 'null'
+          description: 'Overview RS context: ETH''s 7d return minus BTC''s, percentage points; null where not printed.
+            Follows live prices (the window ends in the forming UTC day); the push hook ignores its moves.'
+        eth_minus_btc_30d_pp:
+          type:
+          - number
+          - 'null'
+          description: As eth_minus_btc_7d_pp, over 30 days.
+    MomentumThresholds:
+      type: object
+      additionalProperties: false
+      required:
+      - rsi_bullish
+      - rsi_bearish
+      - macd_zero
+      properties:
+        rsi_bullish:
+          type: number
+          description: Bullish needs RSI(14) ≥ this (55).
+        rsi_bearish:
+          type: number
+          description: Bearish needs RSI(14) ≤ this (45).
+        macd_zero:
+          type: number
+          description: 'The MACD histogram line (0): bullish above, bearish below.'
+    MomentumCounts:
+      type: object
+      additionalProperties: false
+      required:
+      - bullish
+      - bearish
+      - not_confirmed
+      - unavailable
+      - bullish_assets
+      - bearish_assets
+      - timeframe
+      properties:
+        bullish:
+          type: integer
+          description: Assets reading bullish.
+        bearish:
+          type: integer
+          description: Assets reading bearish.
+        not_confirmed:
+          type: integer
+          description: Assets with a reading that is not confirmed.
+        unavailable:
+          type: integer
+          description: Assets without a reading.
+        bullish_assets:
+          type: array
+          items:
+            type: string
+          description: Their names as printed (GOLD for gold).
+        bearish_assets:
+          type: array
+          items:
+            type: string
+          description: Their names as printed.
+        timeframe:
+          type:
+          - string
+          - 'null'
+          description: The shared timeframe printed at the end of the verdict; null when the reads are on different
+            timeframes.
+    FXReadout:
+      description: The FX card's coverage counts, as the verdict prints them.
+      type: object
+      additionalProperties: false
+      required:
+      - pairs_total
+      - pairs_read
+      - gold_read
+      - gold_no_recent_bar
+      - short_history
+      - unavailable
+      - data_delayed
+      properties:
+        pairs_total:
+          type: integer
+          description: FX pairs on the card.
+        pairs_read:
+          type: integer
+          description: Pairs that produced a reading.
+        gold_read:
+          type: boolean
+          description: Gold produced a reading.
+        gold_no_recent_bar:
+          type: boolean
+          description: Gold's reading has no recent bar (named apart in the verdict).
+        short_history:
+          type: integer
+          description: Instruments with too little history.
+        unavailable:
+          type: integer
+          description: Instruments that answered with nothing.
+        data_delayed:
+          type: integer
+          description: Instruments whose last bar is late.
+    MacroReadout:
+      description: 'The macro card''s machine readout: rule score, bands, per-lamp contributions, freshness.'
+      type: object
+      additionalProperties: false
+      required:
+      - model
+      - experimental
+      - reading
+      - rule_score
+      - rule_score_unrounded
+      - bands
+      - min_voting_lamps
+      - voting_lamps
+      - live_lamps
+      - total_lamps
+      - neutral_score
+      - contributions
+      - lamps
+      - freshness
+      - fear_greed
+      - is_forecast
+      properties:
+        model:
+          type: string
+          description: risk_appetite | gold_backdrop.
+        experimental:
+          type: boolean
+          description: true for the gold model.
+        reading:
+          type: string
+          description: risk_on | mixed | risk_off (risk model) · positive | mixed | negative | no_read (gold model).
+        rule_score:
+          type:
+          - integer
+          - 'null'
+          description: The model's rounded score 0–100; null without one.
+        rule_score_unrounded:
+          type:
+          - number
+          - 'null'
+          description: The score before rounding (two decimals); null without one.
+        bands:
+          $ref: '#/components/schemas/MacroBands'
+          description: Score bands of the reading.
+        min_voting_lamps:
+          type: integer
+          description: Voting lamps the rule needs for a score.
+        voting_lamps:
+          type: integer
+          description: Lamps that voted.
+        live_lamps:
+          type: integer
+          description: Lamps with live data.
+        total_lamps:
+          type: integer
+          description: 'Lamps the payload carries — the N of "Data: 4 of N lamps live".'
+          x-added: '2026-10-19'
+        neutral_score:
+          type: integer
+          description: 'Score of an all-neutral vote (50): score = neutral_score + Σ vs_neutral.'
+          x-added: '2026-10-19'
+        contributions:
+          $ref: '#/components/schemas/MacroContributions'
+          description: Voting lamps by contribution — "3 positive, 0 negative, 2 neutral".
+          x-added: '2026-10-19'
+        lamps:
+          type: array
+          items:
+            $ref: '#/components/schemas/MacroLampReadout'
+          description: Every lamp with its rule, value and contribution.
+        freshness:
+          $ref: '#/components/schemas/MacroFreshness'
+          description: Data stamps behind the reading.
+        fear_greed:
+          oneOf:
+          - $ref: '#/components/schemas/MacroFearGreed'
+          - type: 'null'
+          description: Crypto Fear & Greed (context, not in the score); null when absent.
+        is_forecast:
+          type: boolean
+          description: Always false.
+    MacroBands:
+      type: object
+      additionalProperties: false
+      required:
+      - low
+      - high
+      properties:
+        low:
+          type: integer
+          description: 'Below: risk-off / negative.'
+        high:
+          type: integer
+          description: 'Above: risk-on / positive.'
+    MacroLampReadout:
+      type: object
+      additionalProperties: false
+      required:
+      - key
+      - label
+      - value
+      - delta_pct
+      - rule
+      - contribution
+      - voting
+      - weight
+      - points
+      - max_points
+      - vs_neutral
+      - source
+      - as_of
+      properties:
+        key:
+          type: string
+          description: dxy | rates | vix | spx | gold.
+        label:
+          type: string
+          description: Display name.
+        instrument:
+          type: string
+          description: 'Gold lamp: GC=F futures | XAUUSD spot.'
+        value:
+          type:
+          - number
+          - 'null'
+          description: Last quote (level); null when the lamp has none.
+        delta_pct:
+          type:
+          - number
+          - 'null'
+          description: Session change, percent (close − session open); null when absent.
+        rule:
+          $ref: '#/components/schemas/MacroLampRule'
+          description: The lamp's rule in this model.
+        contribution:
+          type: string
+          description: positive | neutral | negative; "" = not voting.
+        voting:
+          type: boolean
+          description: The lamp voted.
+        weight:
+          type: number
+          description: Nominal weight in this model (0 = never votes).
+        points:
+          type:
+          - number
+          - 'null'
+          description: Renormalised points the lamp adds; null without a score.
+        max_points:
+          type:
+          - number
+          - 'null'
+          description: The lamp's renormalised share; null without a score.
+        vs_neutral:
+          type:
+          - number
+          - 'null'
+          description: points − max_points/2; null without a score.
+        source:
+          type: string
+          description: Data provider.
+        as_of:
+          type: string
+          description: Session stamp of the quote, RFC3339.
+    MacroLampRule:
+      description: A lamp's rule. Strings and numbers say the same thing; comparisons are strict.
+      type: object
+      additionalProperties: false
+      required:
+      - input
+      properties:
+        input:
+          type: string
+          description: level | session_change_pct — what the conditions compare.
+        positive_when:
+          type: string
+          description: Positive condition as a string ("< 18", "> 0").
+        negative_when:
+          type: string
+          description: Negative condition as a string ("> 25", "> 0.5").
+        positive_above:
+          type: number
+          description: Positive when the input is strictly above this (numeric twin of positive_when "> x").
+          x-added: '2026-10-19'
+        positive_below:
+          type: number
+          description: Positive when the input is strictly below this ("< x").
+          x-added: '2026-10-19'
+        negative_above:
+          type: number
+          description: Negative when the input is strictly above this ("> x").
+          x-added: '2026-10-19'
+        negative_below:
+          type: number
+          description: Negative when the input is strictly below this ("< x").
+          x-added: '2026-10-19'
+    MacroContributions:
+      type: object
+      additionalProperties: false
+      required:
+      - positive
+      - negative
+      - neutral
+      properties:
+        positive:
+          type: integer
+          description: Voting lamps contributing positive.
+        negative:
+          type: integer
+          description: Voting lamps contributing negative.
+        neutral:
+          type: integer
+          description: Voting lamps contributing neutral.
+    MacroFreshness:
+      type: object
+      additionalProperties: false
+      required:
+      - oldest_as_of
+      - tradfin_as_of
+      - session_dates
+      - mixed
+      - scheduled_weekend
+      - captured_at
+      - sources
+      properties:
+        oldest_as_of:
+          type: string
+          description: Oldest live lamp stamp (= data_as_of).
+        tradfin_as_of:
+          type: string
+          description: Freshest lamp stamp.
+        session_dates:
+          type: array
+          items:
+            type: string
+          description: Distinct live-lamp dates, ascending.
+        mixed:
+          type: boolean
+          description: Live lamps come from more than one date.
+        scheduled_weekend:
+          type: boolean
+          description: Outside the clock-based tradfin week (no holiday calendar).
+        captured_at:
+          type: string
+          description: Backend response time.
+        sources:
+          type:
+          - object
+          - 'null'
+          additionalProperties:
+            type: integer
+          description: Provider → live lamp count.
+    MacroFearGreed:
+      type: object
+      additionalProperties: false
+      required:
+      - value
+      - label
+      - as_of
+      - fetched_at
+      - age_hours
+      - stale
+      - stale_after_hours
+      - in_score
+      properties:
+        value:
+          type: integer
+          description: Index value 0–100.
+        label:
+          type: string
+          description: Index label.
+        as_of:
+          type: string
+          description: Publication time of the value.
+        fetched_at:
+          type: string
+          description: When the backend last fetched it.
+        age_hours:
+          type:
+          - number
+          - 'null'
+          description: Age at answer time, hours; null when the backend sent no time.
+        stale:
+          type: boolean
+          description: Older than stale_after_hours.
+        stale_after_hours:
+          type: integer
+          description: Staleness limit, hours.
+        in_score:
+          type: boolean
+          description: Always false.
+    WhaleReadout:
+      description: The whale card's machine readout.
+      type: object
+      additionalProperties: false
+      required:
+      - state
+      - count
+      - threshold_usd
+      - window
+      - window_end
+      - source
+      - direction
+      - time_kind
+      - amount_kind
+      - coverage
+      - last_successful_poll
+      - top
+      - read_source
+      - flows
+      - lead_asset
+      - prior_24h_asset
+      - prior_24h_net_flow_usd
+      - prior_24h_change_pct
+      properties:
+        state:
+          type: string
+          description: activity_observed | no_observations | no_snapshot.
+        count:
+          type:
+          - integer
+          - 'null'
+          description: Transactions/transfers over 24h; null on no_snapshot.
+        threshold_usd:
+          type: number
+          description: Size threshold per transaction, USD.
+        window:
+          type: string
+          description: Always 24h.
+        window_end:
+          type:
+          - string
+          - 'null'
+          description: Snapshot time; null when missing.
+        source:
+          type: string
+          description: Data source of the card.
+        direction:
+          type:
+          - string
+          - 'null'
+          description: not_measurable | net_to_exchanges | net_from_exchanges | no_net_direction; null on no_snapshot.
+        time_kind:
+          type: string
+          description: first_detected_by_monitor | block_time.
+        amount_kind:
+          type: string
+          description: total_outputs_incl_change | transfer_amount.
+        coverage:
+          type: 'null'
+          description: 'Always null: poll statistics are not served.'
+        last_successful_poll:
+          type:
+          - string
+          - 'null'
+          description: Always null.
+        top:
+          $ref: '#/components/schemas/WhaleTop'
+          description: The listed transactions and how they were picked.
+        read_source:
+          type: string
+          description: btc_mempool_monitor | labeled_exchange_wallets — which source produced this card.
+        flows:
+          type: array
+          items:
+            $ref: '#/components/schemas/WhaleFlowRead'
+          description: Every asset served this tick with its source, never summed together.
+        lead_asset:
+          type:
+          - string
+          - 'null'
+          description: The coin the card leads with (never a stablecoin); null when none carried a direction.
+        prior_24h_asset:
+          type:
+          - string
+          - 'null'
+          description: Asset of the "prior 24h net flow" line (BTC on the monitor card, lead_asset on the labeled
+            card); null when not printed.
+          x-added: '2026-10-19'
+        prior_24h_net_flow_usd:
+          type:
+          - number
+          - 'null'
+          description: Prior 24h net flow, USD; null when not printed.
+          x-added: '2026-10-19'
+        prior_24h_change_pct:
+          type:
+          - number
+          - 'null'
+          description: Change vs the prior 24h, percent (±999-capped; printed as a whole percent); null when not
+            printed or not served.
+          x-added: '2026-10-19'
+    WhaleTop:
+      type: object
+      additionalProperties: false
+      required:
+      - selection
+      - records_requested
+      - records_received
+      - transactions
+      properties:
+        selection:
+          type: string
+          description: largest_btc_among_latest_records | largest_labeled_among_latest_records.
+        records_requested:
+          type: integer
+          description: Records asked from the backend (10).
+        records_received:
+          type: integer
+          description: Records the backend returned.
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/WhaleTx'
+          description: The listed ones, largest first; [] when none.
+    WhaleTx:
+      type: object
+      additionalProperties: false
+      required:
+      - tx_hash
+      - amount_usd
+      - detected_at
+      properties:
+        tx_hash:
+          type: string
+          description: Transaction hash.
+        amount_btc:
+          type: number
+          description: 'BTC monitor: total outputs, change included.'
+        amount_usd:
+          type: number
+          description: USD value.
+        detected_at:
+          type: string
+          description: First detection (monitor) or block time (labeled), RFC3339.
+        asset:
+          type: string
+          description: 'Labeled path: asset.'
+        amount_native:
+          type: number
+          description: 'Labeled path: amount in the asset.'
+        exchange:
+          type: string
+          description: 'Labeled path: exchange.'
+        side:
+          type: string
+          description: 'Labeled path: to | from (the exchange wallet).'
+    WhaleFlowRead:
+      type: object
+      additionalProperties: false
+      required:
+      - asset
+      - net_flow_usd_24h
+      - direction
+      - tx_count
+      - source_kind
+      - partial
+      properties:
+        asset:
+          type: string
+          description: Asset.
+        net_flow_usd_24h:
+          type: number
+          description: Net flow over 24h, USD.
+        direction:
+          type: string
+          description: net_to_exchanges | net_from_exchanges | no_net_direction | not_measurable.
+        tx_count:
+          type: integer
+          description: Transfers over 24h.
+        source_kind:
+          type: string
+          description: labeled | btc_monitor.
+        partial:
+          type: boolean
+          description: Partial data.
+    NarrativeReadout:
+      description: The narrative radar's machine readout.
+      type: object
+      additionalProperties: false
+      required:
+      - state
+      - window
+      - growth_vs
+      - window_end
+      - count_kind
+      - threshold
+      - threshold_checked_on
+      - order
+      - leader
+      - themes
+      - eligible_not_leader
+      - themes_served
+      - sources
+      properties:
+        state:
+          type: string
+          description: scored | below_threshold | no_matched_items | no_snapshots.
+        window:
+          type: string
+          description: Always 24h.
+        growth_vs:
+          type: string
+          description: Always previous_24h.
+        window_end:
+          type:
+          - string
+          - 'null'
+          description: Snapshot time; null when missing.
+        count_kind:
+          type: string
+          description: Always matched_items.
+        threshold:
+          type: integer
+          description: Matched items the leader needs to be scored.
+        threshold_checked_on:
+          type: string
+          description: Always leader_by_activity_score.
+        order:
+          type: string
+          description: Always activity_score_desc.
+        leader:
+          oneOf:
+          - $ref: '#/components/schemas/NarrativeTheme'
+          - type: 'null'
+          description: First-ranked theme; null on no_snapshots.
+        themes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NarrativeTheme'
+          description: Listed themes in served order; [] when none.
+        eligible_not_leader:
+          type: array
+          items:
+            type: string
+          description: 'Below the threshold only: themes at or above it that rank under the leader; [] otherwise.'
+        themes_served:
+          type: integer
+          description: Themes the backend served.
+        sources:
+          $ref: '#/components/schemas/NarrativeSources'
+          description: Polled feeds.
+    NarrativeTheme:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - name
+      - matched_24h
+      - matched_prev_24h
+      - growth_pct
+      - new_theme
+      - activity_score
+      - data_quality
+      - stage
+      - tone
+      - sources_with_matches
+      properties:
+        id:
+          type: string
+          description: Theme key.
+        name:
+          type: string
+          description: Display name.
+        matched_24h:
+          type: integer
+          description: Matched items over 24h.
+        matched_prev_24h:
+          type:
+          - integer
+          - 'null'
+          description: Matched items over the previous 24h; null when not served.
+        growth_pct:
+          type:
+          - number
+          - 'null'
+          description: Growth vs the previous 24h, percent; null when that was 0 or missing.
+        new_theme:
+          type:
+          - boolean
+          - 'null'
+          description: matched_prev_24h == 0 and matched_24h > 0; null without a previous count.
+        activity_score:
+          type:
+          - integer
+          - 'null'
+          description: Activity score 0–100; null below the threshold.
+        data_quality:
+          type:
+          - integer
+          - 'null'
+          description: Data-quality heuristic 0–100 (never a probability); null below the threshold.
+        stage:
+          type:
+          - string
+          - 'null'
+          description: Theme stage; null below the threshold.
+        tone:
+          type:
+          - string
+          - 'null'
+          description: positive | neutral | negative (keyword sentiment, not a price direction); null below the
+            threshold.
+        sources_with_matches:
+          type:
+          - object
+          - 'null'
+          additionalProperties:
+            type: integer
+          description: Source → matched items; null when not served.
+    NarrativeSources:
+      type: object
+      additionalProperties: false
+      required:
+      - expected
+      - status
+      - coverage
+      properties:
+        expected:
+          type: array
+          items:
+            type: string
+          description: Feeds polled.
+        status:
+          type: 'null'
+          description: 'Always null: not served.'
+        coverage:
+          type: 'null'
+          description: 'Always null: not served.'
+    RiskReadout:
+      description: The risk calculator's machine readout.
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      - formula
+      - inputs
+      - price_risk_account_ccy
+      - price_distance
+      - result_abstract_units
+      - shown_abstract_units
+      - price_risk_at_shown_units
+      - quantity_unit
+      - account_currency
+      - applicability
+      - excludes
+      - display_rounding
+      - reads_market_data
+      - calculated_at
+      - content_line
+      properties:
+        status:
+          type: string
+          description: Always calculated.
+        formula:
+          type: string
+          description: The sizing formula.
+        inputs:
+          $ref: '#/components/schemas/RiskInputs'
+          description: The query parameters.
+        price_risk_account_ccy:
+          type: number
+          description: balance × risk% ÷ 100, raw.
+        price_distance:
+          type: number
+          description: '|entry − stop|, raw.'
+        result_abstract_units:
+          type: number
+          description: The formula result, raw.
+        shown_abstract_units:
+          type: number
+          description: 'As printed: down to 4 significant digits.'
+        price_risk_at_shown_units:
+          type: number
+          description: Shown size × distance, raw.
+        quantity_unit:
+          type: string
+          description: Always abstract_units.
+        account_currency:
+          type:
+          - string
+          - 'null'
+          description: 'Always null: not a parameter.'
+        applicability:
+          $ref: '#/components/schemas/RiskApplicability'
+          description: When the formula applies.
+        excludes:
+          type: array
+          items:
+            type: string
+          description: What the formula does not include.
+        display_rounding:
+          $ref: '#/components/schemas/RiskRounding'
+          description: How shown numbers are rounded.
+        reads_market_data:
+          type: boolean
+          description: Always false.
+        calculated_at:
+          type: string
+          description: = data_as_of.
+        content_line:
+          type: string
+          description: The service line for content.
+    RiskInputs:
+      type: object
+      additionalProperties: false
+      required:
+      - balance
+      - risk_pct
+      - entry
+      - stop
+      properties:
+        balance:
+          type: number
+          description: Account balance.
+        risk_pct:
+          type: number
+          description: Risk per trade, percent.
+        entry:
+          type: number
+          description: Entry price.
+        stop:
+          type: number
+          description: Stop price.
+    RiskApplicability:
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      - condition
+      - fits_example
+      - not_supported
+      properties:
+        status:
+          type: string
+          description: Always not_verified.
+        condition:
+          type: string
+          description: The condition under which it applies.
+        fits_example:
+          type: string
+          description: An instrument it fits.
+        not_supported:
+          type: array
+          items:
+            type: string
+          description: Cases not supported.
+    RiskRounding:
+      type: object
+      additionalProperties: false
+      required:
+      - size
+      - money
+      properties:
+        size:
+          type: string
+          description: down_4_significant.
+        money:
+          type: string
+          description: up_to_cents.
+    DigestReadout:
+      description: 'The digest''s own readout: unified status, the selection, every section below the highlighted
+        card.'
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      - live_sections
+      - total_sections
+      - degraded_sources
+      - generated_at
+      - selection
+      - sections
+      properties:
+        status:
+          type: string
+          description: live | partial | degraded — same value as /showcase digest_status.
+        live_sections:
+          type: integer
+          description: Sections with a real reading.
+        total_sections:
+          type: integer
+          description: Sections counted (seven digest agents + the FX block).
+        degraded_sources:
+          type: array
+          items:
+            type: string
+          description: Section keys without a reading; [] when none.
+        generated_at:
+          type: string
+          description: Sweep time.
+        selection:
+          $ref: '#/components/schemas/DigestSelection'
+          description: How the highlighted card was chosen.
+        sections:
+          type: array
+          items:
+            $ref: '#/components/schemas/DigestSection'
+          description: Every block below the highlighted card, render order.
+    DigestSelection:
+      type: object
+      additionalProperties: false
+      required:
+      - state
+      - rule
+      - winner
+      - line
+      - highlight_ok
+      - highlight_reason
+      - highlight_data_as_of
+      - macro_regime
+      - scales_calibrated
+      - candidates
+      properties:
+        state:
+          type: string
+          description: selected | no_highlight.
+        rule:
+          type: string
+          description: macro_risk_off | strongest_confirmed | fallback_unconfirmed | fallback_macro.
+        winner:
+          type: string
+          description: Agent key of the highlighted card.
+        line:
+          type: string
+          description: The one-line reason shown in card_html.
+        highlight_ok:
+          type: boolean
+          description: Repeats the top-level ok.
+        highlight_reason:
+          type:
+          - string
+          - 'null'
+          description: Repeats the top-level reason.
+        highlight_data_as_of:
+          type: string
+          description: Data time of the highlighted card.
+        macro_regime:
+          type: string
+          description: The macro regime of the sweep.
+        macro_risk_off_gate:
+          type: string
+          description: Only when the regime is risk_off.
+        scales_calibrated:
+          type: boolean
+          description: 'Always false: agent scores are not calibrated against each other.'
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/DigestCandidate'
+          description: Standing of funding, momentum, trend.
+    DigestCandidate:
+      type: object
+      additionalProperties: false
+      required:
+      - agent
+      - eligible
+      - excluded
+      - confirmed
+      - score
+      - data_as_of
+      - max_age_minutes
+      properties:
+        agent:
+          type: string
+          description: Agent key.
+        eligible:
+          type: boolean
+          description: Fresh live reading.
+        excluded:
+          type:
+          - string
+          - 'null'
+          description: degraded | no_ranked_read | stale | no_data_time; null when eligible.
+          enum:
+          - degraded
+          - no_ranked_read
+          - stale
+          - no_data_time
+          - null
+        confirmed:
+          type: boolean
+          description: The agent's own rule committed to a finding.
+        score:
+          type: integer
+          description: 0–100, comparable only within one tier.
+        data_as_of:
+          type:
+          - string
+          - 'null'
+          description: Data time; null without one.
+        max_age_minutes:
+          type: integer
+          description: Freshness limit for the top slot.
+    DigestSection:
+      description: One block below the highlighted card, with the machine form of the numbers its lines print.
+      type: object
+      additionalProperties: false
+      required:
+      - key
+      - title
+      - lines
+      - ok
+      - reason
+      - data_as_of
+      properties:
+        key:
+          type: string
+          description: macro | whale | funding | momentum | trend | sr | vol | fx | narrative.
+        title:
+          type:
+          - string
+          - 'null'
+          description: Plain header above the lines (FX); null when none.
+        lines:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: Plain text, exactly as in card_html.
+        ok:
+          type: boolean
+          description: The section carries a real reading.
+        reason:
+          type:
+          - string
+          - 'null'
+          enum:
+          - market_closed
+          - source_offline
+          - insufficient_history
+          - below_threshold
+          - no_data
+          - null
+          description: Reason enum when not ok.
+        data_as_of:
+          type:
+          - string
+          - 'null'
+          description: Data time; null without one.
+        levels:
+          description: 'The section card''s levels (sr: SRLevels, vol: VolLevels, trend: TrendLevels on a confirmed
+            card).'
+          anyOf:
+          - $ref: '#/components/schemas/TrendLevels'
+          - $ref: '#/components/schemas/SRLevels'
+          - $ref: '#/components/schemas/VolLevels'
+          x-added: '2026-10-19'
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssetResult'
+          description: 'The section''s rows: momentum assets (without blocks), funding majors, FX table rows.'
+          x-added: '2026-10-19'
+        momentum:
+          $ref: '#/components/schemas/MomentumReadout'
+          description: 'Momentum section: the card''s readout (its counter).'
+          x-added: '2026-10-19'
+        trend:
+          $ref: '#/components/schemas/TrendReadout'
+          description: 'Trend section: the trend readout.'
+          x-added: '2026-10-19'
+        theme:
+          $ref: '#/components/schemas/DigestTheme'
+          description: 'Narrative section: the theme its line prints.'
+          x-added: '2026-10-19'
+    DigestTheme:
+      type: object
+      additionalProperties: false
+      required:
+      - narrative
+      - activity_score
+      - matched_items_24h
+      properties:
+        narrative:
+          type: string
+          description: Theme key.
+        activity_score:
+          type: integer
+          description: Activity score 0–100.
+        matched_items_24h:
+          type: integer
+          description: Matched items over 24h.
+    AgentInfo:
+      type: object
+      additionalProperties: false
+      required:
+      - name
+      - description
+      - examples
+      properties:
+        name:
+          type: string
+          description: Agent key for /agents/{name}.
+        description:
+          type: string
+          description: How the agent works.
+        assets:
+          type: array
+          items:
+            type: string
+          description: Accepted ?asset= values (asset agents and macro).
+        examples:
+          type: array
+          items:
+            type: string
+          description: Example addresses.
+    ShowcaseAgent:
+      type: object
+      additionalProperties: false
+      required:
+      - slug
+      - name
+      - category
+      - status
+      - ok
+      - reason
+      - headline
+      - one_liner
+      - data_as_of
+      - example_url
+      properties:
+        slug:
+          type: string
+          description: Agent key.
+        name:
+          type: string
+          description: Display name.
+        category:
+          type: string
+          description: Catalog category.
+        status:
+          type: string
+          description: live | degraded.
+        ok:
+          type: boolean
+          description: The agent produced a real reading.
+        reason:
+          type:
+          - string
+          - 'null'
+          enum:
+          - market_closed
+          - source_offline
+          - insufficient_history
+          - below_threshold
+          - no_data
+          - null
+          description: Reason enum when not ok.
+        headline:
+          type: string
+          description: Agent · asset — verdict.
+        one_liner:
+          type: string
+          description: Digest one-liner.
+        data_as_of:
+          type: string
+          description: Data time.
+        example_url:
+          type: string
+          description: The agent's address.
+        digest_status:
+          type: string
+          description: 'Digest row only: live | partial | degraded.'
+    Showcase:
+      type: object
+      additionalProperties: false
+      required:
+      - generated_at
+      - live_count
+      - total_count
+      - agents
+      properties:
+        generated_at:
+          type: string
+          description: Build time.
+        live_count:
+          type: integer
+          description: Rows with a live reading.
+        total_count:
+          type: integer
+          description: Rows.
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShowcaseAgent'
+          description: Catalog rows.
+    ShowcaseExample:
+      type: object
+      additionalProperties: false
+      required:
+      - generated_at
+      - agent
+      - slug
+      - asset
+      - detected
+      - explained
+      - data
+      - conclusion
+      - example_url
+      - disclaimer
+      - data_as_of
+      properties:
+        generated_at:
+          type: string
+          description: Build time.
+        agent:
+          type: string
+          description: Agent name.
+        slug:
+          type: string
+          description: Agent key.
+        asset:
+          type: string
+          description: Asset.
+        detected:
+          type: string
+          description: What the agent noticed.
+        explained:
+          type: string
+          description: Why it matters.
+        data:
+          type: array
+          items:
+            type: string
+          description: The live numbers behind it, as text lines.
+        conclusion:
+          type: string
+          description: What it means (analytics only).
+        levels:
+          description: The story card's levels object, when it has one.
+          anyOf:
+          - $ref: '#/components/schemas/TrendLevels'
+          - $ref: '#/components/schemas/SRLevels'
+          - $ref: '#/components/schemas/VolLevels'
+        example_url:
+          type: string
+          description: The card's address.
+        disclaimer:
+          type: string
+          description: Disclaimer.
+        data_as_of:
+          type: string
+          description: Data time.
+    TrendChart:
+      type: object
+      additionalProperties: false
+      required:
+      - agent
+      - asset
+      - asset_key
+      - timeframe
+      - ok
+      - reason
+      - state
+      - verdict
+      - price
+      - candles
+      - ema20
+      - ema50
+      - ema200
+      - pullback_zone
+      - invalidation
+      - pivots
+      - structure
+      - data_as_of
+      - source
+      - live
+      - disclaimer
+      properties:
+        agent:
+          type: string
+          description: Trend Agent.
+        asset:
+          type: string
+          description: Display asset.
+        asset_key:
+          type: string
+          description: Machine asset.
+        timeframe:
+          type: string
+          description: Candle timeframe.
+        ok:
+          type: boolean
+          description: Always true on a 200.
+        reason:
+          type:
+          - string
+          - 'null'
+          enum:
+          - market_closed
+          - source_offline
+          - insufficient_history
+          - below_threshold
+          - no_data
+          - null
+          description: Always null on a 200; degraded reads are 503s.
+        state:
+          type: string
+          description: Trend state, as the card.
+        verdict:
+          type: string
+          description: The card's verdict.
+        price:
+          type: number
+          description: Last close.
+        candles:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChartCandle'
+          description: The newest 200 closed candles.
+        ema20:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChartPoint'
+          description: EMA20 per candle.
+        ema50:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChartPoint'
+          description: EMA50 per candle.
+        ema200:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChartPoint'
+          description: EMA200 per candle.
+        pullback_zone:
+          oneOf:
+          - $ref: '#/components/schemas/ChartZone'
+          - type: 'null'
+          description: Confirmed trend only; null otherwise.
+        invalidation:
+          oneOf:
+          - $ref: '#/components/schemas/ChartInvalidation'
+          - type: 'null'
+          description: Confirmed trend only; null otherwise.
+        pivots:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChartPivot'
+          description: Swing pivots with HH/HL/LH/LL labels.
+        structure:
+          type: string
+          description: '"" (unreadable) | hh_hl | lh_ll | mixed.'
+        data_as_of:
+          type: string
+          description: Close of the last candle.
+        source:
+          type: string
+          description: Data source.
+        live:
+          oneOf:
+          - $ref: '#/components/schemas/ChartLive'
+          - type: 'null'
+          description: Public kline stream that continues the chart; null for Yahoo assets.
+        disclaimer:
+          type: string
+          description: Disclaimer.
+    ChartCandle:
+      type: object
+      additionalProperties: false
+      required:
+      - time
+      - open
+      - high
+      - low
+      - close
+      properties:
+        time:
+          type: integer
+          description: Unix seconds UTC, bar open.
+        open:
+          type: number
+          description: Open.
+        high:
+          type: number
+          description: High.
+        low:
+          type: number
+          description: Low.
+        close:
+          type: number
+          description: Close.
+    ChartPoint:
+      type: object
+      additionalProperties: false
+      required:
+      - time
+      - value
+      properties:
+        time:
+          type: integer
+          description: Unix seconds UTC, bar open.
+        value:
+          type: number
+          description: Value.
+    ChartZone:
+      type: object
+      additionalProperties: false
+      required:
+      - low
+      - high
+      properties:
+        low:
+          type: number
+          description: Lower edge.
+        high:
+          type: number
+          description: Upper edge.
+    ChartInvalidation:
+      type: object
+      additionalProperties: false
+      required:
+      - level
+      - side
+      properties:
+        level:
+          type: number
+          description: Level.
+        side:
+          type: string
+          description: above | below.
+    ChartPivot:
+      type: object
+      additionalProperties: false
+      required:
+      - time
+      - price
+      - kind
+      - label
+      properties:
+        time:
+          type: integer
+          description: Unix seconds UTC.
+        price:
+          type: number
+          description: Pivot price.
+        kind:
+          type: string
+          description: high | low.
+        label:
+          type: string
+          description: HH | HL | LH | LL | "".
+    ChartLive:
+      type: object
+      additionalProperties: false
+      required:
+      - provider
+      - symbol
+      - interval
+      properties:
+        provider:
+          type: string
+          description: binance.
+        symbol:
+          type: string
+          description: Stream symbol.
+        interval:
+          type: string
+          description: Stream interval.
+    Reason:
+      description: Why a reading is absent. Null when ok.
+      type: string
+      enum:
+      - market_closed
+      - source_offline
+      - insufficient_history
+      - below_threshold
+      - no_data
+    Card:
+      description: The one envelope every /agents/{name} endpoint serves. Machine objects (levels, results, macro,
+        funding, gold, whale, narrative, risk, trend, momentum, fx, digest) reject unknown fields; the envelope
+        itself may grow new top-level fields.
+      type: object
+      required:
+      - agent
+      - asset
+      - ok
+      - reason
+      - verdict
+      - semaphore
+      - facts
+      - confidence
+      - ai_text
+      - data_as_of
+      - disclaimer
+      - card_html
+      properties:
+        agent:
+          type: string
+          description: Full agent name ("Trend Agent"); "AlphaVizor Digest" on the digest.
+        asset:
+          type: string
+          description: Machine asset (BTC, EURUSD, XAUUSD …); "" for global agents and the digest.
+        ok:
+          type: boolean
+          description: true when the agent produced a real reading.
+        reason:
+          type:
+          - string
+          - 'null'
+          enum:
+          - market_closed
+          - source_offline
+          - insufficient_history
+          - below_threshold
+          - no_data
+          - null
+          description: Null when ok; otherwise why the reading is absent.
+        verdict:
+          type: string
+          description: Bold verdict line of the card.
+        semaphore:
+          type: string
+          enum:
+          - bullish
+          - bearish
+          - neutral
+          description: The card's colour.
+        facts:
+          type: array
+          items:
+            type: string
+          description: The card's fact lines, plain text; [] when none.
+        levels:
+          description: 'Level-bearing agents only: trend (TrendLevels, confirmed only), sr (SRLevels), vol (VolLevels);
+            gold on a confirmed regime (TrendLevels). Raw precision. Absent elsewhere.'
+          anyOf:
+          - $ref: '#/components/schemas/TrendLevels'
+          - $ref: '#/components/schemas/SRLevels'
+          - $ref: '#/components/schemas/VolLevels'
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssetResult'
+          description: 'Momentum, FX and funding cards: one entry per asset. Absent elsewhere.'
+        blocks:
+          allOf:
+          - $ref: '#/components/schemas/ContentBlocks'
+          description: Content-ready sentences. Absent on degraded cards and agents without them.
+        macro:
+          allOf:
+          - $ref: '#/components/schemas/MacroReadout'
+          description: Macro cards with a reading (and digest/top with a macro winner).
+        funding:
+          allOf:
+          - $ref: '#/components/schemas/FundingReadout'
+          description: Funding cards.
+        gold:
+          allOf:
+          - $ref: '#/components/schemas/GoldReadout'
+          description: Gold cards.
+        whale:
+          allOf:
+          - $ref: '#/components/schemas/WhaleReadout'
+          description: Whale cards.
+        narrative:
+          allOf:
+          - $ref: '#/components/schemas/NarrativeReadout'
+          description: News (narrative radar) cards.
+        risk:
+          allOf:
+          - $ref: '#/components/schemas/RiskReadout'
+          description: Risk calculator.
+        trend:
+          allOf:
+          - $ref: '#/components/schemas/TrendReadout'
+          description: Trend cards with a reading (added 2026-10-19).
+          x-added: '2026-10-19'
+        momentum:
+          allOf:
+          - $ref: '#/components/schemas/MomentumReadout'
+          description: Momentum cards with a reading (added 2026-10-19).
+          x-added: '2026-10-19'
+        fx:
+          allOf:
+          - $ref: '#/components/schemas/FXReadout'
+          description: FX cards (added 2026-10-19).
+          x-added: '2026-10-19'
+        confidence:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+          maximum: 100
+          description: 0–100 when the source gives one; on news it is data quality, never a probability.
+        ai_text:
+          type:
+          - string
+          - 'null'
+          description: Plain-text AI block; null when absent.
+        sections:
+          type: array
+          items:
+            type: string
+          description: 'Digest only: the other agents'' one-liners.'
+        digest:
+          allOf:
+          - $ref: '#/components/schemas/DigestReadout'
+          description: Digest only.
+        data_as_of:
+          type: string
+          format: date-time
+          description: Data time of the reading (bar close), the same stamp as the card footer; request time on
+            funding.
+        disclaimer:
+          type: string
+          const: Analytics, not financial advice
+        card_html:
+          type: string
+          description: The exact Telegram HTML card.
+    Error:
+      type: object
+      required:
+      - error
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          description: Human-readable message.
+    Degraded:
+      description: '503 body: the agent could not produce a reading; ok/reason say why.'
+      type: object
+      required:
+      - error
+      - ok
+      - reason
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+        ok:
+          const: false
+        reason:
+          $ref: '#/components/schemas/Reason'
+    AgentList:
+      type: object
+      required:
+      - agents
+      - disclaimer
+      additionalProperties: false
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentInfo'
+        disclaimer:
+          type: string
+    Root:
+      type: object
+      additionalProperties:
+        type: string
+      required:
+      - service
+      - agents
+      - showcase
+      - showcase_example
+      - disclaimer
+      properties:
+        service:
+          type: string
+        agents:
+          type: string
+        showcase:
+          type: string
+        showcase_example:
+          type: string
+        disclaimer:
+          type: string

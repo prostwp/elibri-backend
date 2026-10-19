@@ -282,7 +282,10 @@ func TestWhaleMachineFields(t *testing.T) {
 		`"read_source":"btc_mempool_monitor","flows":[{"asset":"BTC","net_flow_usd_24h":0,` +
 		`"direction":"not_measurable","tx_count":66,"source_kind":"btc_monitor","partial":true}],` +
 		// lead_asset is the single headline COIN; the monitor has none.
-		`"lead_asset":null}`
+		`"lead_asset":null,` +
+		// Additive 2026-10-19: the prior-24h line's numbers — null, the
+		// fixture prints no such line.
+		`"prior_24h_asset":null,"prior_24h_net_flow_usd":null,"prior_24h_change_pct":null}`
 	if string(env.Whale) != want {
 		t.Errorf("whale:\n%s\nwant\n%s", env.Whale, want)
 	}

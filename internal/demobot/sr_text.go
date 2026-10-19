@@ -380,8 +380,39 @@ func (v srView) volumeLine() string {
 // methodLine — the window and the closed-candle rule, in one line; the full
 // method is the how-it-works text.
 func (v srView) methodLine() string {
-	return fmt.Sprintf("Window: %d closed %s candles · test = a close within 0.25 ATR of a level, resolved within 3 candles",
-		v.bars, candleWord(v.tf))
+	return fmt.Sprintf("Window: %d closed %s candles · test = a close within %s ATR of a level, resolved within %d candles",
+		v.bars, candleWord(v.tf), fmtNum(srTestBandATR), srTestResolveBars)
+}
+
+// distPct is a level's signed distance as the level line prints it: from the
+// printed level and price (signedPct), 0 when both print as one number.
+func (v srView) distPct(l SRLevel) float64 {
+	if v.dist(l) == "" {
+		return 0
+	}
+	return signedPctOf(v.px.val(l.Raw), v.px.val(v.last))
+}
+
+// nearestPct is the "Nearest shown levels" number of one side: the nearest
+// shown level's distPct, nil when the side shows no level.
+func (v srView) nearestPct(levels []SRLevel, ord []int) *float64 {
+	if len(levels) == 0 {
+		return nil
+	}
+	d := v.distPct(levels[ord[0]])
+	return &d
+}
+
+// levels is the machine form of the card: both sides plus the numbers the
+// verdict, the nearest-sides line and the window line print.
+func (v srView) levels() SRLevels {
+	return SRLevels{
+		Supports: v.points(v.sup, v.supOrd), Resistances: v.points(v.res, v.resOrd),
+		Price: v.last, PriceLabel: v.px.str(v.last), Timeframe: v.tf, WindowBars: v.bars,
+		NearestResistancePct: v.nearestPct(v.res, v.resOrd),
+		NearestSupportPct:    v.nearestPct(v.sup, v.supOrd),
+		TestBandATR:          srTestBandATR, TestResolveBars: srTestResolveBars,
+	}
 }
 
 // facts is the card body: resistances then supports, each nearest first,
@@ -457,8 +488,8 @@ func (v srView) blocks() *ContentBlocks {
 		// back out on price's side keeps the level where it is; a close past
 		// the far edge of the band puts it on the other side of price.
 		Scenarios: []string{
-			fmt.Sprintf("If a %s close tests %s and a close within 3 candles exits its band %s, the level holds as %s",
-				tf, lv, side.away, side.noun),
+			fmt.Sprintf("If a %s close tests %s and a close within %d candles exits its band %s, the level holds as %s",
+				tf, lv, srTestResolveBars, side.away, side.noun),
 			fmt.Sprintf("If a %s candle closes %s %s's band, the level is broken and moves %s price",
 				tf, side.toward, lv, side.away),
 		},
@@ -514,6 +545,7 @@ func (v srView) points(levels []SRLevel, ord []int) []SRPoint {
 	for i := range pts {
 		pts[i].DisplayRank = display[i]
 		pts[i].StrengthRank = i + 1
+		pts[i].DistancePct = v.distPct(levels[i])
 	}
 	return pts
 }
@@ -533,6 +565,8 @@ func srPoints(levels []SRLevel, px srPx) []SRPoint {
 			Weakening: l.Weakening,
 			Breaks:    l.Breaks,
 			Holds:     l.Holds,
+			// testsLong's "in N resolved tests"
+			ResolvedTests: l.Holds + l.Breaks,
 		}
 		if !l.LastTouch.IsZero() {
 			p.LastTouch = l.LastTouch.Format(time.RFC3339)
@@ -562,7 +596,7 @@ func srNoLevelsCard(spec assetSpec, swings int, last float64, bars int, dataTime
 			fmt.Sprintf("Swing points exist (%d), but no cluster sits clear of the last price %s", swings, v.px.str(last)),
 			v.methodLine(),
 		},
-		Levels: SRLevels{Supports: srPoints(nil, srPx{}), Resistances: srPoints(nil, srPx{})},
+		Levels: v.levels(),
 	}
 }
 
@@ -583,7 +617,7 @@ func srCardFrom(spec assetSpec, sup, res []SRLevel, last float64, bars int, data
 		Verdict:    v.headline(),
 		Short:      v.short(),
 		Facts:      v.facts(),
-		Levels:     SRLevels{Supports: v.points(sup, v.supOrd), Resistances: v.points(res, v.resOrd)},
+		Levels:     v.levels(),
 		Blocks:     v.blocks(),
 	}
 }

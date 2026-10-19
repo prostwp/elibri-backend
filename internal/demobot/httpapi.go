@@ -111,10 +111,21 @@ type httpEnvelope struct {
 	// Risk is the risk calculator's machine readout (additive 2026-09-15):
 	// formula, inputs, raw result in abstract units, the shown numbers,
 	// applicability, calculated_at — absent elsewhere.
-	Risk       *RiskReadout `json:"risk,omitempty"`
-	Confidence *int         `json:"confidence"`         // 0-100, null when the source gave none; news: data quality
-	AIText     *string      `json:"ai_text"`            // plain-text AI block, null when absent
-	Sections   []string     `json:"sections,omitempty"` // digest only: the one-liners
+	Risk *RiskReadout `json:"risk,omitempty"`
+	// Trend is the trend card's numeric readout (additive 2026-10-19): close,
+	// ADX (raw and as printed), its thresholds, EMAs, distances, ATR — every
+	// ok trend card, confirmed or not. Absent elsewhere.
+	Trend *TrendReadout `json:"trend,omitempty"`
+	// Momentum is the momentum card's numeric readout (additive 2026-10-19):
+	// the rule's thresholds, the multi-asset counter, the context numbers.
+	// Absent elsewhere and on cards without a reading.
+	Momentum *MomentumReadout `json:"momentum,omitempty"`
+	// FX is the FX card's coverage counts (additive 2026-10-19). Absent
+	// elsewhere.
+	FX         *FXReadout `json:"fx,omitempty"`
+	Confidence *int       `json:"confidence"`         // 0-100, null when the source gave none; news: data quality
+	AIText     *string    `json:"ai_text"`            // plain-text AI block, null when absent
+	Sections   []string   `json:"sections,omitempty"` // digest only: the one-liners
 	// Digest is the digest's own machine readout (digest only, additive
 	// 2026-09-15): unified status, how the highlighted card was selected and
 	// every section card_html renders (FX and narrative included), each with
@@ -171,6 +182,26 @@ type DigestSection struct {
 	OK       bool     `json:"ok"`
 	Reason   *string  `json:"reason"`
 	DataAsOf *string  `json:"data_as_of"` // null without a data time (offline, unstamped)
+	// The numbers the section's lines print, in the section card's own machine
+	// form (additive 2026-10-19), each absent when the section has none:
+	// levels — the S/R and volatility (and trend) card's levels; results —
+	// the momentum card's per-asset rows (without their blocks), the funding
+	// card's per-major rows, the FX block's table rows; momentum — the
+	// momentum card's readout (its counter); trend — the trend readout.
+	Levels   any              `json:"levels,omitempty"`
+	Results  []AssetResult    `json:"results,omitempty"`
+	Momentum *MomentumReadout `json:"momentum,omitempty"`
+	Trend    *TrendReadout    `json:"trend,omitempty"`
+	// Theme: the narrative section's theme as its line prints it.
+	Theme *DigestTheme `json:"theme,omitempty"`
+}
+
+// DigestTheme is the narrative section's top theme: its key, the activity
+// score (0-100) and the matched items over 24h.
+type DigestTheme struct {
+	Narrative       string `json:"narrative"`
+	ActivityScore   int    `json:"activity_score"`
+	MatchedItems24h int    `json:"matched_items_24h"`
 }
 
 func rfcPtr(t time.Time) *string {
@@ -227,7 +258,8 @@ func digestReadout(g gathered, p topPick, top Card) *DigestReadout {
 	}
 	out.Selection = sel
 	for _, s := range digestSections(g, p.Winner, p.At) {
-		ds := DigestSection{Key: s.key, OK: s.status == statusOK, Reason: reasonPtr(s.status), DataAsOf: rfcPtr(s.asOf)}
+		ds := DigestSection{Key: s.key, OK: s.status == statusOK, Reason: reasonPtr(s.status), DataAsOf: rfcPtr(s.asOf),
+			Levels: s.levels, Results: s.results, Momentum: s.momentum, Trend: s.trend, Theme: s.theme}
 		if s.title != "" {
 			t := htmlToPlain(s.title)
 			ds.Title = &t
@@ -292,6 +324,9 @@ func cardEnvelope(c Card) httpEnvelope {
 		Whale:      c.Whale,
 		Narrative:  c.Narrative,
 		Risk:       c.Risk,
+		Trend:      c.Trend,
+		Momentum:   c.Momentum,
+		FX:         c.FX,
 		DataAsOf:   c.DataTime.UTC().Format(time.RFC3339),
 		Disclaimer: disclaimerText,
 		CardHTML:   c.RenderHTML(),
@@ -381,6 +416,11 @@ func NewHTTPServer(addr string, ag *Agents) *HTTPServer {
 	// and the one ready-to-render "what you get" story.
 	mux.HandleFunc("/showcase", s.handleShowcase)
 	mux.HandleFunc("/showcase/example", s.handleShowcaseExample)
+	// The API's own description (openapi.go): the OpenAPI 3.1 document and a
+	// Swagger UI page over it.
+	mux.HandleFunc("/openapi.json", s.handleOpenAPIJSON)
+	mux.HandleFunc("/openapi.yaml", s.handleOpenAPIYAML)
+	mux.HandleFunc("/docs", s.handleDocs)
 	s.mux = mux
 	s.srv = &http.Server{
 		Addr:              addr,
@@ -535,6 +575,8 @@ func (s *HTTPServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"agents":           "/agents",
 		"showcase":         "/showcase",
 		"showcase_example": "/showcase/example",
+		"openapi":          "/openapi.json",
+		"docs":             "/docs",
 		"disclaimer":       disclaimerText,
 	})
 }

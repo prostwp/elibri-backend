@@ -43,7 +43,30 @@ const trendFactMaxRunes = 110
 // integer threshold — a value below it never prints at or above it, and a
 // value at or above it never prints below it.
 func adxShown(adx float64) string {
-	return fmt.Sprintf("%.1f", math.Floor(adx*10)/10)
+	return fmt.Sprintf("%.1f", adxFloor(adx))
+}
+
+// adxFloor is the value adxShown prints, as a number (the JSON adx_shown).
+func adxFloor(adx float64) float64 { return math.Floor(adx*10) / 10 }
+
+// signedPctOf is a level's signed distance from price as a share of price,
+// in percent: (level − price) / |price| × 100, + when the level is above —
+// the number signedPct(price, level) prints (pctAway is its absolute value).
+// 0 when price is 0.
+func signedPctOf(level, price float64) float64 {
+	if price == 0 {
+		return 0
+	}
+	return (level - price) / math.Abs(price) * 100
+}
+
+// priceVsPct is price's signed distance from a reference, as a share of
+// price: + when price is above it ("0.2% above EMA50" = +0.2). Never -0.
+func priceVsPct(ref, price float64) float64 {
+	if d := -signedPctOf(ref, price); d != 0 {
+		return d
+	}
+	return 0
 }
 
 // candleWord is the timeframe as it sits in front of "candle"/"closes".
@@ -257,20 +280,40 @@ func (v trendView) whyLine() string {
 	return "Why: " + strings.Join(parts, " · ")
 }
 
+// pullbackPlace is where the close sits against the pullback zone and the
+// zone edge the position line measures from (the nearer one; 0 inside).
+// ok=false outside confirmed states (no zone).
+func (v trendView) pullbackPlace() (pos string, edge float64, ok bool) {
+	r := v.r
+	z := pullbackZoneFor(r.State, r.EMA20, r.EMA50)
+	if z == nil {
+		return "", 0, false
+	}
+	lo, hi := math.Min(z.From, z.To), math.Max(z.From, z.To)
+	switch {
+	case r.Last < lo:
+		return "below", lo, true
+	case r.Last > hi:
+		return "above", hi, true
+	}
+	return "inside", r.Last, true
+}
+
 // positionLine — where price is. Confirmed states place it against the
 // pullback zone (below / inside / above), everything else against the two
 // EMAs the rule reads.
 func (v trendView) positionLine() string {
 	r := v.r
 	px := trimFloat(r.Last)
-	if z := pullbackZoneFor(r.State, r.EMA20, r.EMA50); z != nil {
+	if pos, edge, ok := v.pullbackPlace(); ok {
+		z := pullbackZoneFor(r.State, r.EMA20, r.EMA50)
 		lo, hi := math.Min(z.From, z.To), math.Max(z.From, z.To)
 		band := trimFloat(lo) + "–" + trimFloat(hi)
-		switch {
-		case r.Last < lo:
-			return fmt.Sprintf("Price %s — %s below the pullback zone %s", px, pctAway(r.Last, lo), band)
-		case r.Last > hi:
-			return fmt.Sprintf("Price %s — %s above the pullback zone %s", px, pctAway(r.Last, hi), band)
+		switch pos {
+		case "below":
+			return fmt.Sprintf("Price %s — %s below the pullback zone %s", px, pctAway(r.Last, edge), band)
+		case "above":
+			return fmt.Sprintf("Price %s — %s above the pullback zone %s", px, pctAway(r.Last, edge), band)
 		default:
 			return fmt.Sprintf("Price %s — inside the pullback zone %s", px, band)
 		}
@@ -387,6 +430,41 @@ func (v trendView) neutralConclusion(subject string) string {
 		return fmt.Sprintf("For a trader this is an unconfirmed trend on %s: EMA50 equals EMA200, no direction to confirm.", subject)
 	default:
 		return fmt.Sprintf("For a trader this is an unconfirmed trend on %s; failing: %s.", subject, strings.Join(v.failing(dir), ", "))
+	}
+}
+
+// readout is the machine form of every number the card prints (envelope
+// "trend"): the same read fields the lines above format.
+func (v trendView) readout() *TrendReadout {
+	r := v.r
+	out := &TrendReadout{
+		State: r.State, Timeframe: v.tf, Price: r.Last,
+		ADX: r.ADX, ADXShown: adxFloor(r.ADX),
+		ADXThreshold: trendADXConfirm, ADXFlatThreshold: trendADXRead,
+		EMA20: r.EMA20, EMA50: r.EMA50, EMA200: r.EMA200,
+		// price against the EMA, like "0.2% above EMA50": + when price is above
+		EMA50DistancePct:  priceVsPct(r.EMA50, r.Last),
+		EMA200DistancePct: priceVsPct(r.EMA200, r.Last),
+	}
+	if r.ATR > 0 {
+		atr := r.ATR
+		out.ATR = &atr
+	}
+	return out
+}
+
+// levelsExtras adds the confirmed card's printed distances to its levels: the
+// pullback position and distance (positionLine), the invalidation distance
+// and ATR multiple (trendInvalidationFact). Invalidation fields only with an
+// invalidation level.
+func (v trendView) levelsExtras(lv *TrendLevels) {
+	if pos, edge, ok := v.pullbackPlace(); ok {
+		d := priceVsPct(edge, v.r.Last) // + above the zone, 0 inside
+		lv.PullbackPosition, lv.DistanceToPullbackPct = pos, &d
+	}
+	if lv.Invalidation != nil {
+		d, mult := signedPctOf(*lv.Invalidation, v.r.Last), trendInvalidationATRs
+		lv.InvalidationDistancePct, lv.InvalidationATRMultiple = &d, &mult
 	}
 }
 

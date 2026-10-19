@@ -86,10 +86,48 @@ type PullbackZone struct {
 //     ABOVE the EMA cluster, uptrends below it. Present together or not at
 //     all: absent only on a degenerate series with no ATR. A pointer, so the
 //     JSON can never carry a zero level or a side without a level.
+//
+// Added 2026-10-19 (additive, the numbers the confirmed card prints):
+//   - pullback_position: below | inside | above — where the last close sits
+//     against the zone (present with pullback_zone);
+//   - distance_to_pullback_pct: (close − nearest zone edge) / close × 100,
+//     signed like the text ("0.5% above the pullback zone" = +0.5); 0 inside;
+//   - invalidation_distance_pct: (invalidation − close) / close × 100, the
+//     "(-1.8%, …)" of the invalidation line (present with invalidation);
+//   - invalidation_atr_multiple: the "1 ATR" of the same line.
+//
+// The reading itself (close, ADX, EMAs, ATR) is in the envelope's "trend"
+// object, which every ok trend card carries — confirmed or not.
 type TrendLevels struct {
-	Invalidation     *float64      `json:"invalidation,omitempty"`
-	InvalidationSide string        `json:"invalidation_side,omitempty"`
-	PullbackZone     *PullbackZone `json:"pullback_zone,omitempty"`
+	Invalidation            *float64      `json:"invalidation,omitempty"`
+	InvalidationSide        string        `json:"invalidation_side,omitempty"`
+	PullbackZone            *PullbackZone `json:"pullback_zone,omitempty"`
+	PullbackPosition        string        `json:"pullback_position,omitempty"`
+	DistanceToPullbackPct   *float64      `json:"distance_to_pullback_pct,omitempty"`
+	InvalidationDistancePct *float64      `json:"invalidation_distance_pct,omitempty"`
+	InvalidationATRMultiple *float64      `json:"invalidation_atr_multiple,omitempty"`
+}
+
+// TrendReadout is the envelope's "trend" object (trend cards with a reading,
+// additive 2026-10-19): every number the card prints, at raw precision, for
+// every state. Distances to the EMAs are signed like the text: (close − EMA)
+// / close × 100, + when the close is above. adx_shown is ADX exactly as the
+// text prints it (floored to one decimal — adxShown). atr is null when the
+// series has no range (the card then shows no invalidation level).
+type TrendReadout struct {
+	State             string   `json:"state"` // flat | grey | up | down | conflict
+	Timeframe         string   `json:"timeframe"`
+	Price             float64  `json:"price"` // last closed candle's close
+	ADX               float64  `json:"adx"`
+	ADXShown          float64  `json:"adx_shown"`
+	ADXThreshold      int      `json:"adx_threshold"`      // 25: at or above, the EMA conditions decide
+	ADXFlatThreshold  int      `json:"adx_flat_threshold"` // 20: below it, flat
+	EMA20             float64  `json:"ema20"`
+	EMA50             float64  `json:"ema50"`
+	EMA200            float64  `json:"ema200"`
+	EMA50DistancePct  float64  `json:"ema50_distance_pct"`
+	EMA200DistancePct float64  `json:"ema200_distance_pct"`
+	ATR               *float64 `json:"atr"`
 }
 
 // ContentBlocks are ready-made sentences for content writers, one per job,
@@ -178,14 +216,37 @@ type SRPoint struct {
 	Breaks       int     `json:"breaks"`
 	Holds        int     `json:"holds"`
 	LastTouch    string  `json:"last_touch"`
+	// Added 2026-10-19 (additive):
+	//   - distance_pct: the level's signed distance from price exactly as the
+	//     line prints it — from the PRINTED level and price, (level − price) /
+	//     price × 100, + above price; 0 when both print as one number ("at
+	//     price"). The text prints one decimal and "<0.1%" under 0.05;
+	//   - resolved_tests: holds + breaks, the "in N resolved tests" count.
+	DistancePct   float64 `json:"distance_pct"`
+	ResolvedTests int     `json:"resolved_tests"`
 }
 
 // SRLevels — strength-sorted supports/resistances. Both slices are always
 // non-nil so an empty side serializes as [] ("we looked, nothing clustered"),
 // never null.
+//
+// Added 2026-10-19 (additive): price (the last close, raw) and price_label
+// (as printed), timeframe, window_bars (the "Window: N closed candles"),
+// nearest_resistance_pct / nearest_support_pct (the "Nearest shown levels"
+// numbers, the nearest shown level's distance_pct per side; null when the
+// side shows no level), and the test definition's two parameters —
+// test_band_atr (0.25 ATR) and test_resolve_bars (3 candles).
 type SRLevels struct {
-	Supports    []SRPoint `json:"supports"`
-	Resistances []SRPoint `json:"resistances"`
+	Supports             []SRPoint `json:"supports"`
+	Resistances          []SRPoint `json:"resistances"`
+	Price                float64   `json:"price"`
+	PriceLabel           string    `json:"price_label"`
+	Timeframe            string    `json:"timeframe"`
+	WindowBars           int       `json:"window_bars"`
+	NearestResistancePct *float64  `json:"nearest_resistance_pct"`
+	NearestSupportPct    *float64  `json:"nearest_support_pct"`
+	TestBandATR          float64   `json:"test_band_atr"`
+	TestResolveBars      int       `json:"test_resolve_bars"`
 }
 
 // VolThresholds are the volatility rule's ratio thresholds: compressed at a
@@ -210,6 +271,14 @@ type VolLevels struct {
 	Baseline       float64       `json:"baseline"`
 	Ratio          float64       `json:"ratio"`
 	Thresholds     VolThresholds `json:"thresholds"`
+	// Added 2026-10-19 (additive): ratio_shown is the ratio exactly as the
+	// card prints it (volRatioShown: three decimals, rounded toward 1; the
+	// text prints ">99.999" past that cap), distance_pct the verdict's
+	// "N% below/above its baseline" signed (− below, 0 = "within 1%"), and
+	// baseline_bars the 30 ATR values the baseline averages.
+	RatioShown   float64 `json:"ratio_shown"`
+	DistancePct  int     `json:"distance_pct"`
+	BaselineBars int     `json:"baseline_bars"`
 }
 
 // AssetResult is one asset's machine-readable outcome inside a momentum card
@@ -243,8 +312,10 @@ type AssetResult struct {
 	// `rsi` itself can print 60.9 under text that says 60.8 — that mismatch is
 	// what this field exists to remove. Never rounded for display twice: print
 	// this string as it is.
-	RSIShown string         `json:"rsi_shown,omitempty"`
-	Blocks   *ContentBlocks `json:"blocks,omitempty"`
+	RSIShown string `json:"rsi_shown,omitempty"`
+	// RSIShownValue (additive 2026-10-19) is rsi_shown as a number.
+	RSIShownValue *float64       `json:"rsi_shown_value,omitempty"`
+	Blocks        *ContentBlocks `json:"blocks,omitempty"`
 	// FX rows only (additive, 2026-09-15 — see fxResult): the last close,
 	// its change and the window it spans ("24h" | "since_previous_close")
 	// with the reference bar's close time, EMA50 vs EMA200 (above | below |
@@ -280,6 +351,11 @@ type AssetResult struct {
 	Crossed          *bool    `json:"crossed,omitempty"`
 	RatioToThreshold *float64 `json:"ratio_to_threshold,omitempty"`
 	Selected         *bool    `json:"selected,omitempty"`
+	// Funding rows only (additive, 2026-10-19): the rate as the card prints it,
+	// in percent (truncated to four decimals: +0.0093% = 0.0093), and the
+	// ratio as printed ("0.33×" = 0.33; ">1.00×" is served as 1).
+	RatePct               *float64 `json:"rate_pct,omitempty"`
+	RatioToThresholdShown *float64 `json:"ratio_to_threshold_shown,omitempty"`
 }
 
 // FundingReadout is the envelope's "funding" object (funding cards only,
@@ -296,6 +372,28 @@ type FundingReadout struct {
 	Crossed         int                  `json:"crossed"` // received majors past a threshold
 	Coverage        FundingCoverage      `json:"coverage"`
 	Liquidations    *FundingLiquidations `json:"liquidations"` // null when the feed is offline
+	// Added 2026-10-19 (additive):
+	//   - rates: every received major in the card's order, the rate raw and
+	//     as printed in percent ([] when no rate arrived);
+	//   - nearest_threshold / nearest_threshold_distance_pp: the "Nearest
+	//     threshold" line of a reading within the thresholds — long | short |
+	//     equidistant and the distance in percentage points as printed; null
+	//     when the shown rate is past a threshold or there is no reading;
+	//   - past_threshold_by_pp: how far past its threshold the shown rate is
+	//     ("Past the long threshold by …"), in pp as printed; 0 exactly at
+	//     the threshold; under one printed unit ("<0.0001 pp") the raw
+	//     distance; null within the thresholds or without a reading.
+	Rates                      []FundingRate `json:"rates"`
+	NearestThreshold           *string       `json:"nearest_threshold"`
+	NearestThresholdDistancePP *float64      `json:"nearest_threshold_distance_pp"`
+	PastThresholdByPP          *float64      `json:"past_threshold_by_pp"`
+}
+
+// FundingRate is one received major's last funding rate: raw and as printed.
+type FundingRate struct {
+	Symbol  string  `json:"symbol"`
+	Rate    float64 `json:"rate"`
+	RatePct float64 `json:"rate_pct"`
 }
 
 type FundingThresholds struct {
@@ -373,6 +471,103 @@ type GoldReadout struct {
 	// GC=F are on the same COMEX contract (additive 2026-09-23). Always
 	// present on a gold card; see GoldRoll.
 	Roll *GoldRoll `json:"roll"`
+	// Added 2026-10-19 (additive):
+	//   - nearest_levels: the "Nearest levels" line — the nearest clustered
+	//     support below and resistance above the reference price (null each
+	//     when nothing clustered on that side); null as a whole when the card
+	//     has no 1h price and prints no such line;
+	//   - adx / adx_shown: the daily ADX the regime line prints (raw, and
+	//     floored to one decimal as printed); null without a trend reading;
+	//   - volatility: the "Volatility:" line — the volatility agent's read on
+	//     the daily bars; null when it is unavailable.
+	NearestLevels *GoldNearestLevels `json:"nearest_levels"`
+	ADX           *float64           `json:"adx"`
+	ADXShown      *float64           `json:"adx_shown"`
+	Volatility    *GoldVolatility    `json:"volatility"`
+}
+
+// GoldNearestLevels is the card's nearest-levels line. reference is the price
+// they are nearest to: price_1h (the last closed 1h close) or daily_close (in
+// a contract roll window, where the 1h price is on another contract).
+type GoldNearestLevels struct {
+	Reference  string        `json:"reference"`
+	Support    *GoldLevelRef `json:"support"`
+	Resistance *GoldLevelRef `json:"resistance"`
+}
+
+// GoldLevelRef is one clustered level as the line prints it.
+type GoldLevelRef struct {
+	Level  float64 `json:"level"`  // cluster mean, raw
+	Label  string  `json:"label"`  // as printed (two decimals)
+	Class  string  `json:"class"`  // established | candidate | single_swing
+	Pivots int     `json:"pivots"` // swing pivots in the cluster
+}
+
+// GoldVolatility is the volatility line of the gold card.
+type GoldVolatility struct {
+	State         string  `json:"state"` // expanding | normal | compressed (the card words expanding "elevated")
+	Timeframe     string  `json:"timeframe"`
+	ATRRatio      float64 `json:"atr_ratio"`       // raw
+	ATRRatioShown float64 `json:"atr_ratio_shown"` // as printed
+	BaselineBars  int     `json:"baseline_bars"`   // 30
+}
+
+// FXReadout is the envelope's "fx" object (FX cards, additive 2026-10-19):
+// the coverage counts the verdict prints ("FX overview · 1h · 3 pairs + gold
+// read · 1 short history …"). pairs_read of pairs_total pairs produced a
+// reading; gold_read: gold produced one; gold_no_recent_bar: gold's reading
+// has no recent bar (the verdict then names it apart); short_history /
+// unavailable / data_delayed count instruments, gold included.
+type FXReadout struct {
+	PairsTotal      int  `json:"pairs_total"`
+	PairsRead       int  `json:"pairs_read"`
+	GoldRead        bool `json:"gold_read"`
+	GoldNoRecentBar bool `json:"gold_no_recent_bar"`
+	ShortHistory    int  `json:"short_history"`
+	Unavailable     int  `json:"unavailable"`
+	DataDelayed     int  `json:"data_delayed"`
+}
+
+// MomentumReadout is the envelope's "momentum" object (momentum cards with a
+// reading, additive 2026-10-19).
+//   - thresholds: the rule's parameters as numbers — bullish needs RSI ≥
+//     rsi_bullish and the MACD histogram above macd_zero, bearish RSI ≤
+//     rsi_bearish and below macd_zero;
+//   - counts: the multi-asset verdict's counter; null on the single-asset card;
+//   - volume_ratio: the volume context line (the last closed bar's volume over
+//     the mean of the volume_average_bars before it) — BTC on the overview,
+//     the asset on a single Binance card; null where the card prints none;
+//   - eth_minus_btc_7d_pp / _30d_pp: the overview's RS context line, ETH's
+//     return minus BTC's in percentage points; null where not printed. They
+//     follow LIVE prices (the backend anchors them on the forming UTC day),
+//     so the push hook masks them before hashing.
+type MomentumReadout struct {
+	Thresholds        MomentumThresholds `json:"thresholds"`
+	Counts            *MomentumCounts    `json:"counts"`
+	VolumeRatio       *float64           `json:"volume_ratio"`
+	VolumeAverageBars int                `json:"volume_average_bars"`
+	ETHMinusBTC7dPP   *float64           `json:"eth_minus_btc_7d_pp"`
+	ETHMinusBTC30dPP  *float64           `json:"eth_minus_btc_30d_pp"`
+}
+
+// MomentumThresholds are the momentum rule's parameters.
+type MomentumThresholds struct {
+	RSIBullish float64 `json:"rsi_bullish"`
+	RSIBearish float64 `json:"rsi_bearish"`
+	MACDZero   float64 `json:"macd_zero"`
+}
+
+// MomentumCounts is the multi-asset counter exactly as the verdict prints it.
+// timeframe is the shared one when every read has it (printed at the end of
+// the verdict), null when the reads are on different timeframes.
+type MomentumCounts struct {
+	Bullish       int      `json:"bullish"`
+	Bearish       int      `json:"bearish"`
+	NotConfirmed  int      `json:"not_confirmed"`
+	Unavailable   int      `json:"unavailable"`
+	BullishAssets []string `json:"bullish_assets"`
+	BearishAssets []string `json:"bearish_assets"`
+	Timeframe     *string  `json:"timeframe"`
 }
 
 // GoldRoll is the contract check behind the card (gold_roll.go). GC=F's hourly
@@ -528,6 +723,15 @@ type Card struct {
 	// shown results, applicability) — served as the envelope's "risk"
 	// (risk_text.go). nil elsewhere and on a card without a result.
 	Risk *RiskReadout
+	// Trend is the trend card's numeric readout (every state with a reading)
+	// — served as the envelope's "trend". nil elsewhere.
+	Trend *TrendReadout
+	// Momentum is the momentum card's numeric readout (thresholds, counter,
+	// context numbers) — served as the envelope's "momentum". nil elsewhere.
+	Momentum *MomentumReadout
+	// FX is the FX card's coverage counts — served as the envelope's "fx".
+	// nil elsewhere.
+	FX *FXReadout
 	// confLabel renames the Confidence bar ("" = "Confidence: … N%"); the
 	// narrative radar sets "Data quality", printed as "… N/100" — its value
 	// is a data-quality heuristic, never a probability. Not served.
